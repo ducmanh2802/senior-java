@@ -4805,5 +4805,508 @@ GET /transfers/{id}/status
 - **Đánh dấu FAILED + hoàn tiền**: sai nghiệp vụ — giao dịch THÀNH CÔNG ở B, đánh giá FAILED và hoàn tiền sẽ tạo reversal không cần thiết, làm rối ledger.
 
 > Senior tip: Thiết kế saga state machine: {{PENDING}} → {{IN_PROGRESS}} (đã gửi) → {{WAITING_RESPONSE}} → {{SUCCESS}}/{{FAILED}}. Recovery job định kỳ quét {{IN_PROGRESS}}/{{WAITING_RESPONSE}} quá hạn (ví dụ > 5 phút), gọi inquiry sang participant, đồng bộ state. Luôn log correlation_id xuyên suốt.`
+  },
+  // ===================== scenario (new round 4) =====================
+  {
+    id: 'qz-scenario-041',
+    topic: 'scenario',
+    q: 'API lịch sử giao dịch trả chậm đột ngột từ 50 ms lên 3 giây. Metric cho thấy CPU database tăng vọt, không có deploy mới, traffic không tăng. Truy vấn chính là {{SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20}}. Nguyên nhân khả dĩ nhất và cách kiểm tra nhanh?',
+    options: [
+      'Index trên {{user_id}} bị fragment hoặc statistics lỗi, chạy {{ANALYZE}} hoặc {{REINDEX}}',
+      'Lỗi network giữa app và DB, cần restart connection pool',
+      'Garbage collection của JVM app đang dọn dẹp object lớn, làm chậm request',
+      'Plan cache của PostgreSQL bị xóa do restart DB, query lần đầu chạy chậm'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: Index bị fragment hoặc statistics lỗi, chạy ANALYZE/REINDEX.**
+ 
+### Vì sao đúng
+- Khi không có thay đổi code hay traffic, mà query từng index nhanh bỗng chậm, nguyên nhân thường là **statistics cũ** làm planner chọn sai plan (ví dụ seq scan thay vì index scan), hoặc **index bloat** (fragment) làm đọc nhiều page hơn.
+- {{ANALYZE}} cập nhật statistics cho planner; {{REINDEX}} xây lại index loại bỏ bloat. Cả hai an toàn và thường khôi phục hiệu năng ngay.
+- Kiểm tra nhanh: {{EXPLAIN (ANALYZE, BUFFERS) SELECT ...}} để xem plan thực tế (seq scan hay index scan, rows returned, buffers hit/read).
+ 
+### Vì sao các phương án khác sai
+- **Lỗi network**: thường gây timeout hoặc error, không làm query chậm đều đặn 3 giây.
+- **GC của JVM app**: làm chậm app, không làm tăng CPU của database server.
+- **Plan cache xóa do restart DB**: query đầu tiên sau restart có thể chậm do compile, nhưng query sau sẽ cache; không giải thích việc chậm liên tục.
+ 
+> Senior tip: Bật {{track_io_timing}} và {{auto_explain}} log query chậm (> 1s) để phát hiện sớm khi plan thay đổi. Cảnh báo khi {{seq_scan}} ratio tăng trên bảng có index.`
+  },
+  {
+    id: 'qz-scenario-042',
+    topic: 'scenario',
+    multi: true,
+    q: 'Pool connection HikariCP của service báo exhausted (cạn kiệt) lúc cao điểm: {{pool=HikariPool-1, max=20, active=20, idle=0, waiting=150}}. App không deploy mới, traffic tăng nhẹ 10%. Những nguyên nhân/biện pháp nào hợp lý? (Chọn 2)',
+    options: [
+      'Query mới chậm (missing index, lock contention) làm thời gian giữ connection tăng, pool cạn dù traffic tăng ít; cần EXPLAIN query chậm và fix index/lock',
+      'Tăng {{maximumPoolSize}} lên 100 để chắc chắn không bao giờ cạn',
+      'Giảm {{connectionTimeout}} xuống 100 ms để fail fast và trả lỗi cho client nhanh hơn',
+      'Bật {{leakDetectionThreshold}} (ví dụ 30s) và log stack trace nơi connection bị rò rỉ (quên close/return), fix leak trong code'
+    ],
+    answer: [0, 3],
+    explain: `**Đáp án đúng: Query chậm làm tăng thời gian giữ connection; và bật leak detection để tìm connection leak.**
+ 
+### Vì sao đúng
+- **Nguyên nhân 1 - Query chậm**: traffic tăng nhẹ nhưng connection cạn nghĩa là mỗi request giữ connection lâu hơn. Thường do query mới/chậm (thiếu index, lock contention, plan regression) hoặc gọi DB trong vòng lặp. Fix root cause: tối ưu query, thêm index, giảm lock scope.
+- **Nguyên nhân 2 - Connection leak**: code lấy connection từ pool nhưng không trả lại (quên {{close()}}, exception bypass finally, reactive code không subscribe). {{leakDetectionThreshold}} log stack trace nơi connection được lấy nhưng không trả, giúp pinpoint leak.
+- Kết hợp: metric {{hikaricp.connections.active}} tăng dần theo thời gian (leak) hoặc tăng đột ngột lúc query chậm.
+ 
+### Vì sao các phương án khác sai
+- **Tăng maxPoolSize lên 100**: chỉ trì hoãn cạn, không sửa gốc. 100 connection tốn RAM, CPU context switch, và DB có thể quá tải (max_connections). Connection pool không phải buffer vô hạn.
+- **Giảm connectionTimeout 100ms**: làm client nhận lỗi 429/500 thay vì chờ; không giải quyết việc query chậm hay leak. Timeout hợp lý thường 5-30 giây.
+ 
+> Senior tip: Luôn đặt {{connectionTimeout}} > {{maxLifetime}} của query chậm nhất. Monitor {{hikaricp.connections.usage}} (active/max) và cảnh báo > 80%. Leak detection chỉ bật ở non-production hoặc production với threshold cao (30s+) để tránh noise.`
+  },
+  {
+    id: 'qz-scenario-043',
+    topic: 'scenario',
+    q: 'Consumer Kafka group {{order-service}} lag tăng từ 0 lên 500 nghìn trong 30 phút, sau đó ổn định ở mức cao. Metric {{records-consumed-rate}} bằng 0, {{fetch-rate}} thấp. Log consumer không có error, chỉ log {{poll}} đều đặn. Nguyên nhân khả dĩ nhất?',
+    options: [
+      'Broker partition leader đang election, consumer chờ metadata refresh',
+      'Consumer bị stuck ở một record (poison pill) do deserialization error, cấu hình retry vô hạn chặn toàn bộ partition',
+      'Network giữa consumer và broker bị gãy gọn, consumer không nhận được record',
+      'Topic bị xóa partition nên consumer không tìm thấy offset'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Poison pill (record độc) chặn partition do deserialization error + retry vô hạn.**
+ 
+### Vì sao đúng
+- Kafka xử lý tuần tự trong partition. Một record lỗi vĩnh viễn (JSON sai schema, Avro schema mismatch) khiến deserializer ném exception.
+- Nếu cấu hình {{DefaultErrorHandler}} với retry không giới hạn (hoặc {{BackOff}} không có maxAttempts), consumer sẽ retry mãi record đó, không bao giờ commit offset, không poll record tiếp theo -> lag tăng, {{records-consumed-rate}} = 0.
+- Log {{poll}} đều đặn vì consumer vẫn gọi poll nhưng không xử lý được record nào.
+- Fix: cấu hình retry giới hạn (ví dụ {{maxAttempts=3}}) + {{DeadLetterPublishingRecoverer}} đẩy record lỗi sang DLT, commit offset và đi tiếp. Dùng {{ErrorHandlingDeserializer}} để lỗi deserialize không crash listener.
+ 
+### Vì sao các phương án khác sai
+- **Broker leader election**: thường mất vài giây, consumer reconnect và tiếp tục; không gây lag 500k ổn định 30 phút.
+- **Network gãy gọn**: consumer sẽ log error disconnect, rebalance liên tục, không chỉ lag tăng yên lặng.
+- **Topic bị xóa partition**: không thể xóa partition trong Kafka; chỉ có thể tăng. Nếu partition giảm do replication factor thì consumer sẽ rebalance, không gây stuck yên lặng.
+ 
+> Senior tip: Cảnh báo khi {{consumer-lag}} > ngưỡng (ví dụ 10k) và {{records-consumed-rate}} = 0. DLT cần có chủ: dashboard đếm, alert, và tool replay sau khi fix bug deserialize.`
+  },
+  {
+    id: 'qz-scenario-044',
+    topic: 'scenario',
+    multi: true,
+    q: 'Sau khi deploy version mới, pod Spring Boot bị OOMKilled (exit 137) sau 20 phút chạy, heap dump không tạo được. Memory limit 2Gi, {{-Xmx2g}}. Những nguyên nhân/biện pháp nào đúng? (Chọn 2)',
+    options: [
+      'Heap được phép dùng 2Gi chạm limit container, cộng thêm metaspace, thread stack (~1MB/thread), code cache, direct buffer, GC structure làm RSS vượt limit; cần đặt {{-XX:MaxRAMPercentage=75}} (heap ~1.5Gi) và bật Native Memory Tracking',
+      'Memory leak trong heap, cần tăng {{-Xmx}} lên 4Gi',
+      'GC pause quá lâu làm Kubernetes liveness probe fail, pod bị kill; cần tăng liveness timeout',
+      'Direct buffer của Netty không giới hạn, đặt {{-XX:MaxDirectMemorySize=512m}} và dùng pooled allocator'
+    ],
+    answer: [0, 3],
+    explain: `**Đáp án đúng: Tổng RSS (heap + off-heap) vượt container limit; cần giảm heap % và giới hạn direct memory.**
+ 
+### Vì sao đúng
+- Container limit = 2Gi giới hạn **toàn bộ RSS** (Resident Set Size) của process, không chỉ heap. JVM dùng: heap ({{-Xmx}}), metaspace (class metadata), thread stack (~1MB x số thread, 200 thread = 200MB), code cache (JIT), direct buffer (Netty/NIO), GC internal structures.
+- {{-Xmx2g}} = cho phép heap dùng tới 2Gi, cộng off-heap thường 300-800MB -> RSS > 2Gi -> kernel OOM killer kill process (SIGKILL, exit 137). JVM không kịp ghi log hay heap dump.
+- Sửa: {{-XX:MaxRAMPercentage=75}} (JVM tự tính theo cgroup limit) hoặc {{-Xmx1536m}}; {{-XX:MaxDirectMemorySize=512m}}; bật NMT {{-XX:NativeMemoryTracking=summary}} để {{jcmd <pid> VM.native_memory}} xem chi tiết off-heap.
+ 
+### Vì sao các phương án khác sai
+- **Memory leak heap, tăng Xmx**: nếu leak thì heap dump hoặc OOME trong log sẽ xuất hiện; OOMKilled = bị kill từ bên ngoài, không phải JVM ném OOME. Tăng heap làm RSS lớn hơn -> kill nhanh hơn.
+- **GC pause làm liveness fail**: liveness fail = SIGTERM (exit 143), không phải OOMKilled (137). GC pause có thể gây latency nhưng không kill process.
+ 
+> Senior tip: Đặt {{memory request = limit}} cho Java pod (Guaranteed QoS) tránh evict. Cảnh báo {{container_memory_working_set_bytes > 90% limit}} trong 10 phút -> scale hoặc investigate trước khi OOMKilled.`
+  },
+  {
+    id: 'qz-scenario-045',
+    topic: 'scenario',
+    q: 'Cache sản phẩm dùng Redis TTL 5 phút. Một sản phẩm hot bị update giá, ngay sau đó 10.000 request/giây đọc sản phẩm này. Cache miss -> 10.000 request cùng lúc đánh vào DB (cache stampede). Cách giảm thiệt hại hiệu quả nhất?',
+    options: [
+      'Tăng TTL lên 1 giờ để giảm cache miss',
+      'Dùng distributed lock (Redis SET NX) khi cache miss: chỉ 1 request nạp DB, các request khác chờ lock rồi đọc cache; lock có TTL ngắn (ví dụ 5s) để tránh deadlock',
+      'Tắt cache cho sản phẩm hot này, đọc thẳng DB',
+      'Tăng connection pool DB lên 500 để chịu được 10k request'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Dùng distributed lock (SET NX) khi cache miss để chỉ 1 request nạp DB, các request khác chờ rồi đọc cache.**
+ 
+### Vì sao đúng
+- **Cache stampede**: key hot hết hạn -> hàng nghìn request cùng miss -> cùng gọi DB -> DB quá tải, thậm chí sập.
+- **Single-flight / Request coalescing**: khi cache miss, request đầu tiên {{SET key:lock NX EX 5}} thành công, nạp DB, set cache, xoá lock. Các request khác thấy lock tồn tại -> chờ (sleep 10-50ms) -> retry đọc cache -> hit.
+- Lock TTL ngắn (5-10s) đảm bảo nếu request nạp DB crash, lock tự hết hạn, request khác không chờ mãi.
+- Pattern này gọi là "singleflight" hoặc "request coalescing", thư viện Go {{singleflight}}, Java có thể tự implement hoặc dùng Redis Lua script atomic.
+ 
+### Vì sao các phương án khác sai
+- **Tăng TTL 1 giờ**: chỉ giảm tần suất stampede, không xóa bỏ. Key vẫn sẽ hết hạn lúc nào đó và stampede xảy ra. Càng TTL dài càng dễ dữ liệu cũ.
+- **Tắt cache cho sản phẩm hot**: DB chịu 10k QPS đọc, khả năng cao sập ngay. Cache stampede là vấn đề *khi* miss, không phải cache sai.
+- **Tăng pool DB 500**: connection pool không xử lý được 10k QPS đồng thời; DB vẫn quá tải CPU/I/O.
+ 
+> Senior tip: Kết hợp thêm **probabilistic early expiration** (random jitter trên TTL, ví dụ TTL = 300s + random(0-60s)) để key không hết hạn cùng lúc. Với key cực hot, có thể dùng **cache warming** (job nạp trước khi TTL gần hết) hoặc **stale-while-revalidate** (trả cache cũ trong khi nạp mới nền).`
+  },
+  {
+    id: 'qz-scenario-046',
+    topic: 'scenario',
+    multi: true,
+    q: 'Service A gọi service B qua REST. B chậm (p99 10s) do sự cố downstream. A cấu hình retry 3 lần, timeout 5s. Kết quả: A cạn thread pool, toàn bộ A ngừng phục vụ request khác. Những biện pháp nào bảo vệ A? (Chọn 2)',
+    options: [
+      'Circuit breaker: sau ngưỡng lỗi (ví dụ 50% trong 10s) mở mạch, fail fast trong khoảng thời gian chờ, không gọi B nữa',
+      'Tăng thread pool A lên 1000 để chứa thêm request chờ B',
+      'Bulkhead: tách thread pool/connection pool riêng cho việc gọi B, lỗi B chỉ cạn pool đó, không ảnh hưởng luồng khác của A',
+      'Tăng timeout lên 30s để B kịp trả lời, giảm retry'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: Circuit breaker để fail fast khi B lỗi; Bulkhead để cô lập tài nguyên gọi B.**
+ 
+### Vì sao đúng
+- **Vấn đề cascading failure**: B chậm -> A retry 3 lần x 5s = 15s giữ thread cho 1 request. 100 request cùng lúc = 100 thread bận 15s -> pool cạn -> request khác (không liên quan B) cũng thất bại.
+- **Circuit breaker**: theo dõi tỷ lệ lỗi/timeout. Mở mạch (OPEN) khi vượt ngưỡng -> fail fast ngay lập tức (trả lỗi degradable) thay vì chờ timeout. Half-open sau một khoảng thử lại B. Thư viện: Resilience4j, Spring Retry + CircuitBreaker.
+- **Bulkhead**: cấp pool thread/connection **riêng** cho client gọi B (ví dụ 20 thread). B chậm chỉ làm đầy pool này; các luồng khác của A (gọi C, đọc cache, v.v.) dùng pool khác -> không bị ảnh hưởng. Resilience4j {{Bulkhead}} hoặc cấu hình {{WebClient}}/{{RestClient}} riêng pool.
+ 
+### Vì sao các phương án khác sai
+- **Tăng thread pool 1000**: chỉ trì hoãn cạn, tốn RAM/CPU, context switch chậm; B vẫn chậm, retry vẫn giữ thread lâu. Không sửa root cause.
+- **Tăng timeout 30s**: giữ thread lâu hơn (3 retry x 30s = 90s/request), pool cạn nhanh hơn, request khác thất bại nhanh hơn.
+ 
+> Senior tip: Kết hợp cả ba: timeout hợp lý (1-2s), circuit breaker, bulkhead. Với Spring Cloud, dùng {{Resilience4j}} annotation {{@CircuitBreaker}}, {{@Bulkhead}}, {{@Retry}} trên method client. Metric: circuit breaker state, bulkhead available permits.`
+  },
+  {
+    id: 'qz-scenario-047',
+    topic: 'scenario',
+    q: 'Retry storm: client gọi API, lỗi 500, retry 3 lần ngay lập tức. 100 client cùng làm vậy -> API nhận gấp 4 lần tải, lỗi nhiều hơn, client retry nhiều hơn -> vòng luẩn quẩn. Cách thiết kế retry đúng?',
+    options: [
+      'Retry ngay lập tức không giới hạn cho tới khi thành công',
+      'Exponential backoff + jitter: chờ 1s, 2s, 4s... + random(0-500ms); giới hạn max retry (3-5); chỉ retry lỗi tạm thời (429, 5xx), không retry 4xx; có retry budget (tổng retry <= 10% traffic)',
+      'Retry 10 lần với fixed delay 100ms',
+      'Không retry, trả lỗi ngay để client tự xử lý'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Exponential backoff + jitter, giới hạn retry, chỉ retry lỗi tạm thời, có retry budget.**
+ 
+### Vì sao đúng
+- **Retry storm**: nhiều client retry đồng thời -> tải dồn lên service đang yếu -> service sập tiếp -> retry nhiều hơn.
+- **Exponential backoff**: thời gian chờ tăng gấp đôi mỗi lần (1s, 2s, 4s...) -> phân tán retry theo thời gian, cho service hồi phục.
+- **Jitter**: thêm ngẫu nhiên nhỏ (0-500ms) -> tránh thundering herd (hàng nghìn client retry cùng lúc sau đúng 1s).
+- **Chỉ retry lỗi tạm thời**: 429 (rate limit), 5xx (server error). Không retry 4xx (bad request, unauthorized) vì retry không giải quyết được.
+- **Retry budget**: giới hạn tổng số retry trong hệ thống (ví dụ <= 10% request) để không làm đầy queue/service khi đang quá tải.
+- Thư viện: Resilience4j {{RetryConfig}}, Spring Retry {{@Retryable}} với {{BackOffPolicy}}.
+ 
+### Vì sao các phương án khác sai
+- **Retry ngay vô hạn**: chính là cấu trúc retry storm, dồn tải, không bao giờ hồi phục.
+- **Fixed delay 100ms x 10**: không backoff, vẫn thundering herd; 10 lần retry nhân 10 tải.
+- **Không retry**: mất khả năng tự hồi phục từ lỗi tạm thời (network blip, GC pause); client phải tự implement retry -> lặp lại sai lầm.
+ 
+> Senior tip: Kiểm tra retry ẩn: HTTP client, AWS SDK, DB driver, service mesh (Istio) đều có thể tự retry. Nhiều storm do hai lớp retry cùng bật mà không ai biết. Tắt retry ở tầng dưới (driver, mesh), chỉ retry ở tầng ứng dụng với config rõ ràng.`
+  },
+  {
+    id: 'qz-scenario-048',
+    topic: 'scenario',
+    multi: true,
+    q: 'Database primary failover sang standby (DNS endpoint cập nhật trong 30s). Ứng dụng Java (HikariCP, PostgreSQL JDBC) vẫn báo lỗi kết nối hoặc treo thêm 10-15 phút mới tự hết. Những cấu hình nào giúp giảm thời gian này? (Chọn 2)',
+    options: [
+      'Đặt {{socketTimeout}} (JDBC) và {{tcpKeepAlive=true}} để connection cũ phát hiện chết sớm; đặt {{maxLifetime}} HikariCP ngắn hơn hạ tầng (ví dụ 30 phút); đặt {{keepaliveTime}} HikariCP kiểm tra connection rảnh',
+      'Tăng {{connectionTimeout}} HikariCP lên 60s để chờ DNS cập nhật',
+      'Tắt DNS cache của JVM ({{networkaddress.cache.ttl=0}}) hoặc đặt thấp (30-60s) để IP mới được resolve ngay',
+      'Chuyển sang connection pool khác (ví dụ DBCP2) hỗ trợ failover tốt hơn'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: Cấu hình socket timeout/keepalive cho JDBC + maxLifetime/keepaliveTime Hikari + TTL DNS thấp.**
+ 
+### Vì sao đúng
+- Khi primary fail, connection TCP trong pool vẫn trỏ IP cũ. Không có FIN/RST -> connection "treo" cho tới khi TCP retransmission timeout của OS (Linux mặc định ~15 phút).
+- **socketTimeout** (JDBC): query không chờ vô hạn, ném exception sau timeout -> pool loại connection xấu.
+- **tcpKeepAlive**: bật TCP keepalive probe, phát hiện peer chết nhanh hơn (phút thay vì 15 phút).
+- **HikariCP maxLifetime** (ví dụ 30 phút): connection cũ bị xoá định kỳ, buộc tạo connection mới theo IP mới.
+- **HikariCP keepaliveTime**: test connection rảnh (SELECT 1) trước khi cho mượn, loại connection chết.
+- **JVM DNS cache TTL** ({{networkaddress.cache.ttl}}): mặc định cache dương (không bao giờ hết hạn) khi security manager bật, hoặc cache lâu. Đặt 30-60s để resolve IP mới sau failover.
+ 
+### Vì sao các phương án khác sai
+- **Tăng connectionTimeout 60s**: chỉ làm client chờ lâu hơn khi lấy connection; không giải quyết connection cũ treo trong pool.
+- **Chuyển pool khác**: HikariCP đã hỗ trợ đầy đủ; vấn đề nằm ở cấu hình timeout, không phải pool.
+ 
+> Senior tip: Game day: chủ động failover ở staging, đo thời gian từ failover đến error rate = 0. Con số này mới là RTO thật. Cảnh báo {{hikaricp.connections.pending}} tăng bất thường.`
+  },
+  {
+    id: 'qz-scenario-049',
+    topic: 'scenario',
+    q: 'Topic Kafka {{payments}} 12 partition, consumer group 12 pod, lag tăng lúc cao điểm. Scale lên 20 pod nhưng lag không giảm. Team cấu hình {{max.poll.records=500}}, {{max.poll.interval.ms=300000}}. Mỗi record xử lý 1 giây. Nguyên nhân và cách xử lý?',
+    options: [
+      'Kafka cần vài giờ để cân bằng lại, cứ chờ lag sẽ giảm',
+      'Trong một consumer group, mỗi partition chỉ giao cho tối đa 1 consumer; 12 partition = tối đa 12 consumer làm việc; 8 pod thừa ngồi không. Cần tăng partition (lưu ý key distribution) hoặc tăng tốc xử lý (batch, parallel consumer)',
+      'Broker giới hạn 12 consumer/topic, cần tăng config broker',
+      'Consumer group bị rebalance liên tục do heartbeat timeout, cần tăng session.timeout.ms'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Số partition là trần độ song song trong consumer group; 12 partition = max 12 consumer hoạt động.**
+ 
+### Vì sao đúng
+- Kafka giao mỗi partition cho đúng 1 consumer trong group để giữ thứ tự. 12 partition -> tối đa 12 consumer xử lý song song. 8 pod scale thêm idle (chỉ làm standby khi pod khác chết).
+- **max.poll.records=500**, mỗi record 1s -> 500s xử lý một batch > {{max.poll.interval.ms=300000}} (5 phút) -> consumer bị coi là chết, rebalance, lag tăng thêm. Cần giảm {{max.poll.records}} (ví dụ 50) hoặc tăng {{max.poll.interval.ms}}.
+- Hướng xử lý lag:
+  - Tăng partition (ví dụ 24, 48). Lưu ý: key mapping {{hash(key) % partitions}} thay đổi -> cùng key có thể đổi partition, thứ tự tạm bị đảo.
+  - Tối ưu xử lý: batch write DB, async I/O, hoặc dùng Confluent Parallel Consumer (xử lý song song trong partition nhưng giữ thứ tự theo key).
+ 
+### Vì sao các phương án khác sai
+- **Chờ vài giờ**: rebalance xong trong giây; partition không tự tăng.
+- **Broker giới hạn 12 consumer**: không có giới hạn này; giới hạn từ partition.
+- **Rebalance do heartbeat**: heartbeat chạy thread riêng; stuck processing gây ra bởi max.poll.interval.ms, không phải session.timeout.ms.
+ 
+> Senior tip: Tạo topic với partition ước lượng theo peak throughput / throughput một consumer, cộng dư 2-3x. Tăng partition dễ, giảm thì không làm được.`
+  },
+  {
+    id: 'qz-scenario-050',
+    topic: 'scenario',
+    multi: true,
+    q: 'Sự cố production: 20h thứ Sáu, tỷ lệ thanh toán thành công giảm từ 99% xuống 60%. 9 kỹ sư nhảy vào chat, mỗi người thử một giả thuyết, có người chuẩn bị hotfix. Vai trò senior, bạn làm gì? (Chọn 2)',
+    options: [
+      'Chỉ định một Incident Commander điều phối, tách người phụ trách giao tiếp (cập nhật stakeholder 30 phút/lần) khỏi nhóm điều tra',
+      'Chờ tìm ra root cause rồi mới rollback, tránh rollback nhầm',
+      'Cho mỗi người tự deploy hotfix của mình song song cho nhanh',
+      'Ưu tiên mitigation trước: kiểm tra thay đổi gần nhất (deploy, config, feature flag) và rollback/tắt flag nếu liên quan, sau đó mới điều tra root cause'
+    ],
+    answer: [0, 3],
+    explain: `**Đáp án đúng: Lập Incident Commander + tách vai trò giao tiếp; ưu tiên mitigation (rollback/tắt flag) trước khi tìm root cause.**
+ 
+### Vì sao đúng
+- **Incident Commander (IC)**: 9 người tự do điều tra -> thay đổi chồng chéo, không ai biết gì đã đổi. IC phân việc (ai xem log thanh toán, ai kiểm tra đối tác, ai xem thay đổi gần đây), quyết định hành động, ghi timeline. Người giao tiếp (Communications Lead) chắn câu hỏi từ management, để nhóm kỹ thuật tập trung.
+- **Mitigate trước**: Mỗi phút sự cố = mất doanh thu. Phần lớn sự cố từ thay đổi gần đây; rollback/tắt feature flag rẻ, đảo ngược được, thường khôi phục dịch vụ. Root cause tìm sau trên môi trường ổn định.
+- **Runbook**: Team nên có runbook sự cố định sẵn: severity levels, tiêu chí rollback (ví dụ success rate < 95% trong 5p sau deploy -> rollback ngay không cần họp).
+ 
+### Vì sao các phương án khác sai
+- **Chờ root cause mới rollback**: kéo dài ảnh hưởng; rollback nhầm chi phí thấp, chờ chi phí cao.
+- **Mỗi người tự deploy hotfix**: nhiều thay đổi cùng lúc làm tình huống khó hiểu, có thể gây sự cố thứ 2, không biết fix nào có tác dụng.
+ 
+> Senior tip: Postmortem phải blameless (không đổ lỗi cá nhân). Câu hỏi đúng: "Hệ thống nào cho phép lỗi lọt qua?" - cải tiến quy trình, automation, observability.`
+  },
+  {
+    id: 'qz-scenario-051',
+    topic: 'scenario',
+    q: 'Sau deploy, team scale app từ 5 pod lên 50 pod để chịu tải. Mỗi pod dùng HikariCP {{maximumPoolSize=20}}. PostgreSQL báo lỗi {{FATAL: sorry, too many clients already}} và app không kết nối được. Nguyên nhân và cách xử lý đúng đầu tiên?',
+    options: [
+      'Tăng {{max_connections}} của PostgreSQL lên 2000 và restart DB',
+      'Mỗi pod cần một pool lớn để xử lý song song, nên giữ nguyên 20 và chỉ thêm RAM cho DB',
+      'Tổng connection xấp xỉ 50 x 20 = 1000 vượt {{max_connections}} của PostgreSQL (mặc định 100); cần dùng connection pool trung gian (PgBouncer) hoặc giảm pool mỗi pod, không để mỗi pod tự mở hàng chục connection',
+      'Lỗi do DNS, cần restart connection pool của mỗi pod'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: Tổng 1000 connection vượt max_connections; dùng PgBouncer hoặc giảm pool mỗi pod.**
+
+### Vì sao đúng
+- PostgreSQL mỗi connection là một process; {{max_connections}} mặc định là 100. 50 pod x 20 = 1000 >> 100, nên connection mới bị từ chối ngay với thông báo too many clients.
+- PgBouncer giữ ít connection trực tiếp tới PostgreSQL và multiplex hàng ngàn connection từ app qua pool nhỏ hơn. Hoặc giảm {{maximumPoolSize}} mỗi pod (ví dụ 5–8) và theo dõi {{pg_stat_activity}}.
+
+### Vì sao các phương án khác sai
+- **Tăng {{max_connections}} lên 2000**: mỗi connection PostgreSQL tốn RAM và context switch; 2000 connection đồng thời làm DB quá tải, chỉ dời nút thắt sang CPU/I/O, không phải cách xử lý bền vững.
+- **Giữ 20 mỗi pod**: tổng vẫn vượt hạn, lỗi tiếp tục.
+- **DNS**: thông báo lỗi rõ ràng là too many clients, không phải DNS.
+
+> Senior tip: quy tắc ngón tay: tổng {{maximumPoolSize}} của tất cả app pod không được vượt quá 70–80% {{max_connections}} của PostgreSQL (trừ khi dùng PgBouncer). Cảnh báo metric {{pg_stat_activity}} và {{hikaricp.connections.pending}}.`
+  },
+  {
+    id: 'qz-scenario-052',
+    topic: 'scenario',
+    multi: true,
+    q: 'Sau khi deploy tính năng mới hiển thị danh sách đơn hàng kèm tên khách hàng và các mặt hàng, API chậm đột ngột: với 20 đơn, Hibernate sinh khoảng 40 câu SQL. Những phát biểu nào đúng về cách xử lý? (Chọn 2)',
+    options: [
+      'Bật {{show_sql=true}} (hoặc p6spy) để xem SQL thực tế, xác nhận hiện tượng N+1 (một câu query danh sách, sau đó một câu query cho mỗi đơn/mặt hàng)',
+      'Dùng {{@EntityGraph}} hoặc {{JOIN FETCH}} để tải Order kèm Customer và OrderItems trong một câu SQL, thay cho lazy load từng cái',
+      'Tăng {{maximumPoolSize}} của HikariCP sẽ khử N+1 vì pool lớn hơn',
+      'Đánh dấu {{@Transactional(readOnly = true)}} là N+1 tự biến mất'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: Xác nhận N+1 qua SQL log, rồi sửa bằng @EntityGraph/JOIN FETCH.**
+
+### Vì sao đúng
+- **N+1 là gì?** Một câu query lấy danh sách (1), sau đó mỗi dòng trong danh sách triggers thêm một câu query để tải dữ liệu liên kết (N). Với 20 đơn x 2 liên kết ≈ 40 câu SQL, đúng biểu hiện N+1.
+- **Bật SQL log**: xem SQL thực tế ngay trên log để xác nhận, chứ không phải đoán.
+- **@EntityGraph / JOIN FETCH**: Hibernate gom dữ liệu liên kết vào một câu SQL JOIN, chỉ chạm DB một lần.
+
+### Vì sao các phương án khác sai
+- **Tăng pool**: pool lớn hơn không làm giảm số câu SQL; N+1 vẫn xảy ra, chỉ chậm hơi ít hơn do không chờ kết nối pool.
+- **@Transactional(readOnly=true)**: giúp Hibernate tối ưu một chút (không flush dirty checking), nhưng không gom các câu SQL liên kết nên N+1 vẫn còn.
+
+> Senior tip: N+1 thường xuất hiện sau khi thêm field mới hoặc thay đổi fetch type. Code review nên kiểm tra các vòng lặp gọi getter đối tượng liên kết/collection. Lưu ý @EntityGraph với collection lớn có thể sinh hàng trùng (Cartesian product), cần cân nhắc {{@BatchFetchSize}} làm lựa chỉnh.`
+  },
+  {
+    id: 'qz-scenario-053',
+    topic: 'scenario',
+    q: 'Cache giỏ hàng dùng Redis, một giỏ hàng hot có khoảng 1 triệu mục. Code gọi {{DEL cart:123}} để xóa giỏ sau khi thanh toán. Redis đơn luồng bị chặn khoảng 10 giây, tất cả lệnh cache khác (GET/SET) cũng chờ theo. Cách xử lý đúng?',
+    options: [
+      'Gọi {{DEL}} nhiều lần với timeout nhỏ hơn',
+      'Dùng {{UNLINK cart:123}} (xóa non-blocking trong luồng nền) hoặc xóa dần bằng pipeline (HSCAN/HDEL theo lô nhỏ), không gọi DEL trực tiếp trên key lớn trong luồng chính',
+      'Tăng số luồng Redis để xử lý song song',
+      'Tắt persistence (RDB/AOF) để DEL nhanh hơn'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Dùng UNLINK hoặc xóa dần lô nhỏ, không DEL key lớn trực tiếp trong luồng chính.**
+
+### Vì sao đúng
+- Redis xử lý lần lượt một lệnh trong luồng chính. {{DEL}} trên key có triệu thành viên là O(N), chặn luồng chính đến khi xong; mọi client khác bị chờ (head-of-line blocking).
+- {{UNLINK}} chỉ xóa metadata ngay và trả về, việc giải phóng bộ nhớ chạy trong nền. Key lớn cũng nên xóa lô nhỏ qua pipeline để không gây spike latency.
+
+### Vì sao các phương án khác sai
+- **DEL nhiều lần**: vẫn là lệnh chặn, không giải quyết vấn đề gốc.
+- **Tăng số luồng Redis**: Redis vẫn đơn luồng cho lệnh dữ liệu (IO thread chỉ xử lý mạng), không giúp DEL key lớn nhanh hơn.
+- **Tắt persistence**: không làm giảm chi phí O(N) của lệnh DEL.
+
+> Senior tip: theo dõi metric {{blocked_clients}} và latency p99 của Redis; key lớn (hàng trăm nghìn thành viên trở lên) không nên thao tác toàn bộ trong một lệnh. Dùng {{SCAN}} thay vì {{KEYS}}, và chia nhỏ giỏ hàng nếu giỏ có thể lớn.`
+  },
+  {
+    id: 'qz-scenario-054',
+    topic: 'scenario',
+    q: 'Producer Kafka cần gửi thông báo kèm tệp PDF nhị sinh khoảng 2 MB. Broker báo lỗi {{MessageTooLargeException}} và message không được ghi. Giới hạn mặc định của Kafka là 1 MB cho mỗi bản ghi. Cách xử lý đúng?',
+    options: [
+      'Retry gửi liên tục cho tới khi thành công',
+      'Tăng {{message.max.bytes}} trên broker và {{max.request.size}} trên producer (hoặc nén/chia tệp, gửi metadata qua Kafka và tải nội dung lên object storage), không để message lớn lấn át broker',
+      'Tắt compression.type để message nhỏ hơn',
+      'Gửi message qua topic khác có phân vùng nhiều hơn'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Tăng giới hạn kích thước message cả hai bên, hoặc dùng object storage cho payload lớn.**
+
+### Vì sao đúng
+- Kafka không dùng cho payload lớn; message lớn lấn aufs broker, phân vùng và consumer. Nếu payload dưới vài MB: tăng {{message.max.bytes}} (broker) và {{max.request.size}} (producer) đồng bộ, bật nén.
+- Cách tốt hơn đối với tệp lớn: tải tệp lên S3/object storage, gửi message chỉ chứa URL và metadata qua Kafka (thin message, fat payload outside).
+
+### Vì sao các phương án khác sai
+- **Retry liên tục**: message lớn vẫn bị từ chối, retry dồn tải lên broker.
+- **Tắt compression**: compression làm message nhỏ hơn, không phải lớn hơn.
+- **Topic phân vùng nhiều hơn**: giới hạn là kích thước mỗi bản ghi, không liên quan số phân vùng.
+
+> Senior tip: Best practice là Kafka mang sự kiện + URL, object storage mang nội dung. Giới hạn 1 MB có tác dụng phòng vệ, không nên mở rộng vô hạn vì một message lớn có thể treo một phân vùng trong nhiều giây.`
+  },
+  {
+    id: 'qz-scenario-055',
+    topic: 'scenario',
+    q: 'Sau deploy phiên bản mới, mỗi giờ ứng dụng bị treo 3–5 giây, mọi request chờ đồng thời. Log GC cho thấy Full GC stop-the-world kéo dài vài giây. Dump code tìm thấy đoạn gọi {{System.gc()}} trong tác vụ báo cáo định kỳ. Nguyên nhân và cách xử lý?',
+    options: [
+      'System.gc() chỉ là gợi ý, JVM thường bỏ qua nên không liên quan',
+      'System.gc() ép JVM thực hiện Full GC stop-the-world; cần xóa lệnh gọi này, để JVM tự quản lý GC (hoặc dùng {{-XX:+DisableExplicitGC}} nếu không kiểm soát được source)',
+      'Tăng heap lên gấp đôi để Full GC ít xảy ra hơn',
+      'Chuyển sang serial GC để Full GC nhanh hơn'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: System.gc() gây Full GC stop-the-world, hãy xóa hoặc tắt rõ ràng.**
+
+### Vì sao đúng
+- {{System.gc()}} là lời nhắc mạnh tới JVM chạy Full GC ngay; trong Full GC, các luồng ứng dụng bị tạm dừng cho đến khi xong -> spike latency. Nhiều instance gọi cùng lúc -> toàn bộ service treo.
+- Sửa: xóa lời gọi, để JVM tự kích hoạt GC dựa trên ngưỡng heap. Nếu không kiểm soát được source (thư viện bên thứ ba), khởi động JVM với {{-XX:+DisableExplicitGC}}.
+
+### Vì sao các phương án khác sai
+- **Gợi ý có thể bỏ qua**: đúng lý thuyết, nhưng JVM thường tuân thủ, và đây là nguyên nhân spike định kỳ kinh điển trong production.
+- **Tăng heap**: Full GC vẫn xảy ra khi System.gc() được gọi; heap lớn hơn thậm chí làm Full GC kéo dài hơn.
+- **Serial GC**: chỉ thích hợp heap nhỏ, không giải quyết việc ép Full GC stop-the-world.
+
+> Senior tip: Full GC định kỳ cùng lúc trên nhiều instance thường do System.gc() hoặc cron job/JMX gọi nó. Tìm bằng {{-Xlog:gc*safepoint}} hoặc JFR event {{jdk.GCPhasePause}}.`
+  },
+  {
+    id: 'qz-scenario-056',
+    topic: 'scenario',
+    multi: true,
+    q: 'Sau deploy, server log mở rộng làm ổ đĩa chứa log đầy 100%. Ứng dụng dùng Logback/Log4j2 ghi đồng bộ vào file, request bắt đầu treo ở dòng ghi log, không tạo được heap dump. Không ai xóa log cũ. Những biện pháp nào đúng? (Chọn 2)',
+    options: [
+      'Dùng asynchronous appender (Logback {{AsyncAppender}} / Log4j2 Async) để ghi log không chặn request, cùng quay log (rolling policy) và đặt cảnh báo dùng ổ đĩa',
+      'Tăng heap của JVM để ứng dụng chịu được nhiều log hơn',
+      'Tắt hoàn toàn ghi log trong production để không đầy ổ đĩa',
+      'Lưu log trên ổ đĩa riêng (hoặc gởi centralized logging), đặt retention (ví dụ 7–14 ngày) và alert khi dùng ổ > 85%'
+    ],
+    answer: [0, 3],
+    explain: `**Đáp án đúng: Ghi log không chặn request + quay log, ổ riêng, retention và alert.**
+
+### Vì sao đúng
+- Appender đồng bộ ghi vào file trực tiếp trong luồng xử lý request; ổ đầy -> hệ thống gọi ghi bị treo (I/O wait) -> toàn bộ request ảnh hưởng, thậm chí không tạo heap dump được.
+- Async appender đẩy ghi vào hàng đợi đệm, request tiếp tục xử lý. Rolling policy giữ file trong giới hạn, retention xoá cũ, alert phát hiện sớm trước khi ổ đầy.
+
+### Vì sao các phương án khác sai
+- **Tăng heap**: log ghi vào ổ đĩa, không phải heap; heap lớn hơn không ngăn ổ đầy.
+- **Tắt log**: mất khả năng điều tra sự cố; nên quản lý log chứ không phải tắt.
+
+> Senior tip: đặt ổ log riêng khỏi ổ hệ thống và ổ dữ liệu (tránh đầy ổ hệ làm hệ điều hành không khởi động). Kết hợp centralized logging (ELK/Loki) để xóa log local sau khi đã ship. Cảnh báo ổ đĩa > 85% và inode > 85%.`
+  },
+  {
+    id: 'qz-scenario-057',
+    topic: 'scenario',
+    q: 'Sau deploy code mới, bảng {{orders}} bị chậm: các session khác chờ lên đến 30 giây khi cập nhật cùng một đơn hàng. Tra cứu {{pg_locks}} cho thấy một session giữ row lock trên đơn hàng này hơn 10 phút mà không commit/rollback. Nguyên nhân và xử lý đúng đầu tiên?',
+    options: [
+      'Tăng {{max_connections}} để nhiều session hơn',
+      'Transaction quên commit/rollback (ví dụ kết nối lấy từ pool không được trả lại, hoặc code gọi dịch vụ bên ngoài bên trong transaction giữ khoá dòng). Xác định session bị treo qua {{pg_stat_activity}}/{{pg_locks}}, hoàn tác hoặc pg_terminate_backend nếu cần, rồi sửa code: transaction ngắn, không gọi I/O bên trong khoá',
+      'Chuyển isolation level sang SERIALIZABLE để khoá mạnh hơn',
+      'Restart PostgreSQL để giải phóng mọi khoá'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Transaction dài giữ row lock; tìm session qua pg_stat_activity/pg_locks, sửa code transaction ngắn, không gọi I/O bên trong khoá.**
+
+### Vì sao đúng
+- PostgreSQL dùng row-level lock cho UPDATE/DELETE; session khác cùng cập nhật dòng đó phải chờ đến khi session đầu commit/rollback.
+- Nếu code mở transaction, cập nhật đơn, rồi gọi API chậm bên ngoài hoặc quên đóng kết nối, khoá được giữ hàng mười phút -> hàng chờ lớn.
+- Xử lý: xác định PID qua {{pg_stat_activity}}, xem lý do (state = idle in transaction), pg_terminate_backend chỉ khi cần, rồi sửa root cause: transaction ngắn nhất có thể, không gọi dịch vụ bên ngoài khi đang nắm khoá DB.
+
+### Vì sao các phương án khác sai
+- **Tăng max_connections**: thêm session chờ không giúp, thậm chí làm nặng hơn.
+- **SERIALIZABLE**: khoá mạnh hơn, dễ deadlock hơn, không giải quyết transaction quên commit.
+- **Restart DB**: giải quyết tạm thời nhưng gây downtime, không sửa code, lỗi sẽ lặp lại.
+
+> Senior tip: đặt {{statement_timeout}} và {{idle_in_transaction_session_timeout}} để tự huỷ transaction chạy lâu và transaction nghỉ uốn, ngăn trường hợp này lặp lại. Cảnh báo session idle in transaction > 5 phút.`
+  },
+  {
+    id: 'qz-scenario-058',
+    topic: 'scenario',
+    q: 'Code dùng một {{HashMap}} static làm cache chia sẻ giữa tất cả request. Lúc cao điểm, nhiều thread cùng {{put}} vào HashMap đang gần đầy, CPU nhảy lên 100% và ứng dụng không phản hồi. Thread dump cho thấy nhiều thread kẹt trong vòng lặp trên phần tử của HashMap. Nguyên nhân và cách xử lý?',
+    options: [
+      'HashMap không an toàn với nhiều thread đồng thời ghi: khi resize (tham khuyết), các phần tử bị đính lại thành danh sách ngược và có thể tạo vòng lặp (infinite loop) trên cùng một bucket, thread kẹt mãi',
+      'Tăng heap vì HashMap quá lớn',
+      'Dùng {{Collections.synchronizedMap}} là đủ và hiệu quả nhất',
+      'HashMap chỉ đọc an toàn, ghi thì không sao vì mỗi request có bản sao'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: HashMap không thread-safe; resize cộng lúc ghi đồng thời có thể tạo vòng lặp danh sách, CPU 100%.**
+
+### Vì sao đúng
+- Khi nhiều thread cùng put gây resize, phần tử trong cùng bucket được thêm vào đầu danh sách liên kết; thay đổi cạnh tranh có thể khiến hai phần tử trỏ lẫn nhau (A.next = B, B.next = A). Lúc duyệt bucket đó -> vòng lặp vô hạn, CPU 100%, thread không thoát.
+- Sửa: dùng {{ConcurrentHashMap}} (chia khoá, không khóa toàn bảng) hoặc {{Collections.synchronizedMap}} nếu ít ghi; không dùng static HashMap làm cache chia sẻ mà không có giới hạn kích thước.
+
+### Vì sao các phương án khác sai
+- **Tăng heap**: không liên quan, vấn đề là vòng lặp không thoát, không phải thiếu bộ nhớ.
+- **synchronizedMap**: an toàn về dữ liệu nhưng khóa toàn bảng trên mỗi thao tác -> throughput thấp lúc cao điểm; ConcurrentHashMap thường phù hợp hơn.
+- **HashMap chỉ đọc an toàn**: sai, thậm chí đọc khi có thread đang ghi cũng có thể thấy trạng thái hỏng (vô hạn lặp).
+
+> Senior tip: cache dùng chung nên có chính sách xoá (TTL, kích thước tối đa, ví dụ Caffeine) và luôn chọn cấu trúc thread-safe cho trạng thái chia sẻ. Không bao giờ dùng HashMap/ArrayList static làm cache trong ứng dụng đa luồng.`
+  },
+  {
+    id: 'qz-scenario-059',
+    topic: 'scenario',
+    q: 'Service mới dùng {{@Async}} cho việc gửi email và sinh báo cáo. Executor mặc định của Spring tạo một luồng mới cho mỗi tác vụ và không giới hạn số luồng. Lúc cao điểm có hàng nghìn tác vụ đồng thời, ứng dụng tạo hàng nghìn luồng, heap và CPU spiking, pod bị OOMKilled. Cách xử lý đúng?',
+    options: [
+      'Tăng memory limit của pod lên 8Gi để chứa nhiều luồng hơn',
+      'Tắt @Async, chạy tất cả tác vụ tuần tự trên luồng chính',
+      'Cấu hình {{TaskExecutor}} riêng (ví dụ {{ThreadPoolTaskExecutor}}) với pool size và queueCapacity giới hạn, áp dụng backpressure (các tác vụ vượt quá được chờ hoặc từ chối), không để executor tạo luồng không giới hạn',
+      'Mỗi tác vụ @Async tự tạo {{new Thread()}} để isolates lỗi'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: TaskExecutor riêng có giới hạn pool và hàng chờ, áp dụng backpressure.**
+
+### Vì sao đúng
+- @Async mặc định có thể tạo luồng mới cho mỗi tác vụ (không giới hạn). Hàng nghìn tác vụ -> hàng nghìn luồng, mỗi luồng khoảng 1 MB stack -> heap/RAM spiking, GC chật, pod OOMKilled.
+- Sửa: định nghĩa {{ThreadPoolTaskExecutor}} bean với {{corePoolSize}}, {{maxPoolSize}}, {{queueCapacity}}, chính sách khi đầy (ví dụ {{CallerRunsPolicy}} áp lực ngược về caller), dùng {{@Async(\"myExecutor\")}}.
+
+### Vì sao các phương án khác sai
+- **Tăng memory**: chỉ trì hoãn OOM, hàng nghìn luồng vẫn gây context switch nặng, GC pressure, tăng thời gian stop-the-world.
+- **Chạy tuần tự**: throughput xuống gần không, không chấp nhận được.
+- **new Thread() mỗi tác vụ**: sai tương tự, nặng hơn và khó quản lý.
+
+> Senior tip: bất kỳ tác vụ nền nào (gửi email, báo cáo, gọi đối tác) cũng phải đi qua executor có giới hạn, kèm hàng đợi và chính sách khi đầy. Theo dõi metric số luồng của JVM và thread của container.`
+  },
+  {
+    id: 'qz-scenario-060',
+    topic: 'scenario',
+    q: 'Sau deploy tính năng lưu toàn bộ lịch sử sự kiện vào một {{ArrayList}} static trong bộ nhớ để tra cứu nhanh, danh sách không bao giờ bị xoá. Sau vài ngày, heap tăng dần, GC lại liên tục, cuối cùng ném {{java.lang.OutOfMemoryError: Java heap space}} (JVM vẫn ghi log, có heap dump). Nguyên nhân và cách xử lý?',
+    options: [
+      'Tăng {{-Xmx}} lên gấp đôi là giải pháp triệt tiêu',
+      'ArrayList static lưu liên tục mà không giới hạn -> memory leak logic; cần giới hạn kích thước (ví dụ Caffeine cache với TTL/kích thước tối đa, hoặc Queue cố định), theo dõi heap, không nên lưu lịch sử vĩnh viễn trong JVM heap',
+      'Chuyển sang {{LinkedList}} tiêu thụ ít bộ nhớ hơn',
+      'Gọi {{System.gc()}} định kỳ để dọn danh sách'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: ArrayList static không giới hạn là memory leak logic; giới hạn kích thước/TTL, không lưu vĩnh viễn trong heap.**
+
+### Vì sao đúng
+- static ArrayList là GC root, phần tử thêm vào không bao giờ bị thu hồi. Mỗi sự kiện mới -> danh sách dài hơn -> heap chiếm dụng tăng đơn điệu -> GC chạy nhiều nhưng không thu hồi được -> cuối cùng OOM heap space. Đây là lỗi logic tích luỹ, chỉ phát hiện sau vài ngày chạy.
+- Sửa: dùng cấu trúc có giới hạn (Caffeine cache với maximumSize/expireAfterWrite, hoặc ring buffer/Queue cố định), hoặc đẩy lịch sử vào database/file, không giữ vĩnh viễn trong JVM heap.
+
+### Vì sao các phương án khác sai
+- **Tăng {{-Xmx}}**: chỉ trì hoãn OOM vài ngày, không sửa gốc, và heap lớn hơn làm GC lâu hơn.
+- **LinkedList**: mỗi node là đối tượng riêng, bộ nhớ thậm chí nhiều hơn ArrayList; vấn đề là không xoá dữ liệu, không phải kiểu danh sách.
+- **System.gc() định kỳ**: không thu hồi được vì các phần tử vẫn được static field tham chiếu; gây Full GC stop-the-world thêm nặng.
+
+> Senior tip: bất kỳ container static (list, map, queue) tích luỹ dữ liệu theo thời gian đều là suspected memory leak. Quy tắc: mỗi cache cần chính sách eviction (xoá) — TTL, kích thước tối đa, hoặc lưu ngoài heap. Heap dump mở Eclipse MAT xem dominator tree sẽ xác định ngay nguyên nhân.`
   }
 );
