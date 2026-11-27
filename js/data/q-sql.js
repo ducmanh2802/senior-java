@@ -9760,4 +9760,416 @@ Ví điện tử 2 tỷ giao dịch. Query account_id thiếu created_at 12 giâ
   ],
   tags: ['partitioning', 'monthly partition', 'DETACH PARTITION CONCURRENTLY', 'unique index', 'Merge Append', 'partition pruning', 'migration']
 },
+{
+  id: 'sql-122',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Báo cáo doanh thu cần so sánh doanh thu tháng này với tháng trước, tháng cùng năm ngoái, và tính phần trăm thay đổi; cùng lúc cần top 10% khách theo doanh thu (NTILE) và doanh thu tích lũy theo ngày (SUM OVER với frame RANGE INTERVAL). Viết một truy vấn dùng nhiều window function, giải thích frame clause RANGE vs ROWS khi ORDER BY là DATE, và tại sao LAG/LEAD an toàn hơn subquery tương quan.',
+a: `**Tóm tắt:** Một truy vấn có thể dùng LAG/LEAD cho so sánh chu kỳ, NTILE(10) cho phân vị, SUM OVER với frame RANGE INTERVAL '1 day' PRECEDING cho running total theo ngày, và FIRST_VALUE/LAST_VALUE cho min/max trong cửa sổ. Frame clause RANGE với ORDER BY DATE tính theo giá trị (gộp cùng ngày), ROWS tính theo vị trí dòng. LAG/LEAD an toàn hơn subquery vì optimizer có thể push predicate và dùng index, còn subquery thường bị thực thi lại cho mỗi dòng.
+
+### 1. LAG/LEAD so sánh chu kỳ
+
+~~~sql
+WITH daily_revenue AS (
+  SELECT date_trunc('day', created_at)::date AS day,
+         SUM(amount) AS revenue
+  FROM transactions
+  WHERE status = 'COMPLETED'
+    AND created_at >= (SELECT max(created_at) FROM transactions) - interval '14 months'
+  GROUP BY 1
+),
+with_lag AS (
+  SELECT day,
+         revenue,
+         LAG(revenue, 1) OVER (ORDER BY day) AS prev_day,
+         LAG(revenue, 365) OVER (ORDER BY day) AS prev_year_same_day
+  FROM daily_revenue
+)
+SELECT day,
+       revenue,
+       prev_day,
+       prev_year_same_day,
+       CASE WHEN prev_day > 0
+            THEN round(100.0 * (revenue - prev_day) / prev_day, 2)
+       END AS mom_pct,
+       CASE WHEN prev_year_same_day > 0
+            THEN round(100.0 * (revenue - prev_year_same_day) / prev_year_same_day, 2)
+       END AS yoy_pct
+FROM with_lag
+ORDER BY day DESC;
+~~~
+
+LAG(revenue, n) lấy giá trị n dòng trước theo ORDER BY day. Với dữ liệu ngày (daily), MoM so sánh ngày hôm qua (LAG 1); YoY so sánh cùng ngày năm trước (LAG 365/366). Để chính xác hơn cho báo cáo tháng, nên aggregate lên tháng rồi dùng LAG 1/12. Dùng CTE tính doanh thu ngày, window function trên CTE — chỉ quét bảng transactions một lần. Subquery tương quan (SELECT SUM... WHERE day = d - interval '1 month') sẽ chạy lại cho mỗi ngày, chậm gấp hàng chục lần.
+
+### 2. NTILE(10) — top 10% khách
+
+~~~sql
+WITH customer_revenue AS (
+  SELECT customer_id, SUM(amount) AS total_revenue
+  FROM transactions
+  WHERE status = 'COMPLETED'
+    AND created_at >= CURRENT_DATE - interval '12 months'
+  GROUP BY customer_id
+),
+with_decile AS (
+  SELECT customer_id, total_revenue,
+         NTILE(10) OVER (ORDER BY total_revenue DESC) AS decile
+  FROM customer_revenue
+)
+SELECT customer_id, total_revenue, decile
+FROM with_decile
+WHERE decile = 1;  -- top 10%
+~~~
+
+NTILE(10) chia kết quả thành 10 bucket bằng nhau (hoặc xấp xỉ). Bucket 1 là top 10% (do ORDER BY DESC). Lưu ý: NTILE phải dùng trong subquery hoặc CTE vì không thể dùng trực tiếp trong WHERE — PostgreSQL không cho phép window function ở WHERE.
+
+### 3. SUM OVER frame RANGE INTERVAL cho running total theo ngày
+
+~~~sql
+SELECT day,
+       revenue,
+       SUM(revenue) OVER (
+         ORDER BY day
+         RANGE BETWEEN INTERVAL '30 days' PRECEDING AND CURRENT ROW
+       ) AS rolling_30d
+FROM daily_revenue;
+~~~
+
+Với ORDER BY day (kiểu DATE), **RANGE INTERVAL '30 days' PRECEDING** bao gồm tất cả dòng có day >= current_day - 30 days. Khác với ROWS 30 PRECEDING (chính xác 30 dòng vật lý), RANGE dùng giá trị ORDER BY nên tự động xử lý ngày thiếu (weekend/nghỉ lễ không có giao dịch). Nếu dùng ROWS, rolling 30 ngày sẽ sai khi có ngày không có dữ liệu.
+
+### 4. FIRST_VALUE/LAST_VALUE với frame
+
+~~~sql
+SELECT day,
+       revenue,
+       FIRST_VALUE(revenue) OVER (ORDER BY day
+                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS first_so_far,
+       LAST_VALUE(revenue) OVER (ORDER BY day
+                                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_overall
+FROM daily_revenue;
+~~~
+
+FIRST_VALUE/LAST_VALUE mặc định frame là RANGE UNBOUNDED PRECEDING AND CURRENT ROW. Để LAST_VALUE lấy giá trị cuối cùng của toàn partition, phải mở rộng frame thành UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.
+
+### 5. Performance và index
+
+- CTE daily_revenue: index (status, created_at) cho GROUP BY.
+- Window function cần Sort theo ORDER BY; tăng work_mem (ví dụ 256MB) để tránh spill disk.
+- Partition bảng transactions theo tháng giúp CTE prune partition.
+- Tránh SELECT * trong CTE; chỉ chọn cột cần thiết cho window function.
+
+### Lỗi hay gặp
+
+- **Dùng ROWS cho running total theo ngày**: ngày thiếu làm sai kết quả; phải dùng RANGE INTERVAL.
+- **LAST_VALUE không mở rộng frame**: trả giá trị dòng hiện tại thay vì cuối partition.
+- **NTILE trong WHERE**: báo lỗi "window functions are not allowed in WHERE"; phải wrap CTE.
+- **LAG trên partition không có ORDER BY deterministic**: thêm tie-break (id) khi created_at trùng.
+- **Subquery tương quan thay vì LAG**: chậm gấp 50-100 lần trên bảng lớn.
+- **LAG 12 trên dữ liệu ngày cho YoY**: sai — 12 dòng trước là 12 ngày trước, không phải cùng tháng năm ngoái. Cần LAG 365/366 hoặc aggregate lên tháng trước.
+
+### Ví dụ đời thực
+
+Báo cáo executive dashboard: doanh thu ngày, MoM/YoY, rolling 30 ngày, top 10% khách. Bảng transactions 500 triệu dòng, partition by month. Query cũ dùng 12 subquery tương quan: 45 giây. Viết lại dùng LAG/LEAD, NTILE, SUM OVER RANGE INTERVAL: 1.8 giây (prune 12 partition, work_mem 512MB, index-only scan trên CTE). Pitfall: dev dùng ROWS 30 PRECEDING cho rolling 30d -> sai vào cuối tuần vì thiếu ngày; sửa RANGE INTERVAL '30 days' -> đúng. Pitfall 2: dev dùng LAG 12 trên daily_revenue cho YoY -> kết quả so sánh 12 ngày trước; sửa aggregate lên monthly_revenue rồi LAG 1/12.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng LAG/LEAD cho so sánh chu kỳ (MoM, YoY) vì nó cho optimizer đẩy predicate và dùng index, chỉ quét dữ liệu một lần thay vì chạy subquery cho mỗi dòng. NTILE(10) cho top 10% khách, SUM OVER với RANGE INTERVAL '30 days' PRECEDING cho rolling 30 ngày — RANGE dùng giá trị ORDER BY nên xử lý tự động ngày thiếu, khác ROWS đếm dòng vật lý. FIRST_VALUE/LAST_VALUE cần mở rộng frame UNBOUNDED FOLLOWING để lấy giá trị cuối partition. Tôi luôn để window function trên CTE đã aggregate, có index phù, partition prune, và tăng work_mem cho sort. Không bao giờ dùng subquery tương quan cho so sánh chu kỳ trên bảng lớn. Lưu ý: với dữ liệu ngày, YoY cần LAG 365/366 hoặc aggregate lên tháng trước khi dùng LAG 12."
+
+> Senior tip: Frame clause là nơi dễ sai nhất. RANGE INTERVAL chỉ hoạt động với ORDER BY kiểu timestamp/date/numeric; với integer/id thì dùng ROWS. Luôn test case "ngày không có dữ liệu" cho rolling total. Với YoY trên daily data, hãy aggregate lên month trước — LAG 365 không xử lý được năm nhuận và DST.
+`,
+  follow: [
+    'LAG(revenue, 1) OVER (ORDER BY day) khi day có gap (weekend) trả giá trị ngày nào?',
+    'NTILE(10) khi số dòng không chia hết 10 phân bổ bucket như thế nào?',
+    'SUM OVER RANGE INTERVAL có dùng được index không, và khi nào planner chọn WindowAgg vs Subquery Scan?'
+  ],
+  tags: ['window function', 'LAG', 'LEAD', 'NTILE', 'SUM OVER', 'RANGE INTERVAL', 'FIRST_VALUE', 'LAST_VALUE', 'frame clause', 'rolling total', 'percentile']
+},
+{
+  id: 'sql-123',
+  topic: 'sql',
+  level: 'senior',
+  q: 'API lịch sử giao dịch 50 triệu dòng hỗ trợ sắp xếp tuỳ chọn (created_at, amount, status) và lọc tuỳ chọn (khoảng ngày, trạng thái). Thiết kế keyset pagination (cursor) cho trường hợp này: cursor encode những cột nào, index composite như thế nào, xử lý NULL trong ORDER BY, và khi nào cần hybrid approach (keyset + COUNT estimate).',
+a: `**Tóm tắt:** Cursor phải encode đủ cột ORDER BY theo thứ tự + khóa chính (tie-break), ví dụ base64(JSON({sort: 'amount_desc', created_at: '...', amount: 12300, status: 'DONE', id: 456})). Index composite phải khớp từng sort order: (amount DESC, created_at DESC, id DESC), (status, created_at DESC, id DESC), v.v. NULL trong ORDER BY: dùng NULLS LAST/FIRST tường minh và cursor encode giá trị sentinel. Hybrid: keyset cho navigation, COUNT(*) OVER() hoặc pg_class.reltuples estimate cho total pages.
+
+### 1. Cursor opaque encode toàn bộ sort key
+
+Không hard-code cursor cho một sort order. Cursor là object chứa: sort_key (enum), các cột ORDER BY, và PK.
+
+~~~java
+record Cursor(String sort, OffsetDateTime createdAt, Long amount, String status, Long id) {}
+
+String encode(Cursor c) {
+    return Base64.getUrlEncoder().withoutPadding()
+        .encodeToString(new ObjectMapper().writeValueAsBytes(c));
+}
+
+Cursor decode(String cursor) {
+    return new ObjectMapper().readValue(Base64.getUrlDecoder().decode(cursor), Cursor.class);
+}
+~~~
+
+Client chỉ thấy chuỗi base64 opaque; server decode, đọc sort, xây WHERE động.
+
+### 2. Xây WHERE clause động cho keyset
+
+Với sort = 'amount_desc' (ORDER BY amount DESC, created_at DESC, id DESC):
+
+~~~sql
+WHERE (amount, created_at, id) < (:amount, :created_at, :id)
+  AND created_at >= :from_date          -- filter thêm
+  AND status = :status                  -- filter thêm
+ORDER BY amount DESC, created_at DESC, id DESC
+LIMIT 51
+~~~
+
+Row constructor comparison (amount, created_at, id) < (...) so sánh từ trái sang phải: amount < val, hoặc = và created_at < val, hoặc = = và id < val. Đúng ngữ nghĩa "sau cursor" cho sort DESC.
+
+Với sort = 'created_at_desc' (ORDER BY created_at DESC, id DESC):
+
+~~~sql
+WHERE (created_at, id) < (:created_at, :id)
+  AND amount BETWEEN :min_amt AND :max_amt
+ORDER BY created_at DESC, id DESC
+LIMIT 51
+~~~
+
+### 3. Index composite cho từng sort order
+
+Mỗi sort order cần index composite khớp thứ tự cột ORDER BY:
+
+~~~sql
+-- sort: created_at_desc (mặc định)
+CREATE INDEX CONCURRENTLY idx_txn_created_id ON transactions (created_at DESC, id DESC);
+
+-- sort: amount_desc
+CREATE INDEX CONCURRENTLY idx_txn_amt_created_id ON transactions (amount DESC, created_at DESC, id DESC);
+
+-- sort: status_created
+CREATE INDEX CONCURRENTLY idx_txn_status_created_id ON transactions (status, created_at DESC, id DESC);
+
+-- Partial index cho filter phổ biến
+CREATE INDEX CONCURRENTLY idx_txn_completed_created_id
+  ON transactions (created_at DESC, id DESC)
+  WHERE status = 'COMPLETED';
+~~~
+
+Planner dùng index khớp ORDER BY để Index Scan dừng sớm sau LIMIT. Không có index khớp -> Seq Scan + Sort, chậm.
+
+### 4. Xử lý NULL trong ORDER BY
+
+PostgreSQL mặc định NULLS FIRST cho ASC, NULLS LAST cho DESC. Nếu amount có thể NULL:
+
+~~~sql
+ORDER BY amount DESC NULLS LAST, created_at DESC, id DESC
+~~~
+
+Cursor encode: NULL dùng sentinel (ví dụ amount = -1 cho NULLS LAST khi DESC, hoặc LONG_MAX cho NULLS FIRST). Query WHERE dùng COALESCE khớp logic sentinel:
+
+~~~sql
+WHERE (COALESCE(amount, -1), created_at, id) < (COALESCE(:amount, -1), :created_at, :id)
+~~~
+
+Khuyên dùng NOT NULL cho cột sort nếu có thể; nếu không, xử lý tường minh.
+
+### 5. Hybrid approach: keyset + total count estimate
+
+UI cần "trang 1 của 500" nhưng COUNT(*) trên 50 triệu dòng mất 2-5 giây. Hai cách:
+
+1. **COUNT(*) OVER() trong cùng query** (PostgreSQL 8.4+):
+
+~~~sql
+SELECT *, COUNT(*) OVER() AS total_count
+FROM transactions
+WHERE ...
+ORDER BY amount DESC, created_at DESC, id DESC
+LIMIT 51;
+~~~
+
+Cost: window function Count thêm một pass quét tất cả dòng khớp WHERE (không chỉ 51 dòng), nhưng tránh query riêng. Phù hợp khi filter đủ chọn lọc (ít dòng kết quả).
+
+2. **Estimate từ pg_class.reltuples** (nhanh, xấp xỉ):
+
+~~~sql
+SELECT reltuples::bigint FROM pg_class WHERE relname = 'transactions';
+~~~
+
+Kết hợp với filter selectivity ước lượng (ví dụ status='COMPLETED' 80%) -> estimate total pages. Dùng cho UI hiển thị "khoảng 1.200 trang", không cần chính xác.
+
+### 6. Backward pagination (trang trước)
+
+Dùng dấu > và ORDER BY ngược, rồi reverse ở application:
+
+~~~sql
+WHERE (amount, created_at, id) > (:amount, :created_at, :id)
+ORDER BY amount ASC, created_at ASC, id ASC
+LIMIT 51;
+~~~
+
+### Lỗi hay gặp
+
+- **Thiếu tie-break PK trong cursor**: amount trùng -> skip/duplicate dòng.
+- **Cursor không chứa sort key**: client đổi sort, server dùng cursor cũ -> sai logic WHERE.
+- **Index không khớp ORDER BY**: Seq Scan + Sort, p95 tăng 100x ở trang sâu.
+- **NULL sentinel không khớp logic WHERE**: dòng NULL bị mất hoặc lặp.
+- **Filter thêm không có index hỗ trợ**: index (amount, created_at, id) không giúp filter status -> Bitmap Heap Scan chậm.
+
+### Ví dụ đời thực
+
+API mobile ví điện tử: 50 triệu giao dịch, 3 sort order, filter ngày/trạng thái. Cursor JSON base64 chứa {sort, created_at, amount, status, id}. 3 index composite + 1 partial index cho status=COMPLETED. Keyset: mọi trang 8-15 ms (vs OFFSET trang 500: 12 giây). COUNT(*) OVER() thêm 200ms khi filter chọn lọc; estimate pg_class cho UI hiển thị trang. Backward pagination dùng > + ASC + reverse. Pitfall: dev quên tie-break id -> amount trùng 1.000 dòng gây duplicate; sửa thêm id vào cursor và index.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi thiết kế cursor opaque encode đầy đủ: sort enum, các cột ORDER BY, và PK tie-break. Index composite phải khớp từng sort order (amount DESC, created_at DESC, id DESC), dùng partial index cho filter phổ biến. NULL trong ORDER BY dùng NULLS LAST tường minh và sentinel trong cursor. Hybrid: keyset cho navigation, COUNT(*) OVER() hoặc pg_class.reltuples estimate cho total pages. Backward pagination dùng dấu ngược và reverse ở app. Luôn tie-break bằng PK duy nhất, và kiểm tra EXPLAIN để xác nhận Index Scan dừng sớm sau LIMIT."
+
+> Senior tip: Cursor opaque cho phép đổi sort/order bằng cách deploy server mới mà không break client cũ. Nếu UI bắt buộc số trang chính xác trên dữ liệu lớn, hãy cân nhắc materialized view refresh hàng giờ thay vì COUNT(*) real-time.
+`,
+  follow: [
+    'Cursor opaque base64 có rủi ro tamper gì, và bạn ký chữ ký HMAC như thế nào?',
+    'Khi sort order thêm cột mới (ví dụ fee), index composite cũ còn dùng được không?',
+    'Bitmap Heap Scan vs Index Scan cho filter thêm trên keyset: ngưỡng selectivity bao nhiêu thì planner chuyển?'
+  ],
+  tags: ['keyset pagination', 'cursor', 'opaque cursor', 'composite index', 'row constructor', 'NULLS LAST', 'partial index', 'COUNT(*) OVER', 'pg_class', 'backward pagination']
+},
+{
+  id: 'sql-124',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bảng events 5 tỷ dòng (event_type, user_id, payload jsonb, created_at) cần partition: 90% truy vấn lọc theo created_at (time-series), 10% truy vấn lọc theo user_id (per-user analysis). Thiết kế sub-partitioning (RANGE created_at + HASH user_id), partition-wise join với bảng users, pg_partman retention policy per sub-partition, và migration zero-downtime từ bảng đơn sang sub-partition.',
+a: `**Tóm tắt:** Sub-partitioning: RANGE created_at (monthly) -> HASH user_id (16 buckets) cho 16 sub-partition/tháng (192 cho 12 tháng). Partition-wise join với users (partitioned by HASH user_id 16 buckets) loại bỏ shuffle. pg_partman quản lý RANGE cha, retention policy khác nhau cho sub-partition (raw 3 tháng, aggregated 2 năm). Migration: tạo bảng sub-partitioned, backfill lô keyset, trigger sync CDC, swap rename; DETACH CONCURRENTLY không hỗ trợ sub-partition (PG 15/16), dùng partition-level detach.
+
+### 1. Sub-partitioning DDL
+
+~~~sql
+-- Bảng cha: partition by RANGE created_at
+CREATE TABLE events (
+    id bigserial,
+    event_type text NOT NULL,
+    user_id bigint NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, created_at, user_id)  -- phải chứa cả hai partition key
+) PARTITION BY RANGE (created_at);
+
+-- Partition tháng (ví dụ 2026-01)
+CREATE TABLE events_2026_01 PARTITION OF events
+    FOR VALUES FROM ('2026-01-01') TO ('2026-02-01')
+    PARTITION BY HASH (user_id);
+
+-- 16 sub-partition cho tháng 2026-01
+CREATE TABLE events_2026_01_h0 PARTITION OF events_2026_01 FOR VALUES WITH (MODULUS 16, REMAINDER 0);
+CREATE TABLE events_2026_01_h1 PARTITION OF events_2026_01 FOR VALUES WITH (MODULUS 16, REMAINDER 1);
+-- ... h2 .. h15
+
+-- Default partition cho cả hai level
+CREATE TABLE events_default PARTITION OF events DEFAULT;
+CREATE TABLE events_2026_01_default PARTITION OF events_2026_01 DEFAULT;
+~~~
+
+Primary Key chứa (id, created_at, user_id) để unique enforcement hoạt động ở level sub-partition. id dùng BIGSERIAL (sequence global) -> giá trị id unique toàn cục nhờ sequence chung, nhưng PK constraint chỉ enforce unique trong mỗi sub-partition.
+
+### 2. Index strategy
+
+- **Local index trên sub-partition**: mỗi sub-partition tự có index (user_id, created_at) cho query per-user, và (event_type, created_at) cho query analytics.
+- **Không có global index** (PG không hỗ trợ).
+- **Partial index** trên sub-partition active: WHERE created_at >= '2026-01-01' (cần recreate định kỳ vì không dùng được volatile function như CURRENT_DATE trong index predicate).
+
+~~~sql
+-- Tạo index trên partition cha -> tự propagate xuống sub-partition
+CREATE INDEX ON events (user_id, created_at DESC);
+CREATE INDEX ON events (event_type, created_at DESC);
+
+-- Partial index example (cần recreate khi window trượt)
+CREATE INDEX ON events (user_id, created_at DESC) WHERE created_at >= '2026-01-01';
+~~~
+
+### 3. Partition-wise join với bảng users
+
+Bảng users cũng partition by HASH(user_id) 16 buckets:
+
+~~~sql
+CREATE TABLE users (
+    id bigserial PRIMARY KEY,
+    email text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
+) PARTITION BY HASH (id);
+
+CREATE TABLE users_h0 PARTITION OF users FOR VALUES WITH (MODULUS 16, REMAINDER 0);
+-- ... h1 .. h15
+~~~
+
+Join events.user_id = users.id: planner nhận thấy cùng partition key (user_id) và cùng số bucket (16) -> **partition-wise join**. Mỗi bucket events join với bucket users tương ứng, không cần shuffle dữ liệu giữa worker. Với 5 tỷ events, join time giảm từ giờ xuống phút.
+
+### 4. Retention policy khác nhau per sub-partition
+
+- Raw events (payload đầy đủ): giữ 3 tháng -> DETACH sub-partition cũ.
+- Aggregated metrics (pre-computed daily): giữ 2 năm.
+
+pg_partman cấu hình:
+
+~~~sql
+SELECT partman.create_parent('public.events', 'created_at', 'native', 'monthly',
+    p_start_partition := '2026-01-01',
+    p_premake := 12,
+    p_automatic_maintenance := 'on',
+    p_retention := '3 months',
+    p_retention_schema := 'archive_raw',
+    p_retention_keep_table := true,
+    p_subpartition_type := 'hash',
+    p_subpartition_col := 'user_id',
+    p_subpartition_count := 16);
+
+-- Bảng aggregated metrics riêng, partition by month, retention 2 năm
+CREATE TABLE daily_metrics (...) PARTITION BY RANGE (day);
+SELECT partman.create_parent('public.daily_metrics', 'day', 'native', 'monthly',
+    p_retention := '24 months', p_retention_schema := 'archive_metrics');
+~~~
+
+pg_partman tự tạo partition mới, detach partition cũ sang schema archive. Sub-partition detach cùng lúc với partition cha.
+
+### 5. Migration zero-downtime từ bảng đơn
+
+1. **Tạo bảng sub-partitioned mới** (events_new) với DDL ở trên.
+2. **Backfill lô theo keyset** (id tăng dần) từ bảng cũ sang mới, mỗi lô 100k rows, COMMIT, sleep 50ms:
+
+~~~sql
+INSERT INTO events_new (event_type, user_id, payload, created_at)
+SELECT event_type, user_id, payload, created_at
+FROM events
+WHERE id > :last_id
+ORDER BY id
+LIMIT 100000;
+~~~
+
+3. **CDC trigger sync** trên bảng cũ: AFTER INSERT/UPDATE/DELETE ghi vào events_new.
+4. **Verify**: so sánh count, sum, sample 10k rows giữa hai bảng.
+5. **Swap rename**: ALTER TABLE events RENAME TO events_old; ALTER TABLE events_new RENAME TO events; (metadata only, lock ngắn).
+6. **Drop bảng cũ** sau 1-2 tuần quan sát.
+
+Lưu ý: DETACH CONCURRENTLY không hỗ trợ sub-partition (PG 15/16). Detach ở level partition cha (events_2026_01) sẽ detach cả 16 sub-partition cùng lúc.
+
+### 6. Pitfall và monitoring
+
+- **Quá nhiều sub-partition**: > 1000 partition làm planner chậm (partition pruning overhead). 12 tháng x 16 = 192 OK; 5 năm x 64 = 3840 quá nhiều -> gộp bucket hoặc dùng RANGE lớn hơn.
+- **Skew user_id**: hash user_id có thể lệch (power user). Monitor pg_stat_user_tables.n_live_tup per sub-partition; nếu skew > 10x, cân nhắc HASH(user_id, event_type) hoặc LIST partition cho top user.
+- **FK từ bảng khác**: FK reference TO partitioned table không support. Dùng trigger hoặc application check.
+- **Query thiếu created_at**: Merge Append quét 192 sub-partition. Luôn có created_at trong WHERE, hoặc dùng index local (user_id, created_at) để mỗi sub-partition tự Index Scan.
+
+### Ví dụ đời thực
+
+Hệ thống analytics 5 tỷ events (tổng). Sub-partition RANGE month + HASH user_id 16. Query time-series (created_at range): prune 1 partition -> 16 sub-partition, parallel scan 8 worker -> 2 giây. Query per-user (user_id): hash prune 1 sub-partition -> 50 ms. Partition-wise join với users (cùng hash 16): join 5 tỷ x 50 triệu user -> 3 phút (vs 45 phút không partition-wise). Migration 5 tỷ rows: backfill 2 tuần (keyset 100k, sleep 50ms), CDC trigger sync, swap rename 2 giây downtime. pg_partman auto detach 3 tháng raw, keep 2 năm aggregated.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng sub-partitioning: RANGE created_at hàng tháng (time-series query prune partition), trong mỗi tháng HASH user_id 16 buckets (per-user query prune sub-partition). PK chứa (id, created_at, user_id), id BIGSERIAL global unique. Cùng hash key và bucket count cho bảng users -> partition-wise join loại bỏ shuffle. pg_partman quản lý retention: raw 3 tháng, aggregated 2 năm. Migration: tạo bảng mới, backfill keyset 100k/lô + CDC trigger, swap rename metadata-only. Pitfall: >1000 partition làm planner chậm, skew user_id cần monitor, FK không support reference TO partitioned table. DETACH CONCURRENTLY không dùng cho sub-partition, detach ở level partition cha."
+
+> Senior tip: Sub-partitioning chỉ giá trị khi có hai truy vấn pattern trực giao (time-series + per-entity). Nếu 99% query lọc created_at, single-level RANGE partition đơn giản hơn và planner nhanh hơn. Luôn đo partition count vs planner time trước khi scale bucket.
+`,
+  follow: [
+    'Partition-wise join yêu cầu gì về partition key và bucket count của hai bảng?',
+    'Skew user_id trong HASH partition: làm sao phát hiện và khắc phục (HASH composite, LIST cho top user)?',
+    'DETACH PARTITION CONCURRENTLY không hỗ trợ sub-partition: quy trình archive an toàn cho sub-partition là gì?'
+  ],
+  tags: ['sub-partitioning', 'RANGE', 'HASH', 'partition-wise join', 'pg_partman', 'retention', 'migration', 'zero-downtime', 'skew', 'CDC']
+}
+,
 );
