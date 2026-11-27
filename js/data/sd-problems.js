@@ -10033,5 +10033,148 @@ Một công ty 200 service thấy hoá đơn observability tăng gấp 3 dù lư
     'Sau khi đổi ngưỡng "chậm", số trace được giữ tăng gấp 5: bạn kiểm soát chi phí và chất lượng mẫu thế nào?'
   ],
   related: ['design-019', 'design-069', 'design-020']
+},
+{
+  id: 'sd-067',
+  title: 'Ký quỹ và quản lý rủi ro real-time cho sàn phái sinh hàng hoá (clearing, margin, EOD settlement)',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Bạn là kiến trúc sư cho một sàn giao dịch **phái sinh hàng hoá** (kiểu MXV: hợp đồng tương lai nông sản, kim loại, năng lượng liên thông sàn quốc tế). Bài này tập trung **hậu giao dịch**: nhận trade đã khớp từ matching engine, cập nhật vị thế, tính lãi lỗ tạm tính theo tick cho 200.000 tài khoản, **gọi ký quỹ (margin call) trong dưới 1 giây** khi giá biến động mạnh, tất toán bắt buộc khi khách không đủ tiền, **EOD settlement** cuối ngày và đối soát. Quy mô: 200.000 tài khoản, ~50 hợp đồng, giờ cao điểm thị trường quốc tế. Yêu cầu không được tính sai lãi lỗ, không được bỏ sót margin call, nạp tiền đồng thời với lúc bị gọi ký quỹ phải nhất quán, và toàn bộ phải tái lập được cho kiểm toán. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ nghiệp vụ trước khi vẽ. Functional: (1) nhận trade đã khớp (fill) từ matching engine qua FIX/Kafka; (2) cập nhật vị thế (position) theo tài khoản và hợp đồng; (3) định giá lại lãi lỗ tạm tính (mark-to-market) theo tick giá thị trường; (4) tính và gọi ký quỹ (margin call) dưới 1 giây khi giá vượt ngưỡng; (5) tất toán bắt buộc (forced liquidation) khi khách không nộp đủ; (6) EOD settlement: chốt lãi lỗ ngày, chuyển tiền giữa tài khoản và trung tâm bù trừ (clearing house); (7) đối soát với ngân hàng và clearing house. Non-functional có số: 200.000 tài khoản, p99 cập nhật vị thế dưới 100 ms, margin call dưới 1 giây, không sai một đồng, 99,99% trong giờ giao dịch, audit 10 năm. Hỏi rõ: ký quỹ ban đầu (initial margin) do ai đặt ra, ngưỡng duy trì (maintenance margin) bao nhiêu, tần suất tick, có giao dịch ngoài giờ (overnight) không, tiền ký quỹ nằm ở đâu (omnibus hay segregated).` },
+    { name: 'Estimation', minutes: 5, guide: `Ước lượng tải. Giả sử giờ cao điểm (lệch múi giờ với sàn Mỹ) có ~50.000 fill/giây toàn hệ thống và ~200.000 tick giá/giây trên 50 hợp đồng. Mỗi tick chỉ ảnh hưởng tài khoản đang giữ vị thế ở hợp đồng đó; giả sử trung bình mỗi hợp đồng có 20.000 tài khoản có vị thế, mỗi tick phải định giá lại ~20.000 vị thế. Lưu trữ: 50.000 fill/giây x 6,5 giờ ~ 1,17 tỷ fill/ngày, mỗi fill ~200 byte ~ 230 GB/ngày cho trade log; tick ~200.000/giây x 200 byte ~ 40 MB/s ~ 3,45 TB/ngày nếu lưu hết (thường chỉ lưu tick đã nén hoặc tick cuối mỗi giây). Kết luận: thách thức không phải throughput thô mà là **định giá lại theo tick trên tập vị thế lớn + margin call dưới 1 giây + nhất quán nạp tiền**.` },
+    { name: 'API & data model', minutes: 5, guide: `API nội bộ (không phải REST công khai): consume fill từ topic trades; consume tick từ topic market.tick; margin call service phát event margin.call; deposit qua API nạp tiền idempotent theo depositId. Data model: account(id, balance, margin_balance, status), position(account_id, contract, qty, avg_price, last_price, unrealized_pnl), trade(id, account_id, contract, side, qty, price, seq), margin_call(id, account_id, amount, deadline, status), settlement_batch(id, date, status), ledger_entry (append-only: account_id, amount, type, ref). Snapshot vị thế đẩy định kỳ. Nhấn mạnh ledger append-only và snapshot + replay.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ luồng: Matching engine -> Kafka trades (partition theo account_id để một tài khoản luôn đúng thứ tự) -> Position Service (state trong RAM theo account, snapshot định kỳ + ghi ledger) ; Market data (FIX/UDP multicast) -> Normalize -> Kafka market.tick (partition theo contract) -> Risk Engine (định giá lại, tính margin, so ngưỡng) -> Margin Call Service (partition theo account) -> Notification (WebSocket) + Clearing. EOD: Settlement batch đọc vị thế cuối ngày + giá thanh toán (settlement price) -> chốt lãi lỗ -> chuyển tiền -> đối soát. Giải thích vì sao partition theo account cho luồng tiền và theo contract cho luồng giá.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: (1) vì sao tách partition theo contract (tick) và theo account (tiền/margin) và cách nối hai luồng; (2) in-memory position state + snapshot + replay để vừa nhanh vừa tái lập; (3) margin call dưới 1 giây: tính incremental theo tick, chỉ xét tài khoản có vị thế ở hợp đồng vừa biến động; (4) nhất quán khi nạp tiền đồng thời với margin call: một writer duy nhất cho mỗi account (đơn luồng theo partition) hoặc version/CAS; (5) tất toán bắt buộc và tránh bán nhầm; (6) EOD settlement idempotent, chạy lại được; (7) đối soát và xử lý lệch; (8) failure modes: state service chết, Kafka lag, tick đến sai thứ tự, trùng fill.` }
+  ],
+  rubric: [
+    'Phân biệt rõ 3 loại ký quỹ: initial (ban đầu), maintenance (duy trì), variation (biến động theo lãi lỗ ngày)',
+    'Định giá lại lãi lỗ tạm tính theo tick (mark-to-market), chỉ xét tài khoản có vị thế ở hợp đồng biến động',
+    'Margin call dưới 1 giây nhờ tính incremental theo tick và Risk Engine song song theo contract',
+    'Kafka partition theo account cho luồng tiền/margin (một tài khoản đúng thứ tự) và theo contract cho luồng giá',
+    'In-memory position state + snapshot định kỳ + replay từ trade log để nhanh, tái lập được và audit',
+    'Nhất quán khi nạp tiền đồng thời margin call: single-writer theo account hoặc version/CAS, ledger append-only',
+    'Tất toán bắt buộc (forced liquidation) khi quá deadline, tránh bán nhầm và xử lý race với nạp tiền',
+    'EOD settlement idempotent, dùng settlement price, chuyển tiền và sinh lệnh thanh toán bù trừ',
+    'Đối soát nội bộ với ngân hàng/clearing house, xử lý lệch, job chạy lại được',
+    'Failure modes (service chết, Kafka lag, tick sai thứ tự, trùng fill) và giám sát độ trễ, sai lệch lãi lỗ'
+  ],
+  reference: `**Tóm tắt:** Sàn phái sinh kiếm tiền ở phần **hậu giao dịch**: sau khi matching engine khớp lệnh, hệ thống phải biết mỗi tài khoản đang **nắm vị thế** gì (mua/bán bao nhiêu hợp đồng), **lãi hay lỗ tạm tính** ra sao khi giá nhảy, và **có đủ tiền ký quỹ** không. Trái tim bài là ba luồng: (1) **định giá lại theo tick** trên vị thế trong bộ nhớ để tính lãi lỗ tức thời; (2) **margin call dưới 1 giây** khi giá biến động, tính tăng dần (incremental) chỉ trên tài khoản liên quan; (3) **EOD settlement + đối soát** chốt sổ cuối ngày. Bí quyết nhất quán là **mỗi tài khoản có đúng một người ghi** (partition theo account) và **sổ cái append-only + snapshot** để tái lập và kiểm toán.
+
+### Giải thích thuật ngữ (đọc trước, vì bài này nhiều từ mới)
+- **Phái sinh (derivative):** hợp đồng có giá trị *dẫn xuất* từ một tài sản gốc. Ví dụ hợp đồng tương lai (future) cam kết mua/bán 1 tấn cà phê vào một ngày sau với giá chốt hôm nay.
+- **Vị thế (position):** trạng thái đang nắm của một tài khoản: mua (long) hay bán (short) bao nhiêu hợp đồng, giá vào lệnh trung bình.
+- **Matching engine:** cỗ máy khớp lệnh mua với lệnh bán (bài sd-018). Bài này bắt đầu *sau* khi đã khớp.
+- **Clearing (bù trừ):** việc một **trung tâm bù trừ (clearing house, CCP)** đứng giữa người mua và người bán, trở thành bên nợ của cả hai, để không ai lo đối tác vỡ nợ. Giống như sàn trung gian trong một vụ trao đổi.
+- **Ký quỹ (margin):** tiền đặt cọc đảm bảo bạn thực hiện cam kết. Có 3 loại: **initial margin** (cọc ban đầu để mở vị thế), **maintenance margin** (mức tối thiểu phải duy trì), **variation margin** (chênh lệch lãi lỗ phải nộp/nhận mỗi ngày).
+- **Mark-to-market (định giá lại theo thị trường):** mỗi khi giá thay đổi, tính lại lãi/lỗ *trên giấy* của vị thế đang mở. Ví dụ mua 1 hợp đồng giá 100, giá nhảy lên 102 thì lãi tạm tính 2.
+- **Margin call (gọi ký quỹ):** yêu cầu khách nộp thêm tiền khi tài khoản tụt dưới maintenance margin.
+- **Tất toán bắt buộc (forced liquidation):** sàn tự bán vị thế của khách không nộp đủ tiền, để lỗ không lan sang người khác.
+- **Settlement price (giá thanh toán):** giá chính thức cuối ngày dùng để chốt lãi lỗ, khác giá khớp cuối cùng.
+- **EOD (end of day):** quy trình chạy cuối ngày: chốt sổ, chuyển tiền, đối soát.
+- **Ledger (sổ cái):** sổ ghi mọi khoản tiền phát sinh, chỉ **thêm** chứ không sửa/xoá (append-only), để luôn truy được nguồn gốc.
+- **Kafka partition:** một chủ đề (topic) chia thành nhiều phân vùng; thứ tự được đảm bảo *trong* một phân vùng. Cùng một khoá (key) luôn vào một phân vùng.
+
+### Yêu cầu và quy mô
+- 200.000 tài khoản, ~50 hợp đồng, giờ cao điểm lệch múi giờ với sàn Mỹ.
+- Nhận ~50.000 fill/giây, ~200.000 tick/giây.
+- Cập nhật vị thế p99 dưới 100 ms; **margin call dưới 1 giây** khi giá biến động; không sai một đồng; 99,99% giờ giao dịch; audit 10 năm.
+- Nạp tiền đồng thời với margin call phải nhất quán; EOD settlement và đối soát chạy lại được.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Fill giờ cao điểm | giả định | ~50.000/giây |
+| Tick giá | 50 hợp đồng, nhiều nguồn | ~200.000/giây |
+| Vị thế phải định giá lại mỗi tick | ~20.000 tài khoản/hợp đồng | ~20.000 phép/tick |
+| Trade log/ngày | 50.000 x 6,5h x 3.600 | ~1,17 tỷ fill ~ 230 GB |
+| Tick thô/ngày (nếu lưu hết) | 200.000 x 86.400 x 200 B | ~3,45 TB (thường nén) |
+
+Kết luận: throughput không phải nút thắt; nút thắt là **định giá lại theo tick trên tập vị thế lớn + margin call dưới 1 giây + nhất quán tiền**.
+
+### Kiến trúc tổng thể
+~~~text
+Matching engine --fill--> Kafka(trades, partition theo account_id)
+                                   |
+                                   v
+                         Position Service (state RAM theo account)
+                          snapshot định kỳ + ledger append-only
+                                   ^
+Market data (FIX/UDP) -> Normalize -> Kafka(market.tick, partition theo contract)
+                                   |
+                                   v
+                         Risk Engine (định giá lại, tính margin)
+                                   | vượt ngưỡng
+                                   v
+                    Margin Call Svc (partition theo account)
+                       | deadline         | notify
+                       v                  v
+                 Forced liquidation   WebSocket/Khách
+                                   ^
+EOD: Settlement batch <- vị thế cuối ngày + settlement price
+     -> chốt lãi lỗ -> chuyển tiền -> Đối soát ngân hàng/CCP
+~~~
+
+- **Hai cách phân vùng khác nhau là chủ ý:** luồng *giá* (tick) phân vùng theo **contract** để song song hoá theo hợp đồng; luồng *tiền/margin* phân vùng theo **account** để một tài khoản luôn được xử lý đúng thứ tự (không có hai writer cùng sửa số dư).
+
+### Luồng margin call dưới 1 giây
+~~~seq
+title: Margin call khi giá biến động
+actors: Market | RiskEngine | Kafka | MarginSvc | Client
+Market -> Kafka: tick giá mới (partition theo contract)
+Kafka --> RiskEngine: consume tick
+RiskEngine -> RiskEngine: chỉ xét account có vị thế hợp đồng đó
+RiskEngine -> RiskEngine: lãi lỗ tăng dần + so maintenance margin
+RiskEngine -> Kafka: phát margin.call (partition theo account)
+Kafka --> MarginSvc: consume theo account
+MarginSvc -> MarginSvc: tạo call, đặt deadline, ghi ledger
+MarginSvc --> Client: thông báo nộp ký quỹ (WebSocket)
+note MarginSvc..Client: dưới 1 giây từ lúc tick tới lúc báo
+~~~
+
+- **Tính tăng dần (incremental):** không tính lại toàn bộ 200.000 tài khoản mỗi tick; chỉ cập nhật những tài khoản đang giữ hợp đồng vừa biến động. Đây là lý do margin call kịp dưới 1 giây.
+- **Ngưỡng để tránh gọi thừa:** chỉ phát margin call khi số dư ký quỹ tụt dưới maintenance margin *và* chênh lệch đủ lớn (có dead-band), tránh gọi liên tục khi giá dao động quanh ngưỡng.
+
+### Vì sao in-memory + snapshot + replay
+- Vị thế và số dư nằm trong RAM (ví dụ Hazelcast hoặc map phân vùng theo account) để đọc/ghi dưới mili giây; không thể truy DB mỗi tick.
+- Mỗi thay đổi ghi một bản ghi **ledger append-only** và **snapshot** định kỳ (ví dụ mỗi 30 giây) kèm số thứ tự (seq) cuối đã xử lý.
+- Khi service chết: nạp snapshot mới nhất rồi **replay** trade từ seq đó. Vì xử lý theo thứ tự phân vùng nên kết quả trùng khớp tuyệt đối — vừa nhanh vừa tái lập được cho kiểm toán.
+
+### Nhất quán khi nạp tiền đồng thời margin call
+Đây là câu hỏi chấm điểm cao. Một tài khoản vừa được nạp 50 triệu, vừa bị gọi ký quỹ 40 triệu; nếu hai luồng cùng sửa số dư sẽ race.
+- **Một writer duy nhất cho mỗi account:** vì luồng tiền và margin call đều phân vùng theo account_id, một consumer đơn luồng xử lý tuần tự mọi sự kiện của tài khoản đó. Nạp tiền và gọi ký quỹ trở thành hai sự kiện xếp hàng theo thứ tự, không race.
+- **Sổ cái append-only + version/CAS:** số dư không bị ghi đè mù; mỗi lần đổi kiểm tra version, nếu lệch thì thử lại. Nạp tiền idempotent theo depositId (gửi lại không cộng hai lần).
+- **Thứ tự có ý nghĩa nghiệp vụ:** nếu nạp tiền đến *trước* deadline thì phải được tính; hệ thống dùng thời điểm ghi vào log (event time) làm chuẩn, không dùng thời điểm xử lý.
+
+### Tất toán bắt buộc và EOD settlement
+- Khi quá deadline mà khách chưa nộp đủ: sinh lệnh tất toán bắt buộc, bán vị thế ở thị trường. Phải idempotent và kiểm tra vị thế *lần cuối* trước khi bán để tránh bán nhầm nếu khách vừa nạp.
+- **EOD settlement:** đọc vị thế cuối ngày và **settlement price** (giá chính thức, không phải giá khớp cuối), tính lãi lỗ ngày, chuyển variation margin giữa các tài khoản và clearing house. Chạy dạng batch, **idempotent** theo settlement_batch id để chạy lại an toàn.
+- **Đối soát:** so sổ nội bộ với sao kê ngân hàng và clearing house; lệch thì đánh dấu và xử lý thủ công, không tự sửa mù.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Position/Risk service chết | Mất state tạm thời | Snapshot + replay trade từ seq; hot standby nhận over |
+| Kafka lag khi tick dồn | Margin call trễ | Giám sát lag, ưu tiên tick hợp đồng biến động mạnh, cảnh báo |
+| Tick đến sai thứ tự | Tính lãi lỗ sai | Đánh số seq theo contract, bỏ tick cũ hơn |
+| Trùng fill | Vị thế sai | Khử trùng theo trade id (idempotent) |
+| Nạp tiền và margin call race | Số dư sai | Single-writer theo account, ledger + version |
+| EOD chạy hai lần | Chuyển tiền hai lần | Idempotent theo batch id, ledger append-only |
+| Lệch đối soát | Không khớp sổ | Đánh dấu, job đối soát lại, không sửa mù |
+
+### Ví dụ đời thực
+Một sàn phái sinh gặp sự cố giờ mở cửa phiên Mỹ: giá cà phê giảm 6% trong 90 giây, Risk Engine ban đầu tính lại *toàn bộ* 200.000 tài khoản mỗi tick nên độ trễ margin call vọt lên 8 giây, khách kịp rút/đóng trạng thái rồi mới bị gọi, sàn gánh lỗ. Nhóm sửa: chuyển sang tính **incremental** chỉ trên tài khoản giữ hợp đồng biến động, phân vùng tick theo contract và margin theo account, thêm dead-band chống gọi thừa, hot standby cho Risk Engine. Kết quả: margin call p99 từ 8 giây xuống còn 650 ms, số lần gọi thừa giảm 70%, và EOD đối soát lệch 0 đồng sau khi chuyển sang ledger append-only + settlement idempotent.
+
+### Trả lời mẫu khi phỏng vấn
+"Sau matching engine, tôi tách ba luồng. Fill vào Kafka phân vùng theo account để cập nhật vị thế đúng thứ tự, giữ state trong RAM kèm snapshot và ledger append-only để tái lập và audit. Tick giá vào Kafka phân vùng theo contract; Risk Engine định giá lại tăng dần chỉ trên tài khoản có vị thế ở hợp đồng đó, nên margin call kịp dưới một giây — p99 khoảng 650 ms. Margin call phân vùng theo account nên nạp tiền và gọi ký quỹ cùng một tài khoản được một writer đơn luồng xử lý tuần tự, không race; nạp tiền idempotent theo depositId. Khi quá deadline thì tất toán bắt buộc, có kiểm tra vị thế lần cuối để không bán nhầm. Cuối ngày EOD settlement dùng settlement price, idempotent theo batch id, rồi đối soát với ngân hàng và clearing house, lệch thì đánh dấu chứ không sửa mù. Toàn bộ dựa trên snapshot cộng replay trade log nên vừa nhanh vừa tái lập được cho kiểm toán."
+
+> Senior tip: điểm phân biệt senior/lead ở bài này là **phân vùng theo contract cho giá và theo account cho tiền**, cộng với **tính incremental** thay vì tính lại toàn bộ. Ai cũng vẽ được Kafka và Redis, nhưng người trả lời tốt nói rõ vì sao margin call kịp 1 giây (incremental + dead-band), vì sao nạp tiền không race (single-writer theo account), và vì sao EOD chạy lại được (idempotent + ledger append-only). Nhớ nhắc settlement price khác giá khớp cuối — đó là chi tiết nghiệp vụ mà interviewer sàn thật rất thích hỏi.`,
+  followups: [
+    'Giá một hợp đồng nhảy 10% trong 1 giây, hàng chục nghìn tài khoản cùng vượt ngưỡng: bạn làm sao để margin call vẫn dưới 1 giây mà không dồn toa một lúc?',
+    'Khách nạp tiền đúng lúc bị gọi ký quỹ và vừa chạm deadline: bạn quyết định theo event time hay processing time, và single-writer theo account xử lý thế nào?',
+    'Risk Engine chết giữa phiên: hot standby nhận over ra sao để không phát margin call trùng và không mất tick đã consume?',
+    'Settlement price khác giá khớp cuối cùng: EOD dùng giá nào để chốt lãi lỗ và vì sao không dùng giá cuối?',
+    'Đối soát phát hiện lệch 5 triệu giữa sổ nội bộ và clearing house: quy trình điều tra và xử lý không sửa mù diễn ra thế nào?'
+  ]
 }
 ];

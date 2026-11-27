@@ -3646,6 +3646,7 @@ window.DATA_INDEX = {
     {"id":"sd-064","title":"Log tập trung cho 200 service: thu thập, lưu nóng/lạnh, tìm kiếm, cảnh báo, chi phí lưu 30 ngày"},
     {"id":"sd-065","title":"Nền tảng khảo sát với phân tích kết quả thời gian thực và logic nhánh (1 triệu lượt/ngày)"},
     {"id":"sd-066","title":"Log tập trung 200 service với lấy mẫu theo đuôi (tail-based sampling) để giảm chi phí mà không bỏ sót lỗi"},
+    {"id":"sd-067","title":"Ký quỹ và quản lý rủi ro real-time cho sàn phái sinh hàng hoá (clearing, margin, EOD settlement)"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
