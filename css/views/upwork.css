@@ -1,0 +1,43 @@
+/* Freelance & Upwork (#/upwork) — mọi selector bắt đầu bằng .view-upwork; chỉ dùng biến màu để dark mode tự chạy */
+.view-upwork .uw-tabs { align-items: center; margin: 0 0 14px; }
+.view-upwork .uw-tabs .badge { margin-left: 4px; }
+.view-upwork .uw-keys { margin-left: auto; font-size: .85rem; }
+
+.view-upwork .uw-chapters { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.view-upwork .uw-chapter { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; margin: 0; color: var(--text); text-decoration: none; }
+.view-upwork .uw-chapter:hover { border-color: var(--accent); }
+.view-upwork .uw-chapter.read { opacity: .8; }
+.view-upwork .uw-ch-icon { flex: none; font-size: 1.5rem; line-height: 1; }
+.view-upwork .uw-ch-text { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.view-upwork .uw-ch-text small { color: var(--muted); }
+
+.view-upwork .uw-cats { margin: 0 0 10px; }
+.view-upwork .uw-tools { gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 12px; }
+.view-upwork .uw-tools .input { flex: 1 1 240px; min-width: 0; }
+.view-upwork .uw-hide { display: flex; gap: 6px; align-items: center; margin: 0; cursor: pointer; }
+.view-upwork .uw-cases { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+.view-upwork .uw-case { display: grid; gap: 8px; padding: 14px 16px; margin: 0; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.view-upwork .uw-case:hover { border-color: var(--accent); }
+.view-upwork .uw-case.done { opacity: .75; }
+.view-upwork .uw-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+
+.view-upwork .uw-detail { padding: 16px 18px; overflow-wrap: anywhere; }
+.view-upwork .uw-detail h2 { margin: 4px 0 8px; }
+.view-upwork .uw-detail h3 { margin: 18px 0 8px; }
+.view-upwork .uw-summary { color: var(--muted); margin: 0 0 12px; }
+.view-upwork .uw-checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.view-upwork .uw-checklist label { display: flex; gap: 8px; align-items: flex-start; margin: 0; cursor: pointer; }
+.view-upwork .uw-checklist input { margin-top: 3px; flex: none; }
+
+.view-upwork .uw-solution { margin: 14px 0 0; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 14px; background: var(--surface-2); }
+.view-upwork .uw-solution > summary { cursor: pointer; font-weight: 600; }
+.view-upwork .uw-template { margin: 10px 0; }
+.view-upwork .uw-template .row { justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.view-upwork .uw-template pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--surface); border: 1px solid var(--border); color: var(--text); font-size: .9rem; }
+.view-upwork .uw-actions { gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+
+@media (max-width: 480px) {
+  .view-upwork .uw-keys { display: none; }
+  .view-upwork .uw-detail { padding: 12px; }
+}

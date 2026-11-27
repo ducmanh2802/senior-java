@@ -659,6 +659,12 @@ for (const g of sandbox.window.GLOSSARY || []) {
 }
 
 
+// ---- Freelance & Upwork guide (#/upwork): chapters + hard cases, checked by scripts/check-upwork.js ----
+{
+  const uw = require('./check-upwork.js')();
+  uw.errors.forEach(m => err('upwork', m));
+}
+
 // ---- AWS Pro track (#/aws): plan + exam-style pools, checked by scripts/check-aws.js ----
 {
   const aws = require('./check-aws.js')();

@@ -56,6 +56,7 @@
       aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js', 'aws-sap-5.js', 'aws-dop-5.js', 'aws-labs.js'],
       // Freelance track (#/freelance): 12-week AI-agent + Stripe + English roadmap (docs/FREELANCE-TRACK.md, scripts/check-freelance.js)
       freelance: ['freelance-plan.js', 'freelance-english.js'],
+      upwork: ['upwork-guide.js', 'upwork-cases-1.js', 'upwork-cases-2.js', 'upwork-cases-3.js'],   // #/upwork cẩm nang + case khó (docs/UPWORK-GUIDE.md)
     },
     routes: {
       // dashboard: SRS due list + stats, next lesson, today's plan, interview plan — all from the light index via
@@ -89,11 +90,12 @@
       'jobs/prep': ['questions', 'glossary'],               // #/jobs/prep/<jobId>: JD study plan + knowledge summary from the bank
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
       freelance: ['freelance'],                               // window.FREELANCE_PLAN + window.FREELANCE_EN
+      upwork: ['upwork', 'index'],                            // related chips: tiêu đề chương/case + id câu hỏi ngân hàng
     },
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'freelance', 'sdlc', 'jobs', 'bugs', 'toeic'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'freelance', 'upwork', 'sdlc', 'jobs', 'bugs', 'toeic'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)
