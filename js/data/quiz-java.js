@@ -10466,5 +10466,375 @@ Stream.of(1,2,3).map(String::valueOf).collect(Collectors.joining("-")); // "1-2-
 - Gọi {{joining}} trực tiếp trên {{Stream<Integer>}} → lỗi biên dịch vì Integer không phải CharSequence; phải map sang String.
 - Nhầm delimiter với prefix/suffix.
 > Senior tip: {{joining}} thay cho vòng lặp StringBuilder thủ công, vừa gọn vừa nhanh. Rất hợp tạo CSV, log message, URL query string.`
+},
+{
+  id: 'qz-core-075', topic: 'core', multi: true,
+  q: `Class {{Key}} dùng làm khóa {{HashMap}} có field {{id}} và {{name}}. Sau khi put, code thay đổi {{key.name}} (id giữ nguyên). Những phát biểu nào **đúng** về việc {{map.get(key)}} sau khi đổi? (Chọn 2)
+~~~java
+class Key {
+    final int id;
+    String name;
+    Key(int id, String name) { this.id = id; this.name = name; }
+    @Override public boolean equals(Object o) {
+        return o instanceof Key k && k.id == id && Objects.equals(k.name, name);
+    }
+    @Override public int hashCode() { return Objects.hash(id, name); }
+}
+Map<Key, String> map = new HashMap<>();
+Key k = new Key(1, "A");
+map.put(k, "value");
+k.name = "B";
+~~~`,
+  options: [
+    `map.get(k) trả về "value" vì object key là cùng instance`,
+    `map.get(k) trả về null vì hashCode thay đổi dẫn đến tìm sai bucket`,
+    `map.get(new Key(1, "A")) trả về "value" vì equals/hashCode khớp entry gốc`,
+    `map.containsKey(k) trả về true dù get trả về null`,
+    `map.size() trở thành 2 vì put thêm entry mới khi hashCode thay đổi`
+  ],
+  answer: [1, 2],
+explain: `**Đáp án đúng: get trả về null (sai bucket), nhưng containsKey với key mới khớp entry gốc vẫn true.**
+
+### Vì sao đúng
+- {{put}} tính {{hashCode()}} lúc đó (hash của (1, "A")) và lưu entry vào bucket tương ứng.
+- Khi {{k.name = "B"}}, {{hashCode()}} thay đổi (hash của (1, "B")). {{map.get(k)}} tính hash mới, tìm bucket mới → không thấy entry → trả về {{null}}.
+- {{map.get(new Key(1, "A"))}} tính hash cũ, tìm đúng bucket, {{equals}} khớp → trả về "value".
+- {{containsKey}} dùng logic giống {{get}}: với {{k}} (hash mới) → false; với {{new Key(1, "A")}} → true.
+- {{size()}} vẫn là 1; không có entry mới được tạo.
+
+### Vì sao các phương án còn lại sai
+- **A**: HashMap **không** dùng identity cho key; nó dùng hashCode/equals. Đổi field làm thay đổi hash → mất entry.
+- **D**: containsKey(k) với k hiện tại (name="B") trả về false.
+- **E**: size không tự tăng; chỉ tăng khi put key mới (equals khác tất cả key hiện có).
+
+> Senior tip: **key của HashMap/HashSet phải bất biến** sau khi put. Dùng record, hoặc defensive copy, hoặc không bao giờ thay đổi field tham gia equals/hashCode. Bug này trên production biểu hiện là "cache miss 100% sau deploy" hoặc "session mất ngẫu nhiên".`
+},
+{
+  id: 'qz-core-076', topic: 'core',
+  q: `Đoạn code sau chạy trên Java 17 in ra gì?
+~~~java
+String s1 = "hello";
+String s2 = new StringBuilder("hel").append("lo").toString();
+String s3 = s2.intern();
+System.out.println((s1 == s2) + " " + (s1 == s3) + " " + (s2 == s3));
+~~~`,
+  options: [
+    `false true false`,
+    `true true true`,
+    `false false false`,
+    `true false true`
+  ],
+  answer: 0,
+explain: `**Đáp án đúng: false true false.**
+
+### Vì sao đúng
+- {{s1}} là literal, nằm trong String pool.
+- {{s2}} tạo bằng {{StringBuilder}} → object mới trên heap, **không** tự đưa vào pool → {{s1 == s2}} là {{false}}.
+- {{s2.intern()}}: nếu pool đã có chuỗi bằng nội dung (có {{s1}}), trả về tham chiếu pool → {{s3}} trỏ cùng object với {{s1}} → {{s1 == s3}} là {{true}}.
+- {{s2 == s3}}: {{s2}} là object heap, {{s3}} là object pool → {{false}}.
+
+### Vì sao các phương án còn lại sai
+- **true true true**: chỉ đúng nếu {{s2}} cũng là literal hoặc đã intern trước đó.
+- **false false false**: bỏ qua việc {{intern()}} trả về pool instance khi đã có.
+- **true false true**: nhầm {{s1 == s2}} (literal vs StringBuilder) và {{s2 == s3}} (heap vs pool).
+
+> Senior tip: {{intern()}} tốn chi phí (khóa toàn cục pool cũ, JVM 7+ dùng ConcurrentHashMap nhưng vẫn có contention). Chỉ dùng khi thực sự cần cân bằng bộ nhớ (ví dụ đọc file lớn nhiều từ trùng lặp). Tránh gọi intern trong hot path.`
+},
+{
+  id: 'qz-core-077', topic: 'core', multi: true,
+  q: `Về autoboxing/unboxing và cache của các wrapper type, những phát biểu nào **đúng**? (Chọn 3)
+~~~java
+Integer a = 127;
+Integer b = 127;
+Integer c = 128;
+Integer d = 128;
+Long e = 127L;
+Long f = 127L;
+Double g = 1.0;
+Double h = 1.0;
+~~~`,
+  options: [
+    `a == b là true (Integer cache mặc định -128 đến 127)`,
+    `c == d là false (128 ngoài cache, mỗi autoboxing tạo object mới)`,
+    `e == f là true (Long cache cùng phạm vi -128 đến 127)`,
+    `g == h là true (Double cache các giá trị nhỏ)`,
+    `Integer.valueOf(127) == Integer.valueOf(127) luôn true trên mọi JVM tuân chuẩn`
+  ],
+  answer: [0, 1, 2],
+explain: `**Đáp án đúng: a==b true, c==d false, e==f true.**
+
+### Vì sao đúng
+- JLS quy định **Integer cache** ít nhất từ -128 đến 127 (có thể mở rộng bằng {{-XX:AutoBoxCacheMax}}). {{Long}}, {{Byte}}, {{Short}}, {{Character}} cũng có cache tương tự phạm vi này.
+- {{Double}} và {{Float}} **không có cache** (vì số thực vô hạn, cache không thiết thực) → {{g == h}} luôn {{false}}.
+- {{Integer.valueOf}} dùng cache nên hai lời gọi với cùng giá trị trong cache trả về **cùng instance** → so sánh {{==}} cho {{true}}.
+
+### Vì sao các phương án còn lại sai
+- **g == h true**: Double không cache.
+- **Luôn true trên mọi JVM**: cache max có thể cấu hình, nhưng tối thiểu -128..127 là bắt buộc. Giá trị 127 nằm trong tối thiểu nên đúng, nhưng phát biểu "luôn true" nghe như đảm bảo cho mọi giá trị → sai.
+
+> Senior tip: autoboxing trong vòng lặp nóng tạo rác lớn (mỗi lần {{Integer.valueOf}} hoặc unboxing). Dùng primitive ({{int}}, {{long}}) cho counter/accumulator; chỉ box khi cần lưu vào collection. {{LongAdder}}/{{DoubleAdder}} cho counter concurrent.`
+},
+{
+  id: 'qz-core-078', topic: 'core',
+  q: `Method {{process()}} ném {{IOException}} (checked) và {{IllegalArgumentException}} (unchecked). Caller viết {{try-catch}} như sau. Khối {{catch}} nào **không bao giờ** được chạy?
+~~~java
+void caller() {
+    try {
+        process();
+    } catch (IOException e) { /* A */ }
+    catch (Exception e) { /* B */ }
+    catch (IllegalArgumentException e) { /* C */ }
+    catch (Throwable e) { /* D */ }
+}
+~~~`,
+  options: [
+    `Khối A (IOException)`,
+    `Khối B (Exception)`,
+    `Khối C (IllegalArgumentException)`,
+    `Khối D (Throwable)`
+  ],
+  answer: 2,
+explain: `**Đáp án đúng: khối C (IllegalArgumentException) không bao giờ chạy.**
+
+### Vì sao đúng
+Java bắt exception theo thứ tự từ trên xuống, **chỉ chạy khối đầu tiên khớp**. {{IllegalArgumentException}} là subclass của {{Exception}} (qua {{RuntimeException}}). Vì khối B {{catch (Exception)}} đứng **trước** khối C, mọi {{IllegalArgumentException}} đã bị B bắt rồi → C không bao giờ đạt được.
+
+Quy tắc: catch **subclass trước, superclass sau**. Code đúng:
+~~~java
+catch (IllegalArgumentException e) { ... } // con trước
+catch (IOException e) { ... }               // checked riêng
+catch (Exception e) { ... }                 // cha sau
+catch (Throwable e) { ... }                 //(Error) cuối cùng
+~~~
+
+### Vì sao các phương án còn lại sai
+- **A**: IOException không phải con của Exception? Thực ra IOException extends Exception, nhưng nó đứng trước Exception nên bị bắt riêng → A chạy được khi ném IOException.
+- **B**: Exception bắt được cả IOException và IllegalArgumentException → chạy được.
+- **D**: Throwable là cha của Exception và Error → bắt được mọi thứ còn sót lại.
+
+> Senior tip: IDE (IntelliJ, Eclipse) cảnh báo "exception already caught" khi catch subclass sau superclass. Bật rule này trong CI. Thêm: multi-catch ({{catch (IOException | SQLException e)}}) chỉ dùng cho các exception **không có quan hệ cha-con**.`
+},
+{
+  id: 'qz-core-079', topic: 'core',
+  q: `Đoạn code sau dùng try-with-resources với hai resource. Khi {{r1.close()}} ném {{IOException("close1")}} và {{r2.close()}} cũng ném {{IOException("close2")}}, {{main}} in ra gì?
+~~~java
+static class R1 implements AutoCloseable {
+    public void close() throws IOException { throw new IOException("close1"); }
+}
+static class R2 implements AutoCloseable {
+    public void close() throws IOException { throw new IOException("close2"); }
+}
+public static void main(String[] args) {
+    try (R1 r1 = new R1(); R2 r2 = new R2()) {
+        throw new IOException("body");
+    } catch (IOException e) {
+        System.out.println(e.getMessage());
+        for (Throwable s : e.getSuppressed()) {
+            System.out.println("  suppressed: " + s.getMessage());
+        }
+    }
+}
+~~~`,
+  options: [
+    `body\n  suppressed: close1\n  suppressed: close2`,
+    `body\n  suppressed: close2\n  suppressed: close1`,
+    `close1\n  suppressed: body\n  suppressed: close2`,
+    `close2\n  suppressed: body\n  suppressed: close1`
+  ],
+  answer: 1,
+explain: `**Đáp án đúng: body, sau đó suppressed close2 rồi close1.**
+
+### Vì sao đúng
+1. Thân try ném {{IOException("body")}} → exception chính.
+2. Resource được đóng **theo thứ tự ngược** khai báo: {{r2}} đóng trước, rồi {{r1}}.
+3. {{r2.close()}} ném {{"close2"}} → trở thành **suppressed exception** gắn vào exception chính (body).
+4. {{r1.close()}} ném {{"close1"}} → cũng trở thành suppressed exception.
+4. {{catch}} nhận exception chính (body), {{getSuppressed()}} trả mảng theo thứ tự **đã bị suppressed**: trước {{close2}}, sau {{close1}}.
+
+### Vì sao các phương án còn lại sai
+- **A**: nhầm thứ tự đóng (r1 trước r2) → thứ tự suppressed sai.
+- **C/D**: exception chính luôn là exception từ thân try (body), không phải từ close. Close exception chỉ là suppressed.
+
+> Senior tip: {{try-with-resources}} đảm bảo **mọi resource đều được close** dù body ném exception. Suppressed exception giúp debug: không mất thông tin lỗi close. Khi tự implement {{AutoCloseable}}, {{close()}} nên idempotent (gọi nhiều lần không hại) và không ném {{null}}.`
+},
+{
+  id: 'qz-core-080', topic: 'core', multi: true,
+  q: `Về type erasure và wildcard capture, những phát biểu nào **đúng**? (Chọn 2)
+~~~java
+static void m1(List<?> list) { list.add(null); }           // A
+static void m2(List<?> list) { list.add(list.get(0)); }    // B
+static <T> void m3(List<T> list) { list.add(list.get(0)); }// C
+static void m4(List<? extends Number> list) {
+    Number n = list.get(0); list.add(n);                   // D
+}
+~~~`,
+  options: [
+    `A biên dịch được vì null là giá trị hợp lệ cho mọi type`,
+    `B biên dịch được vì get trả về Object, add nhận Object`,
+    `C biên dịch được vì T được suy luận cụ thể tại lời gọi`,
+    `D không biên dịch được vì ? extends Number không cho phép add(Number)`
+  ],
+  answer: [0, 2],
+explain: `**Đáp án đúng: A và C biên dịch được.**
+
+### Vì sao đúng
+- **A**: {{null}} là giá trị đặc biệt, gán được cho mọi reference type. Compiler cho phép {{list.add(null)}} trên {{List<?>}} (wildcard không rõ kiểu nhưng null an toàn).
+- **C**: Generic method {{<T>}}: tại lời gọi, {{T}} được suy luận thành kiểu cụ thể (ví dụ {{String}}), nên {{list}} có kiểu {{List<String>}} rõ ràng → {{get}} trả {{String}}, {{add}} nhận {{String}} → hợp lệ.
+
+### Vì sao các phương án còn lại sai
+- **B**: {{List<?>}} có kiểu phần tử **bất định** (capture của wildcard). {{get}} trả về {{Object}}, nhưng {{add}} chỉ chấp nhận **chính kiểu capture đó** (không phải {{Object}}). Không thể chứng minh {{Object}} là subtype của capture → lỗi "add(Object) not applicable".
+- **D**: {{? extends Number}} là **producer** (chỉ đọc an toàn). {{add(Number)}} không được phép vì không biết list thực sự là {{List<Integer>}}, {{List<Double>}}... → add Number có thể phá vỡ kiểu. Chỉ {{add(null)}} được phép.
+
+> Senior tip: wildcard capture là cơ chế compiler tạo một "giả định" kiểu cụ thể cho {{?}} trong scope method. {{List<?>}} ≠ {{List<Object>}}. Khi cần ghi, dùng {{List<? super T>}} (consumer) hoặc generic method {{<T>}}.`
+},
+{
+  id: 'qz-core-081', topic: 'core',
+  q: `Class {{Parent}} và {{Child}} như sau. Đoạn code in ra gì?
+~~~java
+class Parent {
+    static String name = "Parent";
+    static { System.out.print("P"); }
+    { System.out.print("p"); }
+    Parent() { System.out.print("Pc"); }
+}
+class Child extends Parent {
+    static String name = "Child";
+    static { System.out.print("C"); }
+    { System.out.print("c"); }
+    Child() { System.out.print("Cc"); }
+}
+System.out.println(Child.name);
+new Child();
+~~~`,
+  options: [
+    `Child\nPCpcPcCc`,
+    `Child\nPpPcCcCc`,
+    `Child\nPCpPcCcCc`,
+    `Child\nPpCcPcCc`
+  ],
+  answer: 0,
+explain: `**Đáp án đúng: Child / PCpcPcCc.**
+
+### Vì sao đúng
+1. {{System.out.println(Child.name)}}: truy cập field static {{Child.name}} → **khởi tạo class Child**.
+2. Khởi tạo Child: phải khởi tạo **superclass trước** → chạy static block của Parent → in **P**.
+3. Rồi chạy static block của Child → in **C**. Static block chỉ chạy **một lần**.
+4. In field {{Child.name}} = "Child".
+5. {{new Child()}}: class đã khởi tạo rồi, bỏ qua phần static. Tạo instance:
+    - Gọi {{Child()}} → ngầm {{super()}} → Parent constructor.
+    - Parent: instance initializer → **p**, constructor body → **Pc**.
+    - Child: instance initializer → **c**, constructor body → **Cc**.
+
+Thứ tự: static P, static C, println "Child", instance p, Pc, c, Cc = **P C p Pc c Cc** (ghi liền: PCpcPcCc).
+
+### Vì sao các phương án còn lại sai
+- **B**: thiếu static C (Child static block) và thứ tự instance block sai.
+- **C**: thứ tự static block đúng nhưng instance block của Parent sai (p trước Pc, không phải Pc trước p).
+- **D**: static block Child chạy trước Parent (sai, superclass phải init trước).
+
+> Senior tip: field static bị **shadowing** (Child.name che Parent.name), không phải override. {{Parent p = new Child(); p.name}} vẫn là "Parent". Tránh shadowing field static; dùng constant ({{static final}}) hoặc method static.`
+},
+{
+  id: 'qz-core-082', topic: 'core',
+  q: `Method {{modify}} nhận {{int[] arr}} và {{Integer n}}. Sau gọi, giá trị tại {{main}} là gì?
+~~~java
+static void modify(int[] arr, Integer n) {
+    arr[0] = 99;
+    arr = new int[]{1, 2, 3};
+    n = 100;
+}
+public static void main(String[] args) {
+    int[] a = {10, 20};
+    Integer w = 5;
+    modify(a, w);
+    System.out.println(a[0] + " " + w);
+}
+~~~`,
+  options: [
+    `99 5`,
+    `10 100`,
+    `99 100`,
+    `10 5`
+  ],
+  answer: 0,
+explain: `**Đáp án đúng: 99 5.**
+
+### Vì sao đúng (pass-by-value từng tham số)
+- **{{int[] arr}}**: Java truyền **giá trị của tham chiếu** (reference value). {{arr}} và {{a}} trỏ cùng mảng. {{arr[0] = 99}} sửa **nội dung mảng dùng chung** → {{a[0]}} thành 99. {{arr = new int[]...}} gán lại **biến cục bộ arr** trỏ sang mảng mới → không ảnh hưởng {{a}}.
+- **{{Integer n}}**: {{Integer}} immutable. {{n}} và {{w}} trỏ cùng object 5. {{n = 100}} gán lại biến cục bộ {{n}} trỏ sang object {{Integer(100)}} (autoboxing) → {{w}} vẫn trỏ object 5 cũ.
+
+### Vì sao các phương án còn lại sai
+- **10 100**: nghĩ {{arr = new...}} thay đổi mảng gốc, và {{n = 100}} thay đổi object Integer (immutable không thể).
+- **99 100**: đúng phần mảng, sai phần Integer (gán lại tham số không đổi caller).
+- **10 5**: bỏ qua {{arr[0] = 99}} đã sửa mảng dùng chung.
+
+> Senior tip: pass-by-value có nghĩa: **biến tham số là bản copy của giá trị** (primitive hoặc reference). Để "trả về" nhiều giá trị, dùng return (record, object, hoặc mảng) thay vì cố gán lại tham số.`
+},
+{
+  id: 'qz-core-083', topic: 'core', multi: true,
+  q: `Về {{final}} field và Java Memory Model, những phát biểu nào **đúng**? (Chọn 2)
+~~~java
+class Holder {
+    final int x;
+    final int[] arr;
+    Holder(int x, int[] arr) {
+        this.x = x;
+        this.arr = arr;
+    }
+}
+~~~`,
+  options: [
+    `Sau constructor xong, mọi thread nhìn thấy x đúng giá trị (final field semantics)`,
+    `Thread khác nhìn thấy arr reference đúng, nhưng nội dung arr[0] có thể thấy giá trị cũ (0) nếu constructor chưa ghi xong`,
+    `final field không bao giờ bị reorder sau constructor, nên không cần volatile`,
+    `Nếu constructor gán this.x = x; this.arr = arr; trong đó arr là tham số, thì arr reference được final đảm bảo, nhưng mảng nội dung không`
+  ],
+  answer: [0, 3],
+explain: `**Đáp án đúng: final field semantics đảm bảo x; arr reference đúng nhưng nội dung mảng không được final bảo vệ.**
+
+### Vì sao đúng
+JMM (JLS 17.5) **final field semantics**:
+- Viết {{final}} field trong constructor → **freeze** action ở cuối constructor.
+- Freeze **happens-before** mọi đọc {{final}} field sau khi object được publish an toàn (không rò rỉ {{this}} trong constructor).
+- Kết quả: mọi thread thấy **giá trị final field** (primitive hoặc reference) **chính xác**.
+
+**Nhưng**: final chỉ bảo vệ **reference** (địa chỉ object/array), **không bảo vệ trạng thái bên trong object đó**.
+- {{final int[] arr}}: thread khác thấy đúng reference mảng, nhưng các phần tử {{arr[0]}}... do constructor ghi có thể **chưa hiển thị** (reorder ghi phần tử sau freeze). Cần {{volatile}} cho mảng hoặc dùng {{AtomicIntegerArray}} / immutable object.
+
+### Vì sao các phương án còn lại sai
+- **B**: arr reference **luôn** thấy đúng nhờ final semantics; chỉ nội dung mảng có thể thấy cũ.
+- **C**: final field không cần volatile **để thấy đúng reference/giá trị primitive**, nhưng không thay thế volatile cho **mutable state bên trong**. Phát biểu "không bao giờ bị reorder" hơi mạnh; ghi field final không reorder ra ngoài constructor, nhưng ghi *vào object mà field trỏ tới* có thể reorder.
+
+> Senior tip: immutable object thực sự: tất cả field {{final}}, không có field mutable (collection, array, Date...). Dùng record + {{List.copyOf}} trong compact constructor.`
+},
+{
+  id: 'qz-core-084', topic: 'core',
+  q: `Đoạn code sau dùng {{StringBuilder}} và {{String}} trong vòng lặp. Kết quả và lý do hiệu năng nào đúng?
+~~~java
+String s = "";
+for (int i = 0; i < 10000; i++) s += "x";
+StringBuilder sb = new StringBuilder();
+for (int i = 0; i < 10000; i++) sb.append("x");
+~~~`,
+  options: [
+    `Cả hai cho cùng kết quả; s += dùng StringBuilder ngầm (Java 9+) nên hiệu năng tương đương`,
+    `Cả hai cho cùng kết quả; s += tạo 10.000 String trung gian, sb.append chỉ một buffer → sb nhanh hơn rất nhiều`,
+    `Kết quả khác nhau vì s += bỏ qua ký tự đầu`,
+    `StringBuilder không thread-safe nên kết quả sai khi chạy multi-thread`
+  ],
+  answer: 1,
+explain: `**Đáp án đúng: cùng kết quả, nhưng s += tạo 10.000 object String trung gian, sb.append chỉ một buffer.**
+
+### Vì sao đúng
+- {{String}} immutable: {{s += "x"}} dịch sang {{s = new StringBuilder().append(s).append("x").toString()}} (Java 9+ dùng {{invokedynamic}}/{{StringConcatFactory}}, bản chất vẫn tạo StringBuilder tạm **mỗi lần lặp**).
+- Vòng lặp 10.000 lần → tạo ~10.000 StringBuilder tạm + 10.000 String mới + copy mảng char nhiều lần → **O(n²)** thời gian, GC áp lực lớn.
+- {{StringBuilder}} dùng chung một buffer, mở rộng theo cấp số nhân (×2) → **O(n)** amortized, không tạo rác trung gian.
+
+### Vì sao các phương án còn lại sai
+- **A**: "hiệu năng tương đương" sai; s += trong vòng lặp vẫn O(n²) vì tạo buffer mới mỗi lần. StringConcatFactory tối ưu chuỗi hằng số, không tối ưu vòng lặp.
+- **C**: kết quả giống nhau (10.000 ký tự 'x').
+- **D**: StringBuilder không thread-safe là đúng, nhưng đoạn code đơn luồng → không liên quan.
+
+> Senior tip: quy tắc: **không dùng +/+= trong vòng lặp**. Dùng StringBuilder (đơn luồng) hoặc StringBuffer (đa luồng, hiếm dùng). Java 21 {{StringBuilder}} có {{repeat()}} cho trường hợp lặp chuỗi cố định: {{"x".repeat(10000)}}.`
 }
 )
