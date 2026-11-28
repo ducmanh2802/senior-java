@@ -3,7 +3,7 @@
  * Data (group 'ckad'): window.CKAD_EXAMS (js/data/ckad-mock-N.js), window.CKAD_LABS (js/data/ckad-labs-N.js).
  * Routes: #/ckad (tổng quan) · #/ckad/exam/<id> (đề thực hành, bấm giờ 120 phút) · #/ckad/lab · #/ckad/lab/<id>
  * Người học chạy setup/verify trên cluster kind của mình; app chỉ hiển thị, bấm giờ và lưu tự chấm.
- * Lưu: App.store.data.ckad = { tasks: { '<taskId>': 'pass'|'fail' }, exams: [{ id, score, at }], start: { '<examId>': ms } }
+ * Lưu: App.store.data.ckad = { tasks: { '<taskId>': 'pass'|'fail' }, answers: { '<taskId>': {text, updatedAt} }, exams: [{ id, score, at }], start: { '<examId>': ms } }
  */
 (function () {
   'use strict';
@@ -51,7 +51,7 @@
       if (openBtn) { openBtn.textContent = '▶ Xem'; openBtn = null; }
     }
     root.onclick = ev => {
-      const b = ev.target.closest('[data-yt],[data-mark],[data-copy]'); if (!b) return;
+      const b = ev.target.closest('[data-yt],[data-mark],[data-copy],[data-answer]'); if (!b) return;
       if (b.dataset.yt) {
         ev.preventDefault();
         if (openBtn === b) { close(); return; }
@@ -73,6 +73,7 @@
     const d = App.store.data;
     d.ckad = d.ckad || {};
     d.ckad.tasks = d.ckad.tasks || {};
+    d.ckad.answers = d.ckad.answers || {};
     d.ckad.exams = d.ckad.exams || [];
     d.ckad.start = d.ckad.start || {};
     return d.ckad;
@@ -109,6 +110,7 @@
         '### Alias nên gõ ngay đầu giờ thi\n' +
         '~~~bash\nalias k=kubectl\nexport do="--dry-run=client -o yaml"\nexport now="--force --grace-period 0"\nk config use-context kind-ckad\n~~~\n' +
         '> Senior tip: đề thật cho sẵn context cho từng bài. Luôn chạy lệnh {{kubectl config use-context}} ghi ở đầu bài trước khi làm, sai context là mất trọn điểm bài đó.') + '</div>' +
+      stepsCard() + terminalCard() +
       '<div class="card"><h3>🎬 Video hướng dẫn</h3><ul class="ck-videos">' + VIDEOS.map(v => ytCard(vItem(v))).join('') + '</ul>' +
       '<p class="small muted">Video theo từng chủ đề nằm trong mỗi module Lab.</p></div>';
   }
@@ -125,6 +127,41 @@
       (list || '<div class="empty">Đề thực hành đang được soạn (task T2838–T2840). Trong lúc chờ: làm <a href="#/exam/ckad">trắc nghiệm CKAD</a> hoặc Lab.</div>');
   }
 
+  function terminalCard() {
+    return '<div class="card ck-terminal"><div class="ck-terminal-head">🖥️ Không cài được kind? Dùng terminal Kubernetes miễn phí trên trình duyệt</div>' +
+      '<p class="small muted">Mở <b>Killercoda Kubernetes playground</b> ở tab mới (cần đăng nhập Killercoda; phiên có giới hạn thời gian). Dán <code>setup</code> vào terminal đó, làm bài, rồi dán <code>verify</code>.</p>' +
+      '<p class="small muted">Context trên Killercoda khác <code>kind-ckad</code>: bỏ qua dòng <code>kubectl config use-context</code> hoặc chạy <code>kubectl config rename-context $(kubectl config current-context) kind-ckad</code>.</p>' +
+      '<a class="btn sm primary" href="https://killercoda.com/playgrounds/scenario/kubernetes" target="_blank" rel="noopener">Mở Killercoda ↗</a></div>';
+  }
+
+  function stepsCard() {
+    return '<div class="card md">' + App.md(
+      '### Cách làm bài\n' +
+      '1. **Dựng cluster**: dùng {{kind}} trên máy, hoặc mở terminal Kubernetes miễn phí (Killercoda) ngay trên trình duyệt.\n' +
+      '2. **Copy setup**: dán đoạn Setup của bài vào terminal để tạo tình huống.\n' +
+      '3. **Gõ lệnh** trong terminal (có thể nháp trong ô Bài làm) → dán **verify** → chạy {{kubectl config use-context}} đúng context → bấm **Verify PASS hết** khi mọi dòng đều {{PASS}}.') + '</div>';
+  }
+
+  function answerHtml(t) {
+    const s = st();
+    const saved = (s.answers[t.id] && s.answers[t.id].text) || '';
+    const hasSol = !!t.solution;
+    return '<div class="ck-answer-wrap" data-task="' + esc(t.id) + '">' +
+      '<div class="ck-answer-main">' +
+      '<label class="small muted ck-answer-label" for="ans-' + esc(t.id) + '">✍️ Bài làm của bạn (tự lưu, gõ lệnh kubectl / YAML ở đây)</label>' +
+      '<textarea id="ans-' + esc(t.id) + '" class="textarea ck-answer" data-id="' + esc(t.id) + '" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="Gõ lệnh kubectl / YAML của bạn…">' + esc(saved) + '</textarea>' +
+      '<div class="row ck-answer-actions">' +
+      '<button class="btn sm" data-answer="copy" data-id="' + esc(t.id) + '">📋 Copy bài làm</button>' +
+      (hasSol ? '<button class="btn sm" data-answer="compare" data-id="' + esc(t.id) + '" aria-expanded="false">🆚 So với lời giải</button>' : '') +
+      '<button class="btn sm primary" data-answer="ai" data-id="' + esc(t.id) + '">🤖 AI chấm</button>' +
+      '<button class="btn sm bad" data-answer="clear" data-id="' + esc(t.id) + '">🗑️ Xoá</button>' +
+      '</div>' +
+      '<div class="ck-answer-feedback" data-feedback="' + esc(t.id) + '" aria-live="polite"></div>' +
+      '</div>' +
+      (hasSol ? '<div class="ck-answer-side"><div class="small muted ck-answer-side-title">📖 Lời giải</div><div class="md">' + App.md(t.solution || '') + '</div></div>' : '') +
+      '</div>';
+  }
+
   function taskHtml(t, opt) {
     const s = st();
     const res = s.tasks[t.id];
@@ -134,6 +171,7 @@
       (t.domain ? '<span class="small muted">' + esc(t.domain) + '</span>' : '') + (t.minutes ? '<span class="small muted">~' + t.minutes + ' phút</span>' : '') +
       (res ? '<span class="badge ' + (res === 'pass' ? 'ok' : 'bad') + '">' + (res === 'pass' ? '✅ Đạt' : '❌ Chưa đạt') + '</span>' : '') + '</div>' +
       '<div class="md">' + App.md(t.task || '') + '</div>' +
+      answerHtml(t) +
       code('⚙️ Setup (chạy trước khi làm)', t.setup, 'setup') + code('🔎 Verify (chạy sau khi làm)', t.verify, 'verify') +
       ((t.hints || []).length ? '<details><summary>💡 Gợi ý</summary><ol>' + t.hints.map(h => '<li>' + App.md(h) + '</li>').join('') + '</ol></details>' : '') +
       (opt.solution ? '<details><summary>📖 Lời giải</summary><div class="md">' + App.md(t.solution || '') + '</div>' +
@@ -157,11 +195,12 @@
           : '<button class="btn primary" data-act="start">⏱️ Bắt đầu bấm giờ ' + (e.minutes || 120) + ' phút</button>') +
         '<span class="spacer"></span><span class="badge ' + (pct >= (e.passPct || 66) ? 'ok' : '') + '">' + pct + '% / cần ' + (e.passPct || 66) + '%</span></div>' +
         (e.intro ? '<details class="card"><summary>📋 Hướng dẫn môi trường</summary><div class="md">' + App.md(e.intro) + '</div></details>' : '') +
+        terminalCard() +
         e.tasks.map(t => taskHtml(t, { solution: true })).join('') +
         '<a class="btn" href="#/ckad/exams">← Danh sách đề</a>';
     }
     root.onclick = ev => {
-      const b = ev.target.closest('[data-act],[data-mark],[data-copy]'); if (!b) return;
+      const b = ev.target.closest('[data-act],[data-mark],[data-copy],[data-answer]'); if (!b) return;
       if (b.dataset.act === 'start') { s.start[e.id] = Date.now(); App.store.save(); draw(); }
       else if (b.dataset.act === 'finish') {
         const got = e.tasks.filter(t => s.tasks[t.id] === 'pass').reduce((n, t) => n + (t.weight || 0), 0);
@@ -170,7 +209,7 @@
         delete s.start[e.id]; App.store.save(); App.store.log('quiz');
         window.alert('Điểm: ' + score + '% (' + (score >= (e.passPct || 66) ? 'ĐẬU' : 'TRƯỢT') + ', cần ' + (e.passPct || 66) + '%)');
         draw();
-      } else mark(b, draw);
+      } else mark(b, draw, root, e.tasks);
     };
     const timer = setInterval(() => {
       const el = root.querySelector('.ck-timer'); const started = s.start[e.id];
@@ -182,7 +221,18 @@
     draw();
   }
 
-  function mark(b, draw) {
+  function findTask(tasks, id) {
+    return (tasks || []).find(t => t && t.id === id);
+  }
+
+  function setAnswer(id, text) {
+    const s = st();
+    if (text) s.answers[id] = { text: text, updatedAt: Date.now() };
+    else delete s.answers[id];
+    App.store.save();
+  }
+
+  function mark(b, draw, root, tasks) {
     const s = st();
     if (b.dataset.mark) {
       const id = b.dataset.id;
@@ -193,6 +243,41 @@
     } else if (b.dataset.copy) {
       const pre = b.closest('details').querySelector('pre');
       if (pre && navigator.clipboard) navigator.clipboard.writeText(pre.textContent).then(() => { b.textContent = '✅ Đã copy'; }, () => {});
+    } else if (b.dataset.answer) {
+      const id = b.dataset.id;
+      const wrap = b.closest('.ck-answer-wrap');
+      const ta = wrap ? wrap.querySelector('.ck-answer') : null;
+      const fb = wrap ? wrap.querySelector('.ck-answer-feedback') : null;
+      const act = b.dataset.answer;
+      if (act === 'copy') {
+        if (ta && navigator.clipboard) {
+          navigator.clipboard.writeText(ta.value).then(() => {
+            const old = b.textContent; b.textContent = '✅ Đã copy';
+            setTimeout(() => { if (b.isConnected) b.textContent = old; }, 1500);
+          }, () => {});
+        }
+      } else if (act === 'compare') {
+        if (wrap) {
+          const open = wrap.classList.toggle('open');
+          b.setAttribute('aria-expanded', open ? 'true' : 'false');
+          b.textContent = open ? '✕ Ẩn lời giải' : '🆚 So với lời giải';
+        }
+      } else if (act === 'clear') {
+        if (ta) { ta.value = ''; setAnswer(id, ''); if (fb) fb.innerHTML = ''; ta.focus(); }
+      } else if (act === 'ai') {
+        const t = findTask(tasks, id);
+        const code = ta ? ta.value.trim() : '';
+        if (!t || !code || b.disabled) return;
+        const orig = b.textContent;
+        b.disabled = true; b.innerHTML = '<span class="ai-loading">AI đang chấm…</span>';
+        App.ai.review({
+          title: t.title, prompt: t.task,
+          reference: (t.solution || '') + '\nVerify script:\n' + (t.verify || ''),
+          code: code, complexity: '',
+        }).then(r => { if (fb) fb.innerHTML = App.ui.codeFeedback(r); })
+          .catch(e => { if (fb) fb.innerHTML = App.ui.error(e); })
+          .then(() => { b.disabled = false; b.textContent = orig; });
+      }
     }
   }
 
@@ -216,9 +301,10 @@
       root.innerHTML = head('Module ' + l.order + '. ' + esc(l.title)) + tabs('lab') +
         '<div class="card md">' + App.md(l.concepts || '') + '</div>' +
         ((l.videos || []).length ? '<div class="card"><h3>🎬 Video hướng dẫn</h3><ul class="ck-videos">' + l.videos.map(v => ytCard(v)).join('') + '</ul></div>' : '') +
+        terminalCard() +
         l.tasks.map(t => taskHtml(t, { solution: true })).join('') +
         '<div class="row"><a class="btn" href="#/ckad/lab">← Danh sách lab</a>' + (all[i + 1] ? '<a class="btn primary" href="#/ckad/lab/' + esc(all[i + 1].id) + '">Module tiếp →</a>' : '') + '</div>';
-      ckYt(root, b => mark(b, draw));
+      ckYt(root, b => mark(b, draw, root, l.tasks));
     }
     draw();
   }
@@ -228,6 +314,34 @@
     render(root, params) {
       params = params || [];
       const cleanups = [() => { root.onclick = null; }];
+      let saveTimer = null;
+      const onInput = ev => {
+        const ta = ev.target.closest ? ev.target.closest('.ck-answer') : null;
+        if (!ta) return;
+        const s = st();
+        s.answers[ta.dataset.id] = { text: ta.value, updatedAt: Date.now() };
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => { App.store.save(); saveTimer = null; }, 500);
+      };
+      const onKey = ev => {
+        const ta = ev.target.closest ? ev.target.closest('.ck-answer') : null;
+        if (!ta || ev.key !== 'Tab') return;
+        ev.preventDefault();
+        const s = ta.selectionStart, en = ta.selectionEnd;
+        ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en);
+        ta.selectionStart = ta.selectionEnd = s + 2;
+        const st2 = st();
+        st2.answers[ta.dataset.id] = { text: ta.value, updatedAt: Date.now() };
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => { App.store.save(); saveTimer = null; }, 500);
+      };
+      root.addEventListener('input', onInput);
+      root.addEventListener('keydown', onKey);
+      cleanups.push(() => {
+        root.removeEventListener('input', onInput);
+        root.removeEventListener('keydown', onKey);
+        if (saveTimer) { clearTimeout(saveTimer); App.store.save(); }
+      });
       if (params[0] === 'exams') root.innerHTML = viewExams();
       else if (params[0] === 'exam' && params[1]) viewExam(root, params[1], cleanups);
       else if (params[0] === 'lab' && params[1]) viewLab(root, params[1]);

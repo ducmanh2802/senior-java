@@ -1,6 +1,6 @@
 # T2910 — #/ckad: ô làm bài ngay trên trình duyệt + terminal online
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/views/ckad.js`, `css/views/ckad.css`
 After: T2905
@@ -28,3 +28,15 @@ AGENTS.md mục 7 và 9: escape bằng `App.esc`, không gọi AI tự động, 
 Xong: `Status: DONE` + Notes.
 
 ## Notes
+
+Đã làm (chỉ sửa `js/views/ckad.js`, `css/views/ckad.css`):
+
+1. **Ô bài làm** (`answerHtml`) chèn ngay dưới đề bài cho cả đề (`#/ckad/exam/<id>`) và lab (`#/ckad/lab/<id>`): `<textarea class="textarea ck-answer">` monospace, tự lưu debounce 500 ms vào `App.store.data.ckad.answers[taskId]={text,updatedAt}` rồi `App.store.save()`; mở lại hiện lại. Nút: 📋 Copy bài làm, 🆚 So với lời giải (2 cột desktop / 1 cột ≤720px, toggle class `.open`), 🤖 AI chấm, 🗑️ Xoá. Tab chèn 2 dấu cách (không nhảy focus).
+2. **AI chấm** chỉ khi bấm nút: `App.ai.review({title, prompt, reference: solution+'\nVerify script:\n'+verify, code, complexity:''})` → `App.ui.codeFeedback(r)`; chờ hiện `<span class="ai-loading">AI đang chấm…</span>` + disable nút; lỗi bọc try/catch → `App.ui.error(e)`; bài rỗng không gọi.
+3. **Terminal online** (`terminalCard`): thẻ "🖥️ Không cài được kind?…" link Killercoda (tab mới, không iframe) ở đầu trang tổng quan, đầu mỗi đề và mỗi lab; có ghi chú context Killercoda khác `kind-ckad`.
+4. **Cách làm bài** (`stepsCard`) 3 bước trên trang tổng quan.
+
+Nghiệm thu: `node --check js/views/ckad.js` OK; `node scripts/check-budget.js` OK; script Node tạm với browser-shim render `[]`,`['exams']`,`['exam','ckad-2']`,`['lab']`,`['lab','ckad-lab-01']` không throw, HTML không có undefined/NaN (đã xoá script tạm).
+
+`node scripts/validate.js` báo 2 lỗi NGOÀI file sở hữu của task này (không do T2910 gây ra, view/css không được validate.js kiểm tra): `js/data/quiz-ccdv-1.js` lỗi cú pháp (T12 sở hữu) và `js/data/index-light.js` cũ (file sinh, integrator sở hữu). Không tự sửa vì luật 3 (chỉ sửa file sở hữu).
+Reviewed-by: verify-only (code/UI task)
