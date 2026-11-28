@@ -9078,5 +9078,492 @@ long after = 3000 - 9000; // -6000 -> âm, cần chính sách
     ],
     related: [],
     tags: ['stripe', 'refund', 'reverse-transfer', 'review']
+  },
+
+  {
+    id: 'lesson-banking-037',
+    track: 'banking',
+    order: 37,
+    title: 'Sổ cái kép có trạng thái tài khoản: phong tỏa (frozen) chặn ghi Nợ, đóng (closed) chặn cả hai, từ chối nguyên tử',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Nhắc lại bút toán kép Nợ/Có và vì sao tổng Nợ phải bằng tổng Có (tài khoản khách CA/ không âm, tài khoản nội bộ SYS/ được âm)',
+      'Hiểu vì sao tài khoản có trạng thái: phong tỏa (frozen) chỉ chặn chiều tiền ra, đóng (closed) chặn cả hai chiều',
+      'Viết Ledger.post kiểm tra cân bằng + trạng thái + số dư âm TRƯỚC khi ghi, thất bại là nguyên tử, và txId chống ghi trùng',
+    ],
+    body: `**Tóm tắt:** Sổ cái kế toán kép (double-entry) ghi mỗi giao dịch thành các bút toán Nợ/Có với tổng Nợ bằng tổng Có. Bài này thêm một lớp nghiệp vụ thật là **trạng thái tài khoản**: tài khoản khách (tiền tố {{CA/}}) không được âm, tài khoản nội bộ ({{SYS/}}) được âm; tài khoản **phong tỏa (frozen)** chỉ chặn chiều ghi Nợ (tiền đi ra) nhưng vẫn cho ghi Có (tiền đi vào); tài khoản **đã đóng (closed)** chặn cả hai chiều. Mọi kiểm tra phải xong trước khi ghi, nên một giao dịch bị từ chối không để lại nửa bút toán.
+
+### Học lại từ gốc: bút toán, Nợ, Có, sổ cái
+
+- **Bút toán (entry)**: một dòng ghi "tiền đi ra" hoặc "tiền đi vào" một tài khoản. Mỗi giao dịch có ít nhất hai bút toán.
+- **Nợ (Debit)**: bút toán ghi tiền **đi ra khỏi** tài khoản đó. Trong bài, {{debit = true}}.
+- **Có (Credit)**: bút toán ghi tiền **đi vào** tài khoản đó. Trong bài, {{debit = false}}.
+- **Sổ cái (ledger)**: nơi lưu tất cả bút toán. Nguyên tắc **append-only** (chỉ ghi thêm): không UPDATE, không DELETE dòng đã ghi; muốn sửa sai thì ghi thêm bút toán đảo.
+- **Nguyên tử (atomic)**: hoặc tất cả các bút toán của một giao dịch được ghi, hoặc không ghi gì cả. Không có trạng thái "nửa vời".
+
+Vì sao tổng Nợ phải bằng tổng Có? Vì mỗi đồng tiền đi ra khỏi một tài khoản phải đi vào một tài khoản khác. Nếu tổng Nợ lớn hơn tổng Có, tiền sinh ra từ hư không; nếu nhỏ hơn, tiền biến mất. Đây là **bất biến (invariant)** cốt lõi: vi phạm dù 1 đồng thì hệ thống phải từ chối ghi.
+
+### Tài khoản khách và tài khoản nội bộ
+
+Không phải tài khoản nào cũng đối xử như nhau:
+
+| Loại | Tiền tố | Được âm không | Ví dụ |
+|---|---|---|---|
+| Tài khoản khách | {{CA/}} | **Không** | ví người dùng, tài khoản thanh toán |
+| Tài khoản nội bộ | {{SYS/}} | **Có** | tài khoản mở đầu (opening), phí (fee), treo (suspense) |
+
+Tài khoản khách âm nghĩa là ngân hàng cho vay ngoài ý muốn — vi phạm kiểm toán. Tài khoản nội bộ âm là bình thường: khi nạp tiền ban đầu cho khách, ta ghi Có {{CA/lan}} và Nợ {{SYS/opening}}; {{SYS/opening}} mang số âm để phản ánh "nguồn tiền" của ngân hàng.
+
+### Vì sao tài khoản có trạng thái
+
+Trong đời thực, một tài khoản không chỉ "có tiền hay không" mà còn "đang được phép làm gì":
+
+- **ACTIVE (hoạt động)**: giao dịch bình thường cả hai chiều.
+- **FROZEN (phong tỏa)**: thường do nghi ngờ gian lận, tranh chấp, hoặc yêu cầu cơ quan chức năng. Tài khoản **không được chuyển tiền ra** (chặn ghi Nợ) nhưng **vẫn nhận được tiền vào** (cho ghi Có) — vì tiền về không gây rủi ro, còn tiền đi mới là thứ cần ngăn.
+- **CLOSED (đã đóng)**: khách đã tất toán. Không cho cả ghi Nợ lẫn ghi Có.
+
+Điểm senior: trạng thái là **luật của từng tài khoản**, nhưng tính đúng đắn của cả sổ cái vẫn phải giữ — một giao dịch chạm vào tài khoản đóng băng phải bị từ chối **toàn bộ**, không được ghi cho tài khoản còn lại rồi báo lỗi.
+
+### Cơ chế từng bước của post
+
+1. **Chặn ghi trùng**: nếu {{txId}} đã có trong sổ, trả {{false}} (no-op), không ghi gì. Đây là idempotency (gửi lại cùng một yêu cầu không tạo hiệu ứng lần hai).
+2. **Validate cơ bản**: ít nhất 2 bút toán, mỗi {{amount > 0}}, {{account}} không rỗng; vi phạm ném {{IllegalArgumentException}}.
+3. **Cộng tổng Nợ và tổng Có**, đồng thời tính **delta** (mức thay đổi) của từng tài khoản: {{signed = debit ? -amount : amount}}.
+4. **Kiểm tra cân bằng**: tổng Nợ phải bằng tổng Có, lệch thì ném {{IllegalArgumentException}}.
+5. **Kiểm tra trạng thái và số dư** trên từng tài khoản trong delta (chưa ghi gì): CLOSED ⇒ từ chối; FROZEN mà có bút toán Nợ ⇒ từ chối; tài khoản {{CA/}} sau khi cộng delta bị âm ⇒ từ chối (ném {{IllegalStateException}}).
+6. **Chỉ khi mọi kiểm tra pass** mới áp delta vào số dư và ghi {{txId}} vào sổ. Nhờ vậy thất bại là nguyên tử.
+
+### Ví dụ: chuyển tiền vào tài khoản đang phong tỏa
+
+Giả sử {{CA/lan}} đang FROZEN, {{CA/minh}} ACTIVE. Khách A chuyển 20.000đ cho Lan (tức ghi Có cho Lan, ghi Nợ cho A):
+
+| txId | Tài khoản | Nợ (đi ra) | Có (đi vào) |
+|---|---|---|---|
+| T8 | CA/a | 20.000 | |
+| T8 | CA/lan (FROZEN) | | 20.000 |
+
+Vì Lan chỉ nhận (ghi Có), không có bút toán Nợ trên Lan, giao dịch **được chấp nhận**. Ngược lại, nếu Lan chuyển 10.000đ đi (ghi Nợ Lan) thì bị từ chối.
+
+### Lỗi hay gặp trên production
+
+1. **Ghi rồi mới kiểm tra**: nếu kiểm tra số dư âm sau khi đã cộng delta vào một tài khoản, giao dịch lỗi để lại sổ hỏng. Phải kiểm tra trên delta tạm trước, rồi mới áp.
+2. **Lẫn trạng thái "đóng" và "phong tỏa"**: đóng băng cho nhận tiền, đóng thì không. Nhầm hai cái làm khách không nhận được tiền hoàn vào tài khoản đã đóng, hoặc kẻ gian vẫn rút được tiền từ tài khoản đóng băng.
+3. **Không chặn ghi Nợ cho FROZEN**: đây là lỗ hổng bảo mật — phong tỏa mà vẫn cho chuyển tiền ra thì phong tỏa vô nghĩa.
+4. **Không có txId idempotency**: retry do timeout ghi tiền hai lần.
+
+### Ví dụ đời thực
+
+Một vụ lừa đảo: tài khoản {{CA/nghi}} bị đánh cắp, ngân hàng set FROZEN lúc 10:00. Lúc 10:05 kẻ gian thử chuyển 50 triệu đi — hệ thống từ chối vì FROZEN chặn ghi Nợ, không ghi bút toán nào. Cùng lúc, một khách khác chuyển 5 triệu vào {{CA/nghi}} (ghi Có) — vẫn được, vì nhận tiền không rủi ro. Đối chiếu cuối ngày: số dư {{CA/nghi}} tăng 5 triệu (tiền vào hợp lệ) nhưng không giảm đồng nào (tiền ra bị chặn) — đúng nghiệp vụ phong tỏa.
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Tài khoản bị phong tỏa thì hệ thống sổ cái xử lý thế nào? Khác gì đóng tài khoản?"
+
+**Cách trả lời:** Phong tỏa (frozen) chỉ chặn chiều **ghi Nợ** (tiền đi ra) nhưng vẫn cho **ghi Có** (tiền vào), vì nhận tiền không gây rủi ro; đóng (closed) chặn cả hai chiều vì khách đã tất toán. Về sổ cái kép, mỗi giao dịch phải cân bằng Nợ/Có và kiểm tra trạng thái + số dư **trước khi ghi** để thất bại là nguyên tử; tài khoản khách ({{CA/}}) không âm, tài khoản nội bộ ({{SYS/}}) được âm. Dùng {{txId}} làm khóa idempotency để retry không ghi tiền hai lần. Điểm senior: một giao dịch chạm tài khoản đóng băng phải bị từ chối **toàn bộ**, không ghi cho tài khoản còn lại.
+
+> Senior tip: Trong code review, coi "ghi delta rồi mới kiểm tra" là bug nghiêm trọng; kiểm tra phải trên dữ liệu tạm. Và luôn phân biệt FROZEN (chặn tiền ra) với CLOSED (chặn cả hai) — nhầm một chữ là lỗ hổng hoặc là khách khiếu nại.`,
+    exercises: [
+      {
+        title: 'Ledger có trạng thái: post / balance / status / txCount',
+        prompt: `Viết class {{Ledger}} ghi sổ theo kế toán kép, có trạng thái tài khoản. {{Entry}} gồm {{account}} (tiền tố {{CA/}} = khách, {{SYS/}} = nội bộ), {{amount}} (long, luôn dương, đơn vị đồng chẵn), {{debit}} ({{true}} = tiền đi ra, {{false}} = tiền đi vào).
+
+Quy tắc bắt buộc:
+1. {{setStatus(account, status)}} với status ∈ {ACTIVE, FROZEN, CLOSED}; status khác ⇒ {{IllegalArgumentException}}. {{status(account)}} trả trạng thái, mặc định {{ACTIVE}} nếu chưa đặt.
+2. {{post(txId, entries)}} trả {{boolean}}. {{txId}} đã ghi ⇒ no-op trả {{false}}. {{entries}} < 2 bút toán hoặc {{amount <= 0}} ⇒ {{IllegalArgumentException}}. Tổng Nợ phải **bằng** tổng Có, lệch ⇒ {{IllegalArgumentException}} và không ghi gì.
+3. Trạng thái: tài khoản {{CLOSED}} có bút toán ⇒ {{IllegalStateException}}; tài khoản {{FROZEN}} có bút toán **Nợ** ⇒ {{IllegalStateException}} (FROZEN vẫn cho ghi Có).
+4. Số dư: tài khoản {{CA/}} sau khi ghi bị **âm** ⇒ {{IllegalStateException}}; tài khoản {{SYS/}} được âm. Mọi kiểm tra xong mới ghi (nguyên tử).
+5. {{balance(account)}} trả số dư (chưa biết ⇒ 0); {{txCount()}} đếm số giao dịch đã ghi.`,
+        starter: `import java.util.*;
+
+class Entry {
+    final String account;
+    final long amount;
+    final boolean debit;
+    Entry(String account, long amount, boolean debit) {
+        this.account = account;
+        this.amount = amount;
+        this.debit = debit;
+    }
+}
+
+class Ledger {
+    private final Map<String, Long> balances = new HashMap<>();
+    private final Map<String, String> statuses = new HashMap<>();
+    private final Map<String, List<Entry>> txLog = new LinkedHashMap<>();
+
+    void setStatus(String account, String status) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String status(String account) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean post(String txId, List<Entry> entries) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long balance(String account) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int txCount() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Entry en(String acc, long amt, boolean debit) { return new Entry(acc, amt, debit); }
+    static List<Entry> of(Entry... a) { return new ArrayList<>(Arrays.asList(a)); }
+
+    public static void main(String[] args) {
+        Ledger l = new Ledger();
+        check("khoi tao so du 0", l.balance("CA/a") == 0, "");
+        check("mac dinh ACTIVE", l.status("CA/a").equals("ACTIVE"), "status=" + l.status("CA/a"));
+
+        check("post can bang", l.post("T1", of(en("CA/a", 100000, false), en("SYS/opening", 100000, true))), "T1 phai tra true");
+        check("so du a sau khi nhap tien", l.balance("CA/a") == 100000, "da=" + l.balance("CA/a"));
+        check("txCount bang 1", l.txCount() == 1, "tx=" + l.txCount());
+        check("tai khoan noi bo duoc am", l.balance("SYS/opening") == -100000, "sys=" + l.balance("SYS/opening"));
+
+        check("lech Neh/Coh bi tu choi", expect(IllegalArgumentException.class, () -> l.post("T2", of(en("CA/a", 100, true), en("CA/b", 50, false)))), "");
+        check("giao dich loi khong ghi gi", l.txCount() == 1 && l.balance("CA/a") == 100000, "tx=" + l.txCount());
+        check("txId trung la no-op", !l.post("T1", of(en("CA/a", 1, true), en("CA/b", 1, false))), "");
+        check("no-op khong doi so du", l.balance("CA/a") == 100000 && l.txCount() == 1, "tx=" + l.txCount());
+        check("amount 0 bi tu choi", expect(IllegalArgumentException.class, () -> l.post("T3", of(en("CA/a", 0, true), en("CA/b", 0, false)))), "");
+        check("duoi 2 but toan bi tu choi", expect(IllegalArgumentException.class, () -> l.post("T4", of(en("CA/a", 10, true)))), "");
+
+        check("chuyen tien", l.post("T5", of(en("CA/a", 40000, true), en("CA/b", 40000, false))), "");
+        check("a con 60000", l.balance("CA/a") == 60000, "da=" + l.balance("CA/a"));
+        check("b co 40000", l.balance("CA/b") == 40000, "db=" + l.balance("CA/b"));
+
+        check("so du khach am bi tu choi", expect(IllegalStateException.class, () -> l.post("T6", of(en("CA/a", 999999, true), en("CA/b", 999999, false)))), "");
+        check("giao dich am khong ghi gi", l.balance("CA/a") == 60000 && l.txCount() == 2, "tx=" + l.txCount());
+
+        l.setStatus("CA/a", "FROZEN");
+        check("set FROZEN", l.status("CA/a").equals("FROZEN"), "");
+        check("FROZEN chan ghi no", expect(IllegalStateException.class, () -> l.post("T7", of(en("CA/a", 10000, true), en("CA/b", 10000, false)))), "");
+        check("FROZEN tu choi nguyen tu", l.balance("CA/a") == 60000 && l.balance("CA/b") == 40000 && l.txCount() == 2, "tx=" + l.txCount());
+        check("FROZEN van nhan ghi co", l.post("T8", of(en("CA/b", 20000, true), en("CA/a", 20000, false))), "");
+        check("ghi co vao FROZEN tang so du", l.balance("CA/a") == 80000, "da=" + l.balance("CA/a"));
+
+        l.setStatus("CA/b", "CLOSED");
+        check("set CLOSED", l.status("CA/b").equals("CLOSED"), "");
+        check("CLOSED chan ghi no", expect(IllegalStateException.class, () -> l.post("T9", of(en("CA/b", 1000, true), en("CA/a", 1000, false)))), "");
+        check("CLOSED chan ghi co", expect(IllegalStateException.class, () -> l.post("T10", of(en("CA/a", 1000, true), en("CA/b", 1000, false)))), "");
+        check("CLOSED tu choi nguyen tu", l.balance("CA/b") == 20000 && l.txCount() == 3, "tx=" + l.txCount());
+        check("status khong hop le bi tu choi", expect(IllegalArgumentException.class, () -> l.setStatus("CA/x", "BROKEN")), "");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Entry {
+    final String account;
+    final long amount;
+    final boolean debit;
+    Entry(String account, long amount, boolean debit) {
+        this.account = account;
+        this.amount = amount;
+        this.debit = debit;
+    }
+}
+
+class Ledger {
+    private final Map<String, Long> balances = new HashMap<>();
+    private final Map<String, String> statuses = new HashMap<>();
+    private final Map<String, List<Entry>> txLog = new LinkedHashMap<>();
+
+    void setStatus(String account, String status) {
+        if (account == null || account.isEmpty()) throw new IllegalArgumentException("account rong");
+        if (!status.equals("ACTIVE") && !status.equals("FROZEN") && !status.equals("CLOSED"))
+            throw new IllegalArgumentException("status khong hop le: " + status);
+        statuses.put(account, status);
+    }
+
+    String status(String account) {
+        return statuses.getOrDefault(account, "ACTIVE");
+    }
+
+    boolean post(String txId, List<Entry> entries) {
+        if (txId == null || txId.isEmpty()) throw new IllegalArgumentException("txId rong");
+        if (txLog.containsKey(txId)) return false;                       // idempotency: da ghi roi thi bo qua
+        if (entries == null || entries.size() < 2) throw new IllegalArgumentException("can tu 2 but toan");
+        long debits = 0, credits = 0;
+        Map<String, Long> delta = new LinkedHashMap<>();
+        Set<String> debitedAccounts = new HashSet<>();
+        for (Entry e : entries) {
+            if (e.account == null || e.account.isEmpty()) throw new IllegalArgumentException("account rong");
+            if (e.amount <= 0) throw new IllegalArgumentException("amount phai > 0: " + e.amount);
+            if (e.debit) { debits += e.amount; debitedAccounts.add(e.account); }
+            else credits += e.amount;
+            long signed = e.debit ? -e.amount : e.amount;                // Co lam so du tang
+            delta.merge(e.account, signed, Long::sum);
+        }
+        if (debits != credits) throw new IllegalArgumentException("Lech Neh/Coh: " + debits + " khac " + credits);
+        for (Map.Entry<String, Long> d : delta.entrySet()) {            // KIEM TRA TRUOC, chua ghi gi
+            String acc = d.getKey();
+            String st = status(acc);
+            if (st.equals("CLOSED")) throw new IllegalStateException("tai khoan da dong: " + acc);
+            if (st.equals("FROZEN") && debitedAccounts.contains(acc))
+                throw new IllegalStateException("tai khoan phong toa, chan ghi no: " + acc);
+            long after = balance(acc) + d.getValue();
+            if (acc.startsWith("CA/") && after < 0) throw new IllegalStateException("so du khach am: " + acc);
+        }
+        for (Map.Entry<String, Long> d : delta.entrySet()) balances.merge(d.getKey(), d.getValue(), Long::sum);
+        txLog.put(txId, new ArrayList<>(entries));                       // append-only
+        return true;
+    }
+
+    long balance(String account) {
+        return balances.getOrDefault(account, 0L);
+    }
+
+    int txCount() {
+        return txLog.size();
+    }
+}`,
+        hints: [
+          'Đừng ghi ngay: cộng dồn Nợ/Có và tính delta từng tài khoản vào một Map tạm, kiểm tra xong mới áp — thất bại là nguyên tử.',
+          'FROZEN chỉ chặn khi tài khoản đó có bút toán Nợ; ghi Có vào FROZEN vẫn hợp lệ. CLOSED chặn mọi bút toán.',
+          'Tài khoản {{CA/}} không được âm sau khi cộng delta; tài khoản {{SYS/}} được âm (nguồn tiền nội bộ).',
+          '{{txId}} đã tồn tại ⇒ trả {{false}} (no-op), không ghi thêm, không đổi số dư.',
+        ],
+        explain: `Bốn bất biến được test riêng: **cân bằng Nợ/Có** ({{T2}} ⇒ {{IllegalArgumentException}}), **tài khoản khách không âm** ({{T6}} ⇒ {{IllegalStateException}}), **idempotency theo txId** (ghi lại {{T1}} trả false dù nội dung khác), **trạng thái tài khoản** ({{FROZEN}} chặn ghi Nợ {{T7}} nhưng cho ghi Có {{T8}}; {{CLOSED}} chặn cả hai {{T9}}/{{T10}}).
+
+Điểm dễ sai nhất: kiểm tra số dư **ngay trong vòng lặp ghi**. Cách đó để lại sổ hỏng khi bút toán thứ hai bị từ chối. Hãy tách ba pha: (1) validate + cộng tổng, (2) simulate delta và kiểm tra trạng thái + số dư, (3) chỉ khi ổn mới áp vào balances và txLog.
+
+Lỗi hay gặp: lẫn FROZEN với CLOSED, cho phép ghi Nợ trên FROZEN, hoặc dùng double cho amount.`,
+      }
+    ],
+    check: [
+      { q: 'Tài khoản FROZEN (phong tỏa) thì được làm gì?', options: ['Không cho cả ghi Nợ lẫn ghi Có', 'Chỉ chặn ghi Nợ (tiền ra), vẫn cho ghi Có (tiền vào)', 'Chỉ chặn ghi Có', 'Vẫn rút tiền bình thường'], answer: 1, explain: 'Đúng (B): phong tỏa ngăn tiền đi ra (ghi Nợ) để chống mất mát/rủi ro, nhưng vẫn cho nhận tiền vào (ghi Có) vì nhận tiền không gây rủi ro. Sai (A): đó là CLOSED (đã đóng). Sai (C): ngược lại. Sai (D): rút tiền là ghi Nợ, bị chặn.' },
+      { q: 'Một giao dịch chạm vào tài khoản CLOSED thì hệ thống phải làm gì?', options: ['Ghi cho tài khoản còn lại rồi báo lỗi', 'Từ chối toàn bộ, không ghi gì (nguyên tử)', 'Tự mở lại tài khoản', 'Ghi tạm rồi đối soát sau'], answer: 1, explain: 'Đúng (B): mọi kiểm tra phải xong trước khi ghi; nếu một tài khoản vi phạm (CLOSED, FROZEN ghi Nợ, âm) thì cả giao dịch bị từ chối, không để lại nửa bút toán. Sai (A): để lại sổ hỏng. Sai (C): tự mở tài khoản là sai nghiệp vụ. Sai (D): "ghi tạm" phá bất biến cân bằng.' },
+      { q: 'Tài khoản nào được phép mang số dư âm?', options: ['Mọi tài khoản', 'Tài khoản khách {{CA/}}', 'Tài khoản nội bộ {{SYS/}}', 'Không tài khoản nào'], answer: 2, explain: 'Đúng (C): tài khoản nội bộ ({{SYS/}}) như opening/fee/suspense phản ánh dòng tiền của chính ngân hàng nên được âm. Tài khoản khách ({{CA/}}) âm nghĩa là cho vay ngoài ý muốn, vi phạm kiểm toán, phải chặn. Sai (A),(B): khách không được âm. Sai (D): nội bộ được âm.' },
+      { q: 'Vì sao phải kiểm tra trạng thái và số dư TRƯỚC khi ghi delta?', options: ['Để code gọn hơn', 'Để thất bại là nguyên tử, không để lại sổ hỏng khi bút toán thứ hai bị từ chối', 'Vì HashMap chậm', 'Vì không cần txId'], answer: 1, explain: 'Đúng (B): nếu ghi rồi mới kiểm tra, giao dịch lỗi để lại một phần bút toán (sổ hỏng). Kiểm tra trên delta tạm trước rồi mới áp đảm bảo hoặc ghi hết hoặc không ghi gì. Sai (A): không phải vấn đề gọn. Sai (C): hiệu năng không liên quan. Sai (D): txId vẫn cần để chống ghi trùng.' }
+    ],
+    related: ['banking-005', 'banking-013'],
+    tags: ['ledger', 'double-entry', 'freeze', 'account-status', 'banking']
+  },
+
+  {
+    id: 'lesson-banking-038',
+    track: 'banking',
+    order: 38,
+    title: 'Đối soát khi có giao dịch trùng: khớp theo (mã tham chiếu, số tiền) dạng đa tập, phân biệt khớp / lệch / chỉ một bên / trùng lặp',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Hiểu vì sao Map(ref → amount) đơn giản sai khi cùng một ref xuất hiện nhiều lần, và vì sao phải khớp theo đa tập (multiset)',
+      'Phân loại 5 nhóm: matched, amount mismatch, only internal, only partner, duplicate refs',
+      'Viết Reconciler.reconcile khớp theo (ref, amount) dạng đa tập, đếm đúng từng nhóm kể cả khi có trùng',
+    ],
+    body: `**Tóm tắt:** Đối soát (reconciliation) so sánh giao dịch nội bộ với đối tác theo **mã tham chiếu (ref)**. Khi một ref chỉ xuất hiện một lần, chỉ cần Map(ref → amount). Nhưng thực tế đối tác gửi lại (retry) hoặc một ref ứng với nhiều dòng, nên phải khớp theo **đa tập (multiset)** các cặp (ref, amount): mỗi cặp (ref, amount) bên này tìm đúng một cặp giống bên kia để ghép; phần dư ở ref có ở cả hai bên là **lệch số tiền**, phần dư ở ref chỉ có một bên là **chỉ một bên**, và ref xuất hiện nhiều lần được đếm là **trùng lặp**.
+
+### Đối soát là gì, vì sao phải làm
+
+**Đối soát (reconciliation)** là so khớp hai danh sách giao dịch — một từ hệ thống nội bộ, một từ đối tác (ngân hàng, ví, cổng thanh toán) — để phát hiện lệch. Cuối ngày mỗi bên gửi một file; chương trình phân loại từng dòng. Mục tiêu không phải "tổng có bằng nhau không" mà là **từng dòng có khớp không**, vì hai sai lệch bù trừ nhau vẫn cho tổng bằng nhau.
+
+### Thuật ngữ
+
+- **Mã tham chiếu (ref / reference id)**: số định danh giao dịch do phía tạo sinh, dùng để ghép hai bên. Ví dụ: {{TXN001}}.
+- **Đa tập (multiset / bag)**: một tập hợp mà mỗi phần tử có thể xuất hiện nhiều lần, và số lần xuất hiện có ý nghĩa. {{[200, 200]}} khác {{[200]}}.
+- **Khớp (matched)**: cùng ref, cùng số tiền.
+- **Lệch số tiền (amount mismatch)**: cùng ref nhưng số tiền khác.
+- **Chỉ một bên (only internal / only partner)**: ref chỉ có ở một danh sách.
+- **Trùng lặp (duplicate)**: một ref xuất hiện nhiều lần ở một bên (thường do retry hoặc lỗi gộp file).
+
+### Vì sao Map(ref → amount) đơn giản là sai
+
+Cách viết ngây thơ: {{Map<String, Long> p = ...}} rồi duyệt internal, tra partner theo ref. Vấn đề: nếu partner có **hai** dòng cùng ref (ví dụ {{B=200}} và {{B=999}}), Map chỉ giữ **một** giá trị (bị ghi đè), nên mất một dòng và đếm sai. Đối tác gửi trùng một giao dịch là chuyện thường ngày (hạ tầng retry theo backoff), nên phải xử lý đa tập.
+
+### Cơ chế từng bước
+
+1. **Gom nhóm theo ref**: với mỗi bên, tạo {{Map<ref, List<amount>>}} — giữ **tất cả** các amount, kể cả trùng.
+2. **Ghép theo (ref, amount)**: với mỗi ref, đếm số lần xuất hiện của từng amount ở partner; duyệt các amount của internal, nếu partner còn amount đó thì ghép (matched++), ngược lại để lại vào "dư internal".
+3. **Phân loại phần dư**:
+   - ref có ở **cả hai** bên mà còn dư ⇒ **amount mismatch** (cộng số dòng dư cả hai phía).
+   - ref **chỉ có ở internal** ⇒ **only internal**.
+   - ref **chỉ có ở partner** ⇒ **only partner**.
+4. **Đếm trùng lặp**: ref nào có số dòng > 1 ở bất kỳ bên thì duplicateRefs++.
+
+### Ví dụ: một ref xuất hiện nhiều lần
+
+| Bên | ref | amount |
+|---|---|---|
+| internal | B | 200 |
+| internal | B | 200 |
+| partner | B | 200 |
+| partner | B | 999 |
+
+Ghép: một {{B=200}} khớp, còn lại internal {{B=200}} và partner {{B=999}} là dư ở ref có cả hai bên ⇒ amount mismatch (2 dòng dư). ref B xuất hiện 2 lần ⇒ duplicateRefs++.
+
+### Lỗi hay gặp trên production
+
+1. **Dùng Map(ref → amount)**: mất dòng khi ref trùng, đếm sai matched/mismatch.
+2. **Chỉ so tổng**: hai lệch bù trừ làm tổng bằng nhau mà mọi dòng đều sai.
+3. **Không đếm trùng lặp**: không phát hiện đối tác gửi lại file, tưởng dữ liệu sạch.
+4. **Tự sửa số liệu**: mọi dòng lệch phải điều tra, không tự ghi đè.
+
+### Ví dụ đời thực
+
+Đối tác gửi file 10.000 dòng, trong đó 37 ref bị lặp do retry. Hệ thống Map đơn giản báo "matched 9.963" nhưng thực tế 37 dòng trùng bị bỏ sót; sau khi chuyển sang khớp đa tập, phát hiện 37 ref trùng, 12 dòng lệch số tiền (do phí), 5 dòng chỉ có ở đối tác (timeout) — đúng sự thật để điều tra.
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Đối tác gửi file có giao dịch trùng, bạn đối soát thế nào để không đếm sai?"
+
+**Cách trả lời:** Không dùng Map(ref → amount) vì ref trùng sẽ ghi đè mất dòng. Khớp theo **đa tập** các cặp (ref, amount): gom nhóm {{Map<ref, List<amount>>}}, với mỗi ref ghép từng amount giống nhau (matched), phần dư ở ref có cả hai bên là amount mismatch, phần dư ở ref chỉ một bên là only internal/only partner, và đếm duplicateRefs cho ref xuất hiện nhiều lần. Không tự sửa số liệu, mọi dòng lệch phải điều tra. Điểm senior: nhắc retry/backoff là nguồn trùng lặp, và so từng dòng chứ không so tổng.
+
+> Senior tip: Khi làm đối soát, hãy hỏi ngay "ref có duy nhất không?" — nếu không, phải khớp đa tập. Và luôn lưu raw file đối tác để audit; đừng bao giờ tự sửa số liệu.`,
+    exercises: [
+      {
+        title: 'Reconciler.reconcile: khớp đa tập theo (ref, amount)',
+        prompt: `Viết {{Reconciler.reconcile(List<Tx> internal, List<Tx> partner)}} trả {{Result}} với các trường đếm: {{matched}}, {{amountMismatch}}, {{onlyInternal}}, {{onlyPartner}}, {{duplicateRefs}}. {{Tx}} gồm {{ref}} (String) và {{amount}} (long).
+
+Quy tắc:
+1. Gom nhóm mỗi bên theo ref thành {{Map<ref, List<amount>>}} (giữ cả amount trùng).
+2. Với mỗi ref xuất hiện ở cả hai bên: ghép từng amount giống nhau (mỗi cặp (ref, amount) bên này tìm đúng một cặp giống bên kia) ⇒ {{matched}} tăng. Phần dư còn lại (không ghép được) cộng vào {{amountMismatch}} (tổng số dòng dư cả hai phía).
+3. Ref chỉ có ở internal ⇒ {{onlyInternal}} += số dòng; ref chỉ có ở partner ⇒ {{onlyPartner}} += số dòng.
+4. Ref có số dòng > 1 ở bất kỳ bên ⇒ {{duplicateRefs}}++ (đếm số ref, không phải số dòng).
+5. Danh sách null coi như rỗng.`,
+        starter: `import java.util.*;
+
+class Reconciler {
+    static class Tx {
+        String ref; long amount;
+        Tx(String r, long a) { ref = r; amount = a; }
+    }
+    static class Result {
+        int matched, amountMismatch, onlyInternal, onlyPartner, duplicateRefs;
+    }
+
+    static Result reconcile(List<Tx> internal, List<Tx> partner) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static Reconciler.Tx tx(String r, long a) { return new Reconciler.Tx(r, a); }
+
+    public static void main(String[] args) {
+        Reconciler.Result r1 = Reconciler.reconcile(
+            java.util.Arrays.asList(tx("A",100), tx("B",200), tx("B",200), tx("C",300), tx("E",500)),
+            java.util.Arrays.asList(tx("A",100), tx("B",200), tx("B",999), tx("C",350), tx("D",400))
+        );
+        check("matched_dem_dung", r1.matched == 2, "matched=" + r1.matched);
+        check("amount_mismatch_dem_dung", r1.amountMismatch == 4, "mismatch=" + r1.amountMismatch);
+        check("only_internal_dem_dung", r1.onlyInternal == 1, "onlyInternal=" + r1.onlyInternal);
+        check("only_partner_dem_dung", r1.onlyPartner == 1, "onlyPartner=" + r1.onlyPartner);
+        check("duplicate_refs_phat_hien", r1.duplicateRefs == 1, "dup=" + r1.duplicateRefs);
+
+        Reconciler.Result r2 = Reconciler.reconcile(
+            java.util.Arrays.asList(tx("X",100), tx("Y",200), tx("Z",300)),
+            java.util.Arrays.asList(tx("X",100), tx("Y",250), tx("W",400))
+        );
+        check("khong_trung_matched", r2.matched == 1, "matched=" + r2.matched);
+        check("khong_trung_mismatch", r2.amountMismatch == 2, "mismatch=" + r2.amountMismatch);
+        check("khong_trung_only_internal", r2.onlyInternal == 1, "onlyInternal=" + r2.onlyInternal);
+        check("khong_trung_only_partner", r2.onlyPartner == 1, "onlyPartner=" + r2.onlyPartner);
+        check("khong_trung_khong_duplicate", r2.duplicateRefs == 0, "dup=" + r2.duplicateRefs);
+
+        Reconciler.Result r3 = Reconciler.reconcile(
+            java.util.Arrays.asList(tx("A",100), tx("A",100)),
+            java.util.Arrays.asList(tx("A",100), tx("A",100))
+        );
+        check("trung_lap_khop_het", r3.matched == 2 && r3.amountMismatch == 0 && r3.onlyInternal == 0 && r3.onlyPartner == 0, "matched=" + r3.matched);
+        check("trung_lap_van_dem_duplicate", r3.duplicateRefs == 1, "dup=" + r3.duplicateRefs);
+
+        Reconciler.Result r4 = Reconciler.reconcile(new java.util.ArrayList<>(), new java.util.ArrayList<>());
+        check("rong_thi_tat_ca_0", r4.matched == 0 && r4.amountMismatch == 0 && r4.onlyInternal == 0 && r4.onlyPartner == 0 && r4.duplicateRefs == 0, "");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Reconciler {
+    static class Tx {
+        String ref; long amount;
+        Tx(String r, long a) { ref = r; amount = a; }
+    }
+    static class Result {
+        int matched, amountMismatch, onlyInternal, onlyPartner, duplicateRefs;
+    }
+
+    static Result reconcile(List<Tx> internal, List<Tx> partner) {
+        Result res = new Result();
+        Map<String, List<Long>> in = group(internal);
+        Map<String, List<Long>> pa = group(partner);
+        Set<String> allRefs = new LinkedHashSet<>();
+        allRefs.addAll(in.keySet());
+        allRefs.addAll(pa.keySet());
+        for (String ref : allRefs) {
+            List<Long> i = in.getOrDefault(ref, new ArrayList<>());
+            List<Long> p = pa.getOrDefault(ref, new ArrayList<>());
+            if (i.size() > 1 || p.size() > 1) res.duplicateRefs++;          // ref xuat hien nhieu lan
+            Map<Long, Integer> pCount = new HashMap<>();                   // dem so lan tung amount ben partner
+            for (long a : p) pCount.merge(a, 1, Integer::sum);
+            List<Long> iLeft = new ArrayList<>();
+            int matchedHere = 0;
+            for (long a : i) {                                             // ghep tung amount giong nhau
+                Integer c = pCount.get(a);
+                if (c != null && c > 0) { pCount.put(a, c - 1); matchedHere++; }
+                else iLeft.add(a);
+            }
+            int pLeft = 0;
+            for (int c : pCount.values()) pLeft += c;
+            res.matched += matchedHere;
+            if (in.containsKey(ref) && pa.containsKey(ref)) {
+                res.amountMismatch += iLeft.size() + pLeft;                // du o ca hai phia
+            } else if (in.containsKey(ref)) {
+                res.onlyInternal += i.size();
+            } else {
+                res.onlyPartner += p.size();
+            }
+        }
+        return res;
+    }
+
+    private static Map<String, List<Long>> group(List<Tx> list) {
+        Map<String, List<Long>> m = new LinkedHashMap<>();
+        if (list != null) for (Tx t : list) m.computeIfAbsent(t.ref, k -> new ArrayList<>()).add(t.amount);
+        return m;
+    }
+}`,
+        hints: [
+          'Đừng dùng Map(ref → amount): ref trùng sẽ ghi đè mất dòng. Hãy dùng Map(ref → List<amount>) để giữ đa tập.',
+          'Ghép theo (ref, amount): đếm số lần mỗi amount ở partner, duyệt internal, amount nào còn ở partner thì ghép (matched), không thì để dư.',
+          'Phần dư ở ref có cả hai bên ⇒ amountMismatch; ref chỉ một bên ⇒ onlyInternal/onlyPartner; ref có >1 dòng ⇒ duplicateRefs.',
+        ],
+        explain: `Test bắt ba tình huống: (1) **có trùng + lệch + chỉ một bên** — ref B xuất hiện 2 lần mỗi bên, một cặp 200 khớp, dư 200 và 999 ⇒ amountMismatch 2; ref C 300 vs 350 ⇒ thêm 2; E chỉ internal, D chỉ partner; duplicateRefs = 1. (2) **không trùng** — phân loại 4 nhóm cơ bản. (3) **trùng lặp khớp hết** — hai cặp (A,100) khớp cả hai, duplicateRefs vẫn đếm 1.
+
+Điểm dễ sai: dùng Map(ref → amount) làm mất dòng trùng, hoặc chỉ so tổng. Lỗi hay gặp: không đếm duplicateRefs nên không phát hiện đối tác gửi lại file.`,
+      }
+    ],
+    check: [
+      { q: 'Vì sao không nên dùng Map(ref → amount) khi đối soát?', options: ['Vì Map chậm', 'Vì ref trùng sẽ ghi đè mất dòng, đếm sai matched/mismatch', 'Vì amount phải là String', 'Vì không dùng được long'], answer: 1, explain: 'Đúng (B): Map(ref → amount) chỉ giữ một amount cho mỗi ref; khi đối tác gửi trùng (retry) hoặc một ref có nhiều dòng, các dòng sau ghi đè dòng trước, mất dữ liệu và đếm sai. Phải khớp theo đa tập (Map(ref → List<amount>)). Sai (A): không phải vấn đề tốc độ. Sai (C): amount là số. Sai (D): long dùng bình thường.' },
+      { q: 'Một ref có ở cả hai bên nhưng số tiền khác nhau thì phân loại gì?', options: ['Matched', 'Amount mismatch', 'Only internal', 'Duplicate'], answer: 1, explain: 'Đúng (B): cùng ref nhưng khác số tiền là amount mismatch, cần điều tra (phí, làm tròn, refund một phần). Sai (A): matched là cùng số tiền. Sai (C): only internal là ref chỉ có một bên. Sai (D): duplicate là ref xuất hiện nhiều lần.' },
+      { q: 'duplicateRefs đếm cái gì?', options: ['Số dòng dư', 'Số ref xuất hiện nhiều lần ở bất kỳ bên', 'Số amount', 'Số file'], answer: 1, explain: 'Đúng (B): duplicateRefs đếm số **ref** bị lặp (xuất hiện > 1 lần ở một bên), không phải số dòng. Giúp phát hiện đối tác gửi lại file do retry. Sai (A): số dòng dư là amountMismatch/only*. Sai (C): amount là giá trị. Sai (D): không liên quan file.' },
+      { q: 'Tổng hai bên bằng nhau có đảm bảo mọi dòng khớp không?', options: ['Có', 'Không, hai lệch bù trừ vẫn cho tổng bằng nhau', 'Chỉ khi không có phí', 'Luôn luôn'], answer: 1, explain: 'Đúng (B): thiếu 1 triệu ở dòng A và thừa 1 triệu ở dòng B làm tổng bằng nhau nhưng cả hai dòng đều sai; phải so từng dòng theo (ref, amount). Sai (A): sai lệch bù trừ là có thật. Sai (C): phí chỉ là một nguồn lệch. Sai (D): tổng không đảm bảo.' }
+    ],
+    related: ['banking-002', 'banking-016'],
+    tags: ['reconciliation', 'multiset', 'duplicate', 'match', 'banking']
   }
 );

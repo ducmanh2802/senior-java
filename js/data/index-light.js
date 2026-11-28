@@ -3426,6 +3426,8 @@ window.DATA_INDEX = {
     {"id":"lesson-banking-034","track":"banking","order":34,"title":"Idempotency và retry: bảng processed_events với event.id UNIQUE, Idempotency-Key, đối soát","level":"lead","minutes":35},
     {"id":"lesson-banking-035","track":"banking","order":35,"title":"Test Stripe tích hợp: Stripe CLI (listen/trigger), test mode, Testcontainers Postgres","level":"senior","minutes":30},
     {"id":"lesson-banking-036","track":"banking","order":36,"title":"Ticket diễn tập: refund + reverse transfer — phân tích, kế hoạch, test, checklist review code thanh toán","level":"lead","minutes":40},
+    {"id":"lesson-banking-037","track":"banking","order":37,"title":"Sổ cái kép có trạng thái tài khoản: phong tỏa (frozen) chặn ghi Nợ, đóng (closed) chặn cả hai, từ chối nguyên tử","level":"senior","minutes":35},
+    {"id":"lesson-banking-038","track":"banking","order":38,"title":"Đối soát khi có giao dịch trùng: khớp theo (mã tham chiếu, số tiền) dạng đa tập, phân biệt khớp / lệch / chỉ một bên / trùng lặp","level":"senior","minutes":35},
     {"id":"lesson-autotest-001","track":"autotest","order":1,"title":"Automation test là gì, kim tự tháp test và kỹ thuật thiết kế ca kiểm thử","level":"mid","minutes":30},
     {"id":"lesson-autotest-002","track":"autotest","order":2,"title":"Locator: id, CSS, XPath, data-testid — và vì sao locator vỡ","level":"mid","minutes":30},
     {"id":"lesson-autotest-003","track":"autotest","order":3,"title":"Wait: implicit, explicit, fluent và auto-wait của Playwright","level":"mid","minutes":35},
