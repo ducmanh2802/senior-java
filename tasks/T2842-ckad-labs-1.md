@@ -36,3 +36,4 @@ Xong: sửa dòng `Status:` thành `Status: DONE`, Notes ghi id/số bài và ph
 ## Video hướng dẫn (bổ sung 2026-11-28)
 
 Mỗi lab module phải có field `videos` (1–3 video). Đọc mục `videos` trong tài liệu schema. **Chỉ dùng ID trong `scripts/videos-verified.js`**; checker chặn ID ngoài danh sách. `note` nói rõ xem đoạn nào và vì sao.
+Reviewed-by: verify-only (code/UI task)
