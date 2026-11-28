@@ -11637,5 +11637,381 @@ Một dịch vụ báo cáo ({{Spring Boot}} 3, {{PostgreSQL}} 15) có junior m�
     'Bạn có bao giờ phải nói với một junior rằng họ chưa phù hợp với vị trí không? Bạn xử lý ra sao?'
   ],
   tags: ['mentoring', 'performance', 'leadership', 'STAR', 'senior']
+},
+{
+  id: 'testing-089',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn thiết kế chiến lược test cho hệ thống chuyển tiền (money transfer) thế nào? Tỉ lệ và thứ tự unit, integration, contract, E2E là bao nhiêu, và bạn ưu tiên test gì trước khi merge?',
+  a: `**Tóm tắt:** Với hệ thống chuyển tiền, tôi dùng **kim tự tháp có phần giữa dày** nhưng **thứ tự ưu tiên khác pyramid truyền thống**: unit test (logic idempotency, validation) chạy trước để lọc lỗi nhanh, slice test (repository, REST client) cho đường biên DB/HTTP, contract test cho hợp đồng ngân hàng/cổng thanh toán, và E2E smoke test cho luồng chuyển tiền toàn vẹn. Tỉ lệ thực tế: 65% unit, 25% slice/integration, 5% contract, 5% E2E. Mục tiêu: CI dưới 8 phút, bắt được lỗi chuyển tiền trùng, sai số dư, và timeout cổng thanh toán trước khi merge.
+
+### Phân tầng test cho money transfer
+| Layer | Loại test | Annotation / Công cụ | Tốc độ | Kiểm chứng trọng tâm |
+|---|---|---|---|---|
+| Domain service thuần | Unit | JUnit thuần | < 50 ms | logic idempotency key, validation số dư, trạng thái chuyển tiền |
+| Repository JPA | Slice | {{@DataJpaTest}} + Testcontainers Postgres | 2–4 s | unique constraint idempotency key, khóa hàng (SELECT FOR UPDATE), cascade rollback |
+| REST client ngân hàng | Full context | WireMock + {{@SpringBootTest}} | 1–2 s | retry với backoff, timeout, circuit breaker, mapping lỗi HTTP → exception nghiệp vụ |
+| Hợp đồng cổng thanh toán | Contract | Pact / Spring Cloud Contract | 2–5 s | request/response schema, mã lỗi, idempotency header |
+| Luồng chuyển tiền | E2E | {{@SpringBootTest}} + Testcontainers (DB + WireMock) | 30–60 s | happy path: từ trừ nguồn → gọi ngân hàng → ghi nhận → thông báo; failure path: rollback, bù tiền, alert |
+
+### Thứ tự chạy trong CI
+1. **Unit test trước** (phút 1): lọc ngay lỗi logic cơ bản, chạy song song toàn bộ, fail nhanh.
+2. **Slice test** (phút 3–4): repository + REST client song song, dùng chung Testcontainers Postgres singleton, WireMock stub cố định.
+3. **Contract test** (phút 2): chạy pact verify song song cho từng provider, fail nếu schema lệch.
+4. **E2E smoke test** (phút 1–2): chỉ 3–5 test khói quan trọng nhất (chuyển thành công, nguồn thiếu, ngân hàng timeout, idempotency trùng), dùng database container riêng để không nhiễu slice test.
+
+### Ví dụ unit test idempotency — bắt buộc có
+~~~java
+class TransferServiceTest {
+    private TransferService service;
+    private InMemoryAccountRepo repo;     // fake, không mock
+    private InMemoryIdempotencyStore idem; // fake
+    
+    @BeforeEach void setUp() {
+        repo = new InMemoryAccountRepo();
+        idem = new InMemoryIdempotencyStore();
+        service = new TransferService(repo, idem, Clock.systemUTC());
+    }
+    
+    @Test void duplicate_idempotency_key_returns_existing_result() {
+        var cmd = new TransferCommand("IDEMP-1", "ACC-A", "ACC-B", 100_000L);
+        var result1 = service.execute(cmd);
+        var result2 = service.execute(cmd);  // gọi lại cùng key
+        
+        assertThat(result2).isSameAs(result1);           // trả về đối tượng KHÔNG xử lý lại
+        assertThat(repo.getTransfers()).hasSize(1);      // chỉ có 1 giao dịch
+    }
+    
+    @Test void insufficient_balance_throws_and_does_not_consume_key() {
+        repo.setBalance("ACC-A", 50_000L);
+        var cmd = new TransferCommand("IDEMP-2", "ACC-A", "ACC-B", 100_000L);
+        
+        assertThatThrownBy(() -> service.execute(cmd))
+            .isInstanceOf(InsufficientBalanceException.class);
+        assertThat(idem.isConsumed("IDEMP-2")).isFalse(); // key chưa bị đánh dấu dùng, cho phép retry
+    }
+}
+~~~
+
+### Bẫy thường gặp
+- **Chạy E2E trước unit**: CI chậm, lỗi logic cơ bản bị che bởi timeout E2E.
+- **Test idempotency bằng mock**: mock không bắt được race condition ở DB; phải dùng fake repository + khóa hàng (SELECT FOR UPDATE) hoặc DB thật.
+- **Không test đường lỗi ngân hàng**: chỉ test happy path, production gặp 504 từ cổng thanh toán mà không biết rollback thế nào.
+- **E2E dùng dữ liệu chung**: test A tạo tài khoản, test B dùng tài khoản đó → flaky khi chạy song song.
+- **Quên test idempotency key TTL**: key hết hạn sau 24h, retry sau đó tạo giao dịch trùng — phải có test cho trường hợp này.
+
+### Ví dụ đời thực
+**Bối cảnh:** Hệ thống chuyển tiền nội bộ (Spring Boot 3, PostgreSQL 15, Kafka, gọi API 3 ngân hàng) xử lý 50.000 giao dịch/ngày, cao điểm 3.000 giao dịch/phút. CI ban đầu 25 phút, team bắt đầu gộp PR.
+
+**Triệu chứng:**
+- 3 sự cố production trong 2 tháng: (1) idempotency key hết hạn 24h, client retry sau 30h tạo giao dịch trùng 200 triệu; (2) ngân hàng trả 504, hệ thống không rollback, tiền bị trừ mà không ghi nhận; (3) race condition trừ tiền: 2 request cùng lúc từ tài khoản 500 triệu, cả hai pass validation, tài khoản thành -500 triệu.
+- CI 25 phút do 40% test là {{@SpringBootTest}} E2E chạy tuần tự, 30% test unit mock repository nên không bắt unique constraint violation.
+
+**Điều tra & Cách xử lý:**
+1. **Viết unit test idempotency với fake + SELECT FOR UPDATE**: dùng {{InMemoryAccountRepo}} bọc {{ReentrantLock}} cho test nhanh, và {{@DataJpaTest}} với Testcontainers Postgres cho test khóa hàng thật. Thêm test idempotency key TTL (Clock.fixed + 25h).
+2. **Tách slice test REST client**: WireMock stub ngân hàng trả 504, 408, 429 → assert circuit breaker mở, retry 3 lần với exponential backoff, rollback transaction, ghi log alert.
+3. **Contract test cho 3 ngân hàng**: Pact consumer-driven, publish pact sau mỗi deploy, provider verify trong CI. Bắt được 2 lần ngân hàng đổi mã lỗi từ {{INSUFFICIENT_FUNDS}} thành {{LOW_BALANCE}} trước khi merge.
+4. **E2E chỉ 4 test khói**: happy path, nguồn thiếu, ngân hàng timeout, idempotency trùng. Chạy trên DB container riêng, dữ liệu tự tạo bằng builder.
+5. **Sắp xếp CI**: unit (1p) → slice song song (3p) → contract (2p) → E2E (2p). Tổng 8 phút.
+
+**Kết quả đo được:**
+- CI giảm từ 25 phút xuống 8 phút.
+- 0 sự cố idempotency/rollback/race condition trong 6 tháng sau.
+- 3 lần contract test chặn breaking change của ngân hàng trước khi deploy.
+
+### Trả lời mẫu khi phỏng vấn
+> "Với hệ thống chuyển tiền, tôi dùng kim tự tháp phần giữa dày nhưng sắp xếp thứ tự CI: unit trước (logic idempotency, validation), slice test repository và REST client ngân hàng (Testcontainers Postgres + WireMock), contract test Pact cho hợp đồng ngân hàng, cuối cùng chỉ 4–5 E2E smoke test. Tỉ lệ 65/25/5/5. Tôi ưu tiên test idempotency key bằng fake repository có khóa hàng và test TTL hết hạn, test đường lỗi ngân hàng ({{504, timeout}}) bằng WireMock để assert rollback đúng, và test race condition bằng {{CyclicBarrier 50 thread lặp 50 lần}}. Ví dụ thực tế: idempotency key hết hạn 24h gây giao dịch trùng 200 triệu, race condition làm tài khoản âm. Tôi sửa bằng SELECT FOR UPDATE, test TTL, và chuyển CI chạy unit trước fail nhanh. Kết quả: CI 8 phút, 0 sự cố 6 tháng."
+
+> Senior tip: hãy có **một bài test idempotency "chuẩn vàng"** trong repo — test tạo race thật với CyclicBarrier 50 thread, lặp 50 lần, assert không bao giờ âm số dư. Bài test đó vừa là documentation, vừa là bài test regression, và khi review PR ai đó xóa nó thì bạn biết ngay họ chưa hiểu tiền tệ.
+`,
+  follow: [
+    'Làm sao test idempotency khi hệ thống dùng event-driven (Kafka) thay vì REST đồng bộ?',
+    'Bạn xử lý test contract khi ngân hàng không cung cấp môi trường sandbox ổn định như thế nào?',
+    'Khi nào bạn chấp nhận tăng tỉ lệ E2E lên 10–15% cho money transfer?'
+  ],
+  tags: ['money-transfer', 'idempotency', 'test-strategy', 'contract-testing', 'WireMock', 'senior']
+},
+{
+  id: 'testing-090',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Làm sao test tính idempotency và retry của service gọi ngân hàng/cổng thanh toán bằng WireMock? Bạn mô phỏng lỗi mạng, timeout, 5xx, và 429 thế nào để đảm bảo retry đúng số lần, không trùng giao dịch, và circuit breaker hoạt động?',
+a: `**Tóm tắt:** Test idempotency và retry cần **ba tầng**: unit test logic idempotency key (không phụ thuộc WireMock), integration test với **WireMock stub có trạng thái** để mô phỏng chuỗi lỗi → thành công, và test circuit breaker/resilience4j với WireMock delay. Chìa khóa là WireMock **stateful stub** (scenario) để trả 500 hai lần rồi 200, hoặc delay tăng dần, và assert **kết quả nghiệp vụ** (chỉ 1 giao dịch, idempotency key được consume đúng) chứ không chỉ assert số lần gọi HTTP.
+
+### WireMock stateful stub cho chuỗi lỗi
+WireMock **Scenario** cho phép stub thay đổi hành vi theo trạng thái:
+~~~java
+@Test void retry_twice_then_succeed_idempotent() {
+    var server = new WireMockServer(0);
+    server.start();
+    
+    // Scenario: 2 lần 503, lần 3 thành công
+    server.stubFor(post(urlEqualTo("/api/transfer"))
+        .inScenario("bank-retry")
+        .whenScenarioStateIs("STARTED")
+        .willReturn(aResponse().withStatus(503).withHeader("Retry-After", "1"))
+        .willSetStateTo("FAILED-ONCE"));
+    
+    server.stubFor(post(urlEqualTo("/api/transfer"))
+        .inScenario("bank-retry")
+        .whenScenarioStateIs("FAILED-ONCE")
+        .willReturn(aResponse().withStatus(503).withHeader("Retry-After", "1"))
+        .willSetStateTo("FAILED-TWICE"));
+    
+    server.stubFor(post(urlEqualTo("/api/transfer"))
+        .inScenario("bank-retry")
+        .whenScenarioStateIs("FAILED-TWICE")
+        .willReturn(aResponse().withStatus(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("{\"transferId\":\"TXN-1\",\"status\":\"SUCCESS\"}"))
+        .willSetStateTo("SUCCESS"));
+    
+    // Gọi service (có Resilience4j Retry + Idempotency)
+    var result = transferService.execute(new TransferCommand("IDEMP-1", "A", "B", 100_000L));
+    
+    assertThat(result.getTransferId()).isEqualTo("TXN-1");
+    assertThat(idempotencyStore.isConsumed("IDEMP-1")).isTrue();
+    // QUAN TRỌNG: assert nghiệp vụ — chỉ 1 giao dịch trong DB
+    assertThat(transferRepo.findAll()).hasSize(1);
+    
+    server.verify(3, postRequestedFor(urlEqualTo("/api/transfer"))
+        .withHeader("Idempotency-Key", equalTo("IDEMP-1")));
+    server.stop();
+}
+~~~
+
+### Mô phỏng timeout và connection reset
+~~~java
+// Timeout thật (client đợi hết timeout)
+server.stubFor(post(urlEqualTo("/api/transfer"))
+    .willReturn(aResponse()
+        .withFixedDelay(10_000)  // 10 giây, lớn hơn client timeout 5s
+        .withStatus(200)));
+
+// Connection reset by peer (mất kết nối giữa chừng)
+server.stubFor(post(urlEqualTo("/api/transfer"))
+    .willReturn(aResponse()
+        .withFault(Fault.CONNECTION_RESET_BY_PEER)));
+
+// 429 Too Many Requests — test backoff tuân thủ Retry-After
+server.stubFor(post(urlEqualTo("/api/transfer"))
+    .inScenario("rate-limit")
+    .whenScenarioStateIs("STARTED")
+    .willReturn(aResponse().withStatus(429)
+        .withHeader("Retry-After", "2")
+        .withBody("{\"error\":\"RATE_LIMITED\"}"))
+    .willSetStateTo("RATE-LIMITED"));
+server.stubFor(post(urlEqualTo("/api/transfer"))
+    .inScenario("rate-limit")
+    .whenScenarioStateIs("RATE-LIMITED")
+    .willReturn(aResponse().withStatus(200)
+        .withBody("{\"transferId\":\"TXN-2\"}")));
+~~~
+
+### Test circuit breaker với WireMock delay
+~~~java
+@Test void circuit_breaker_opens_after_repeated_failures() {
+    var server = new WireMockServer(0);
+    server.start();
+    server.stubFor(post(urlEqualTo("/api/transfer"))
+        .willReturn(aResponse()
+            .withFixedDelay(3000)  // downstream chậm 3s
+            .withStatus(200)));
+    
+    // CircuitBreaker config: slidingWindow=5, failureRateThreshold=50%, waitDurationInOpenState=10s
+    for (int i = 0; i < 5; i++) {
+        assertThrows(TimeoutException.class, () -> 
+            transferService.execute(new TransferCommand("IDEMP-" + i, "A", "B", 100_000L)));
+    }
+    
+    // Lần 6: breaker OPEN, không gọi xuống WireMock, ném CallNotPermittedException ngay
+    assertThrows(CallNotPermittedException.class, () ->
+        transferService.execute(new TransferCommand("IDEMP-5", "A", "B", 100_000L)));
+    
+    server.verify(5, postRequestedFor(urlEqualTo("/api/transfer"))); // chỉ 5 lần, không phải 6
+    server.stop();
+}
+~~~
+
+### Test idempotency key TTL hết hạn
+~~~java
+@Test void idempotency_key_expired_allows_new_transaction() {
+    var server = new WireMockServer(0);
+    server.start();
+    server.stubFor(post(urlEqualTo("/api/transfer"))
+        .willReturn(aResponse().withStatus(200)
+            .withBody("{\"transferId\":\"TXN-1\"}")));
+    
+    // Lần 1: key IDEMP-1, thành công
+    var clock = Clock.fixed(Instant.parse("2026-01-01T10:00:00Z"), ZoneOffset.UTC);
+    var result1 = transferService.execute(new TransferCommand("IDEMP-1", "A", "B", 100_000L), clock);
+    
+    // Lần 2: cùng key, trong TTL 24h -> trả kết quả cũ, không gọi ngân hàng
+    var clockSameDay = Clock.fixed(Instant.parse("2026-01-01T15:00:00Z"), ZoneOffset.UTC);
+    var result2 = transferService.execute(new TransferCommand("IDEMP-1", "A", "B", 100_000L), clockSameDay);
+    assertThat(result2).isSameAs(result1);
+    server.verify(1, postRequestedFor(urlEqualTo("/api/transfer"))); // chỉ gọi 1 lần
+    
+    // Lần 3: cùng key, SAU TTL 25h -> key hết hạn, cho phép giao dịch MỚI
+    var clockExpired = Clock.fixed(Instant.parse("2026-01-02T11:00:00Z"), ZoneOffset.UTC);
+    server.stubFor(post(urlEqualTo("/api/transfer"))
+        .willReturn(aResponse().withStatus(200)
+            .withBody("{\"transferId\":\"TXN-2\"}")));
+    var result3 = transferService.execute(new TransferCommand("IDEMP-1", "A", "B", 100_000L), clockExpired);
+    assertThat(result3.getTransferId()).isEqualTo("TXN-2"); // transferId KHÁC
+    server.verify(2, postRequestedFor(urlEqualTo("/api/transfer"))); // gọi lần 2
+    
+    server.stop();
+}
+~~~
+
+### Bẫy thường gặp
+- **Assert số lần gọi HTTP thay vì kết quả nghiệp vụ**: test pass nhưng DB có 2 giao dịch do idempotency logic sai.
+- **WireMock stub không reset scenario giữa các test**: test B bị ảnh hưởng bởi state của test A → flaky.
+- **Không test 429 với Retry-After header**: client retry ngay lập tức thay vì chờ theo header, làm rate limit tồi tệ hơn.
+- **Mock Resilience4j thay vì test thật**: mock không phát hiện được timing issue giữa retry backoff và circuit breaker wait duration.
+- **Quên test exception không retry được**: ví dụ 400 Bad Request (validation lỗi) không nên retry — phải cấu hình {{retryExceptions}} loại trừ.
+
+### Ví dụ đời thực
+**Bối cảnh:** Service thanh toán tích hợp 3 ngân hàng (VCB, Techcom, VPBank) qua REST, dùng Resilience4j Retry (3 lần, exponential backoff 1s-2s-4s) + CircuitBreaker (sliding window 10, threshold 50%) + Idempotency key TTL 24h. Lưu lượng 2.000 req/phút.
+
+**Triệu chứng:**
+- Sự cố tháng 6: Techcombank bảo trì 2 tiếng, trả 503. Service retry 3 lần (tổng 7 giây), circuit breaker mở, 1.200 request sau đó bị chặn ngay (CallNotPermittedException) mà không thử gọi ngân hàng. Khi Techcombank hồi phục, breaker vẫn OPEN 30 giây (waitDurationInOpenState) → 400 request bị từ chối oan.
+- CI test chỉ mock Resilience4j, không có WireMock → không bao giờ phát hiện breaker mở sớm hay muộn.
+
+**Điều tra & Cách xử lý:**
+1. **Test WireMock scenario**: 503 → 503 → 200, assert retry 3 lần, breaker CLOSED, 1 giao dịch.
+2. **Test breaker timing**: WireMock delay 3s > client timeout 2s → assert breaker mở sau 5 request (threshold 50%), request thứ 6 bị chặn ngay, **không** gọi WireMock.
+3. **Test breaker recovery**: Sau breaker OPEN, WireMock trả 200 ngay → assert half-open state cho phép 1 request qua, thành công → breaker CLOSE.
+4. **Tune config**: giảm {{waitDurationInOpenState}} từ 30s xuống 10s, thêm {{permittedNumberOfCallsInHalfOpenState=3}} để hồi phục nhanh hơn.
+5. **Thêm test 429**: WireMock trả 429 + Retry-After: 2 → assert client chờ 2 giây trước khi retry, không spam.
+
+**Kết quả đo được:**
+- Khi Techcombank chậm 5s: breaker mở sau 5 request (trước là 10), chặn 400 request thay vì 1.200, hồi phục trong 15s sau khi ngân hàng ổn định.
+- CI bắt được 2 lần config breaker sai (window size quá lớn, threshold quá thấp) trước khi merge.
+- Test idempotency TTL bắt được bug: key hết hạn 24h nhưng code so sánh {{>}} thay vì {{>=}} → key đúng 24h vẫn bị coi là chưa hết hạn.
+
+### Trả lời mẫu khi phỏng vấn
+> "Tôi test idempotency và retry ba tầng: unit test logic key (fake repo), integration test WireMock stateful scenario ({{500→500→200}}, timeout, connection reset, 429 với Retry-After), và test circuit breaker timing (delay lớn hơn timeout, assert breaker mở đúng ngưỡng, không gọi xuống). Chìa khóa là WireMock Scenario để mô phỏng chuỗi lỗi, và **assert kết quả nghiệp vụ** — chỉ 1 giao dịch trong DB, idempotency key consume đúng, TTL hết hạn cho phép giao dịch mới. Ví dụ thực tế: Techcombank trả {{503}}, breaker mặc định {{waitDuration 30s}} chặn 1.200 request oan. Tôi test WireMock delay 3s, assert breaker mở sau 5 request, tune {{waitDurationInOpenState}} xuống 10s, thêm {{permittedNumberOfCallsInHalfOpenState=3}}. Kết quả: chặn chỉ 400 request, hồi phục 15s. Trade-off là test WireMock chậm hơn mock, nên tôi chỉ chạy 10–15 test integration quan trọng, unit test logic key chạy < 50ms."
+
+> Senior tip: hãy có **một test WireMock "chuẩn vàng" cho từng ngân hàng/cổng thanh toán** — test chuỗi lỗi thực tế nhất mà production từng gặp (ví dụ: {{503 → 503 → 200}}, hoặc {{429 → 200}}). Khi ngân hàng báo bảo trì, bạn copy test đó, đổi stub theo thông báo của họ, và chạy ngay để xem config retry/breaker có đủ không. Đừng đợi production mới biết config sai.
+`,
+  follow: [
+    'Làm sao test idempotency khi gọi ngân hàng bằng gRPC thay vì REST? WireMock có hỗ trợ gRPC không?',
+    'Bạn xử lý test retry khi idempotency key được sinh bởi client (không do server kiểm soát) như thế nào?',
+    'Khi nào nên dùng Testcontainers với WireMock container thay vì WireMockServer nhúng trong JVM?'
+  ],
+  tags: ['WireMock', 'idempotency', 'retry', 'circuit-breaker', 'Resilience4j', 'integration-test', 'senior']
+},
+{
+  id: 'testing-091',
+  topic: 'testing',
+  level: 'lead',
+  refs: [{ type: 'doc', title: 'PIT Mutation Testing', url: 'https://pitest.org/' }],
+  q: 'Mutation testing (PIT) đã chạy xong, báo cáo HTML cho thấy 75% mutation score trên module domain. Bạn đọc kết quả thế nào để quyết định test nào cần bổ sung, mutant nào là false positive, và khi nào mutation testing KHÔNG đáng chạy?',
+a: `**Tóm tắt:** Mutation score 75% **không** nghĩa là "còn 25% code chưa test" — nghĩa là **25% mutant sống sót**. Đọc báo cáo PIT phải tập trung vào **Survived mutants**: nhóm theo dòng code, loại bỏ **equivalent mutants** (mutant đúng nghiệp vụ, ví dụ bỏ logging), và ưu tiên bổ sung test cho mutant **killable nhưng chưa kill** (thiếu assertion, thiếu case biên). Mutation testing KHÔNG đáng chạy khi: code không có logic (DTO, entity, config), project chưa có CI ổn định, hoặc team chưa có văn hóa review test — vì lúc đó nó chỉ tạo noise.
+
+### Cấu trúc báo cáo PIT cần đọc
+Mở {{target/pit-reports/YYYYMMDDHHMI/index.html}}:
+- **Mutation Score**: % mutant bị kill / tổng mutant.
+- **Survived Mutants**: danh sách mutant chưa bị test kill — **đây là danh sách việc cần làm**.
+- **Killed Mutants**: đã bị test phát hiện.
+- **No Coverage**: mutant không bị chạy qua bởi test nào — khác với survived (chạy qua nhưng test pass).
+- **Timeout / Memory Error / Runtime Error**: mutant gây treo hoặc crash JVM — thường do vòng lặp vô tận (đổi {{i < n}} thành {{i <= n}}), cần {{@Timeout}} trong test.
+
+### Quy trình đọc báo cáo — 4 bước
+1. **Lọc module domain**: bỏ qua DTO, entity, configuration, generated code — mutation score ở đây vô nghĩa.
+2. **Nhóm Survived mutants theo class/method**: một method có 5 survived mutants thường chỉ thiếu **1–2 test case** bao phủ tất cả.
+3. **Phân loại từng survived mutant**:
+      | Loại | Ví dụ | Xử lý |
+      |---|---|---|
+      | **Thiếu assertion** | mutant đổi {{return amount > 0}} thành {{return true}} sống sót | Thêm {{assertThat(result).isGreaterThan(0)}} |
+      | **Thiếu case biên** | mutant đổi {{<=}} thành {{<}} ở ngưỡng 500k miễn phí ship sống sót | Thêm test {{total = 500_000}} và {{500_001}} |
+      | **Equivalent mutant** | mutant xoá dòng {{log.info("...")}} hoặc đổi {{Thread.sleep(100)}} thành {{Thread.sleep(101)}} | **Bỏ qua** — mutant này đúng nghiệp vụ, không thể kill bằng test |
+      | **Mutant trong code defensive** | mutant xoá {{if (obj == null) throw ...}} nhưng test không bao giờ truyền null | Thêm test truyền null, hoặc **chấp nhận** nếu null không bao giờ xảy ra ở runtime |
+4. **Chuyển survived mutant thành test case**: mỗi mutant killable → một {{@Test}} mới hoặc mở rộng {{@ParameterizedTest}}.
+
+### Ví dụ đọc survived mutant
+~~~text
+Class: com.bank.transfer.TransferPricing
+Method: calculateFee(BigDecimal amount, Tier tier)
+Line 42: changed conditional boundary: <= → <   SURVIVED
+Line 45: replaced return value with 0             SURVIVED
+Line 48: removed call to Math::round              SURVIVED
+~~~
+**Phân tích:**
+- Line 42: ngưỡng miễn phí ship 500.000 — test thiếu case {{amount = 500_000}} (đúng ngưỡng). Thêm {{@ParameterizedTest}} với 499_999, 500_000, 500_001.
+- Line 45: mutant trả về 0 sống sót → test chỉ {{assertNotNull(fee)}} chứ không assert giá trị. Thêm {{assertThat(fee).isEqualTo(expected)}}.
+- Line 48: xoá {{Math.round}} → test không kiểm tra làm tròn. Thêm test {{amount = 123.456}} assert làm tròn đúng.
+
+### Khi nào mutation testing KHÔNG đáng chạy
+| Tình huống | Lý do | Thay thế |
+|---|---|---|
+| **Code không có logic** (DTO, entity getter/setter, config class, generated code) | mutant chỉ là đổi hằng số, không phản ánh chất lượng test | JaCoCo line coverage là đủ |
+| **Chưa có CI ổn định / test flaky > 5%** | PIT chạy gấp 10–50 lần test thường, flaky sẽ bị nhân lên | Sửa flaky trước, rồi mới bật PIT |
+| **Team chưa review test** | mutation score cao nhưng test rác (assert true, test getter) | Bắt buộc review test có assertion nghiệp vụ |
+| **Project giai đoạn prototype / MVP** | thay đổi code liên tục, mutant report nhanh chóng lỗi thời | Chạy PIT nightly trên module core sau khi ổn định |
+| **Thời gian CI đã > 15 phút** | PIT module domain thường 5–20 phút thêm | Chạy PIT nightly, PR chỉ chạy incremental (chỉ class thay đổi) |
+
+### Chạy PIT incremental trong PR
+~~~xml
+<plugin>
+  <groupId>org.pitest</groupId>
+  <artifactId>pitest-maven</artifactId>
+  <configuration>
+    <targetClasses>
+      <param>com.bank.transfer.domain.*</param>
+    </targetClasses>
+    <mutationThreshold>70</mutationThreshold>
+    <mutationEngine>gregor</mutationEngine>
+    <outputFormats>
+      <param>HTML</param>
+      <param>XML</param>
+    </outputFormats>
+  </configuration>
+</plugin>
+~~~
+- {{mutationThreshold=70}}: fail build nếu module domain score < 70%.
+- Nightly job: chạy full PIT, report xu hướng mutation score theo thời gian.
+
+### Bẫy thường gặp
+- **Tối ưu theo số**: viết test {{assertTrue(true)}} để kill mutant trả về true/false → mutation score lên nhưng chất lượng test không tăng.
+- **Không loại equivalent mutant**: báo cáo 60% score, team lo lắng, nhưng 15% là equivalent (logging, sleep, defensive null check chưa bao giờ trigger).
+- **Chạy PIT trên toàn bộ repo**: module config, DTO, generated code kéo score xuống, che mutation score thực của domain.
+- **Quên {{@Timeout}}**: mutant đổi {{i < n}} thành {{i <= n}} gây vòng lặp vô tận → PIT treo, phải kill JVM thủ công.
+
+### Ví dụ đời thực
+**Bối cảnh:** Module domain chuyển tiền (Spring Boot 3, Java 21, 12 class core: {{TransferService}}, {{TransferPricing}}, {{IdempotencyChecker}}, {{BalanceValidator}}, {{FeeCalculator}}...). Team 8 dev, CI 12 phút (unit + slice), nightly build 2h.
+
+**Triệu chứng:**
+- PIT chạy lần đầu trên module domain: mutation score 54%. Team hoảng, viết test vồn vứp để đạt 70%.
+- Sau 1 sprint: score 71%, nhưng review thấy 40% test mới chỉ {{assertNotNull}} hoặc {{assertEquals(0, 0)}} để kill mutant trả về hằng số.
+- Production vẫn lọt bug: {{FeeCalculator}} tính sai phí khi {{amount = 500_000}} (ngưỡng miễn phí) — mutant {{<=}} → {{<}} ở line 42 SURVIVED từ đầu nhưng không ai đọc.
+
+**Điều tra & Cách xử lý:**
+1. **Đọc báo cáo HTML đúng cách**: nhóm survived mutants theo method. {{FeeCalculator.calculateFee}} có 3 survived: boundary {{<=}}, return 0, remove {{Math.round}}.
+2. **Phân loại**: boundary và remove round là **killable** (thiếu test case biên, thiếu assert làm tròn). Return 0 là **thiếu assertion giá trị**.
+3. **Xoá test rác**: 12 test {{assertTrue(true)}} / {{assertNotNull}} không có giá trị nghiệp vụ.
+4. **Thêm test ý nghĩa**: {{@ParameterizedTest}} với 499_999, 500_000, 500_001, 1_000_000; assert fee chính xác (kể cả làm tròn).
+5. **Cấu hình PIT incremental PR + full nightly**: PR mutate 1–3 class thay đổi (chạy 2 phút), nightly full module (12 phút).
+6. **Đặt threshold 75% cho domain**, fail PR nếu giảm.
+
+**Kết quả đo được sau 2 tháng:**
+- Mutation score domain: 54% → 82% (thực tế, không có test rác).
+- Equivalent mutant (logging, sleep): ~8%, được document trong {{PIT_EQUIVALENT.md}} để team không mất thời gian đọc lại.
+- 0 bug phí chuyển tiền lọt production trong 6 tháng.
+- CI PR: +2 phút (incremental PIT), nightly: +12 phút (acceptable).
+
+### Trả lời mẫu khi phỏng vấn
+> "Khi PIT báo 75% mutation score, tôi không nhìn con số tổng mà đọc danh sách **Survived mutants** trong báo cáo HTML. Tôi nhóm theo class/method, phân loại: thiếu assertion (thêm assert giá trị), thiếu case biên (thêm {{@ParameterizedTest}} cho ngưỡng), equivalent mutant (logging, sleep — bỏ qua, document lại), và mutant trong code defensive (thêm test null hoặc chấp nhận). Tôi không chạy PIT cho DTO, entity, config — chỉ module domain có logic. CI PR chạy incremental (chỉ class thay đổi, +2 phút), nightly chạy full. Threshold domain 75%. Ví dụ thực tế: FeeCalculator mutant {{<=}}→{{<}} ở ngưỡng 500k sống sót, team thêm test 499_999/500_000/500_001, xoá 12 test rác {{assertTrue(true)}}, score từ 54% lên 82% thực tế, 0 bug phí 6 tháng. Mutation testing KHÔNG đáng chạy khi code không có logic, CI chưa ổn định, hoặc team chưa review test — lúc đó nó chỉ tạo noise."
+
+> Senior tip: hãy tạo file **{{PIT_EQUIVALENT.md}}** trong repo liệt kê các equivalent mutant đã xác nhận (ví dụ: {{TransferService.line 87: removed log.info}} — equivalent vì không ảnh hưởng nghiệp vụ). Mỗi lần PIT chạy, team chỉ cần diff Survived mutants với file này, tập trung vào mutant mới. File này biến equivalent mutant từ "noise lặp lại" thành "tri thức tích lũy".
+`,
+  follow: [
+    'Làm sao tự động phát hiện equivalent mutant thay vì đọc thủ công?',
+    'Bạn có kết hợp PIT với JaCoCo coverage để tìm vùng "có coverage nhưng mutant sống sót" không?',
+    'Khi nào bạn chấp nhận mutation score thấp hơn threshold cho một module nhất định?'
+  ],
+  tags: ['PIT', 'mutation-testing', 'mutation-score', 'survived-mutant', 'equivalent-mutant', 'lead']
 }
 );
