@@ -8952,5 +8952,361 @@ public void cleanupStalePreparedXacts() {
 - Chaos test: kill coordinator sau PREPARE, verify app auto-rollback trong 1 giờ.
 
 > Senior tip: **Prepared transaction là "kill switch" cho vacuum**. Một prepared xact quên tồn tại 1 ngày = vacuum vô hiệu hóa cho toàn database (vì xmin global). 2PC hiếm khi cần thiết - 90% trường hợp dùng 1PC + idempotency + reconciliation job an toàn hơn. Nếu BẮT BUỘC 2PC: **timeout auto-rollback là bắt buộc**, không có ngoại lệ.`,rubric:['Chỉ đúng nguyên nhân: prepared transaction 2PC quên giữ xmin chặn vacuum dọn dead tuple','Dẫn chứng đúng: artifact 1 6 prepared xact 14/02-25/02; artifact 2 n_dead_tup 4.2M, vacuum num_dead_tuples=0','Giải thích đúng cơ chế: vacuum chỉ dọn tuple xmin < oldest active xmin (kể prepared xact)','Đề xuất sửa đúng: ROLLBACK PREPARED thủ công 6 xact, app timeout auto-rollback > 1h, monitor pg_prepared_xacts','Có monitoring/phòng ngừa: alert prepared xact age > 1h, max_prepared_xacts, chaos test coordinator down'],tags:['postgresql','prepared-transaction','two-phase-commit','xmin','vacuum','bloat','xa','recovery']},
+{
+  id: 'lab-sql-062',
+  category: 'sql',
+  title: 'Migration thêm UNIQUE constraint giờ cao điểm: AccessExclusiveLock giữ 6 phút, 468 query xếp hàng',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống định danh **TrustID** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{account}} lưu tài khoản của các tổ chức: **23.704.118 dòng** (~7,2 GB heap + 2,4 GB index). Giờ cao điểm 09:00–11:00 có khoảng 3.100 request/giây, 65% đọc (đăng nhập, tra cứu) và 35% ghi (tạo/sửa tài khoản).
+
+**Triệu chứng (14/03/2026, 10:00).** Dev chạy migration Flyway để "mỗi email chỉ có một tài khoản trong một tổ chức":
+~~~sql
+ALTER TABLE account ADD CONSTRAINT uq_account_org_email UNIQUE (org_id, email);
+~~~
+Đúng 10:00, toàn bộ API đăng nhập và tra cứu trả 504. Câu ALTER chạy **6 phút 12 giây**; RDS CPU 100% một core, active connection nhảy từ 48 lên 480, {{pg_stat_activity}} đầy các SELECT/INSERT đang chờ lock. DBA nói "chỉ thêm constraint, không nên lâu" — thực tế PostgreSQL phải **quét toàn bảng để kiểm tra có giá trị trùng không**, rồi **xây unique index**, trong khi **giữ AccessExclusiveLock suốt 6 phút**.
+
+**Điều đã thử, không ăn.** Tăng {{max_connections}} lên 800, restart PgBouncer — vô ích vì mọi connection đều bị chặn ở cùng một lock.
+
+**Việc bạn có.** Ba artifact: log server 10:00–10:07, snapshot {{pg_locks}} lúc 10:02, và script migration kèm kết quả kiểm tra trùng. Hãy chỉ ra vì sao ADD CONSTRAINT UNIQUE lại giữ AccessExclusiveLock lâu như vậy (khác ADD COLUMN DEFAULT và ADD CONSTRAINT CHECK NOT VALID), và đề xuất quy trình an toàn trên bảng 23 triệu dòng.`,
+  artifacts: [
+    {
+      name: 'postgres-unique-constraint.log',
+      lang: 'text',
+      content: `# log server PostgreSQL 15.6 (RDS trustid-primary), timezone Asia/Ho_Chi_Minh
+# log_lock_waits = on, deadlock_timeout = 1s, lock_timeout = 0 (không đặt), statement_timeout = 0
+2026-03-14 10:00:00.012 +07 [41022] LOG:  duration: 0.041 ms  execute S_1: BEGIN
+2026-03-14 10:00:00.015 +07 [41022] LOG:  duration: 0.038 ms  execute <unnamed>: ALTER TABLE account ADD CONSTRAINT uq_account_org_email UNIQUE (org_id, email)
+2026-03-14 10:00:00.016 +07 [41022] LOG:  duration: 0.011 ms  execute <unnamed>: (chờ AccessExclusiveLock)
+2026-03-14 10:00:00.089 +07 [41023] LOG:  duration: 0.022 ms  execute S_1: BEGIN
+2026-03-14 10:00:00.091 +07 [41023] LOG:  duration: 0.031 ms  execute <unnamed>: SELECT id, email, status FROM account WHERE org_id = $1 LIMIT 20
+2026-03-14 10:00:00.092 +07 [41023] LOG:  duration: 0.009 ms  execute <unnamed>: (chờ lock)
+2026-03-14 10:00:00.103 +07 [41024] LOG:  duration: 0.024 ms  execute S_1: BEGIN
+2026-03-14 10:00:00.105 +07 [41024] LOG:  duration: 0.029 ms  execute <unnamed>: INSERT INTO account (org_id, email, status) VALUES ($1, $2, $3)
+2026-03-14 10:00:00.106 +07 [41024] LOG:  duration: 0.011 ms  execute <unnamed>: (chờ lock)
+# ... (467 phiên đang xếp hàng chờ AccessExclusiveLock của migration)
+2026-03-14 10:00:05.123 +07 [41022] LOG:  duration: 5107.400 ms  execute <unnamed>: (đã có lock - bắt đầu quét 23.704.118 dòng để kiểm tra trùng + xây unique index)
+2026-03-14 10:06:17.357 +07 [41022] LOG:  duration: 372234.880 ms  execute <unnamed>: ALTER TABLE account ADD CONSTRAINT uq_account_org_email UNIQUE (org_id, email)  -- xong sau 6 phút 12 giây
+2026-03-14 10:06:17.358 +07 [41022] LOG:  duration: 0.040 ms  execute S_2: COMMIT
+2026-03-14 10:06:17.401 +07 [41023] LOG:  duration: 377309.112 ms  execute <unnamed>: SELECT ... (trả về)
+2026-03-14 10:06:17.412 +07 [41024] LOG:  duration: 377306.220 ms  execute <unnamed>: INSERT ... (trả về)
+# ... (468 phiên drain xong trong ~8 giây sau khi migration commit)`,
+    },
+    {
+      name: 'pg-locks-unique.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:02:00 +07, chụp khi migration đang quét + xây index
+trustid=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age,
+       left(query, 60) AS query
+FROM pg_stat_activity
+WHERE pid IN (41022, 41023, 41024, 41025, 41026);
+   pid  | state  | wait_event_type | wait_event   | xact_age  |                              query
+-------+--------+-----------------+--------------+-----------+--------------------------------------------------------------
+ 41022 | active | IO              | DataFileRead | 00:02:00  | ALTER TABLE account ADD CONSTRAINT uq_account_org_email UNIQ
+ 41023 | active | Lock            | relation     | 00:02:00  | SELECT id, email, status FROM account WHERE org_id =
+ 41024 | active | Lock            | relation     | 00:02:00  | INSERT INTO account (org_id, email, status) VALUES
+ 41025 | active | Lock            | relation     | 00:02:00  | SELECT count(*) FROM account WHERE org_id = $1
+ 41026 | active | Lock            | relation     | 00:02:00  | UPDATE account SET status = $1 WHERE id = $2
+
+trustid=# SELECT l.pid, l.locktype, l.relation::regclass AS relation, l.mode, l.granted
+FROM pg_locks l
+WHERE l.pid IN (41022, 41023, 41024, 41025, 41026)
+ORDER BY l.pid, l.granted, l.locktype;
+   pid  | locktype | relation |          mode          | granted
+-------+----------+----------+------------------------+---------
+ 41022 | relation | account  | AccessExclusiveLock    | t
+ 41023 | relation | account  | AccessShareLock        | f
+ 41024 | relation | account  | RowExclusiveLock       | f
+ 41025 | relation | account  | AccessShareLock        | f
+ 41026 | relation | account  | RowExclusiveLock       | f
+
+trustid=# SELECT count(*) AS waiting_sessions FROM pg_locks
+WHERE NOT granted AND locktype = 'relation' AND relation = 'account'::regclass;
+ waiting_sessions
+------------------
+              468
+
+trustid=# SELECT pg_blocking_pids(41023) AS blocks_41023;
+ blocks_41023
+--------------
+ {41022}
+
+-- Ghi chú: migration (pid 41022) ĐANG GIỮ AccessExclusiveLock (granted = t) suốt 6 phút,
+-- wait_event = DataFileRead (đang đọc heap để kiểm tra trùng + ghi index).
+-- Mọi câu SELECT/INSERT/UPDATE mới vào phải chờ lock này (queue FIFO) -> toàn bảng "treo".`,
+    },
+    {
+      name: 'migration-and-duplicate-check.sql',
+      lang: 'sql',
+      content: `-- V12__add_unique_org_email.sql (Flyway) - chạy 10:00 ngày 14/03 (giờ cao điểm)
+ALTER TABLE account ADD CONSTRAINT uq_account_org_email UNIQUE (org_id, email);
+-- Mục đích: mỗi email chỉ một tài khoản trong một tổ chức.
+-- Bảng account: 23.704.118 dòng, giờ cao điểm 3.100 req/s.
+-- DBA nhận xét: "constraint nhỏ, không nên chậm" -> chạy trực tiếp trong giờ cao điểm.
+
+-- Sau sự cố, DBA chạy kiểm tra trùng (khi DB đã rảnh) để xác nhận dữ liệu SẠCH:
+trustid=# SELECT org_id, email, count(*) AS c
+FROM account
+GROUP BY org_id, email
+HAVING count(*) > 1
+LIMIT 5;
+ org_id | email | c
+--------+-------+---
+(0 rows)   -- KHÔNG có dòng trùng: unique index có thể build được ngay.
+
+-- Kết luận: dữ liệu không sai, vấn đề nằm ở CÁCH thêm constraint (giữ AccessExclusiveLock
+-- suốt quá trình quét + xây index), không phải ở dữ liệu.`,
+    },
+  ],
+  questions: [
+    'Vì sao ADD CONSTRAINT UNIQUE phải quét toàn bộ 23,7 triệu dòng và giữ AccessExclusiveLock suốt 6 phút 12 giây? Chỉ ra bằng dòng nào trong artifact cho thấy nó đang đọc đĩa chứ không phải chờ lock.',
+    'Câu này khác gì ADD COLUMN DEFAULT (metadata-only, lock vài ms) và ADD CONSTRAINT CHECK NOT VALID (chỉ ShareUpdateExclusiveLock, không chặn DML)? Vì sao UNIQUE không "nhẹ" được như hai câu kia?',
+    'Hãy đề xuất quy trình an toàn để thêm UNIQUE trên bảng 23 triệu dòng (CREATE UNIQUE INDEX CONCURRENTLY + ADD CONSTRAINT ... USING INDEX), xử lý trường hợp có dòng trùng, và cách đặt lock_timeout.',
+  ],
+  hints: [
+    'ADD CONSTRAINT UNIQUE phải làm HAI việc nặng: (1) xây unique index trên (org_id, email), (2) quét toàn bảng để chắc chắn không có giá trị trùng. Cả hai đều đọc hết 23,7 triệu dòng và không thể chia nhỏ lock, nên AccessExclusiveLock bị giữ liên tục — khác CHECK NOT VALID chỉ ghi constraint vào catalog rồi VALIDATE bằng ShareUpdateExclusiveLock (không chặn SELECT/UPDATE).',
+    'Snapshot pg_locks: migration (pid 41022) AccessExclusiveLock granted = t (đang giữ), wait_event = DataFileRead (đang đọc heap), 468 phiên granted = f. CPU 100% một core là do quét + sắp xếp, không phải do tranh chấp lock — đây là vấn đề vừa lock vừa I/O.',
+    'Cách an toàn: dọn dòng trùng trước (nếu có), rồi CREATE UNIQUE INDEX CONCURRENTLY (2 pass, KHÔNG giữ AccessExclusiveLock, KHÔNG chạy trong transaction), sau đó ALTER TABLE account ADD CONSTRAINT uq_account_org_email UNIQUE USING INDEX uq_account_org_email (chỉ đổi catalog, lock vài ms). Đặt lock_timeout = 2s cho câu ADD CONSTRAINT cuối.',
+    'Nếu có dòng trùng, CREATE UNIQUE INDEX CONCURRENTLY sẽ FAIL giữa chừng và để lại index ở trạng thái INVALID — phải DROP rồi dọn trùng rồi build lại. Vì vậy luôn kiểm tra trùng TRƯỚC.',
+  ],
+  answer: `**Tóm tắt:** Câu {{ALTER TABLE account ADD CONSTRAINT ... UNIQUE (org_id, email)}} cần **AccessExclusiveLock** và phải **quét toàn bộ 23.704.118 dòng để kiểm tra trùng** rồi **xây unique index** — cả quá trình kéo dài **6 phút 12 giây**, trong suốt thời gian đó nó **giữ AccessExclusiveLock** (mạnh nhất, không tương thích với mọi lock khác). Vì PostgreSQL xếp hàng lock FIFO, 468 câu SELECT/INSERT/UPDATE đến sau đều phải chờ -> API trả 504 dù migration chỉ là "thêm constraint". Khác ADD COLUMN DEFAULT (metadata-only) và CHECK NOT VALID (ShareUpdateExclusiveLock không chặn DML), UNIQUE không thể "nhẹ" nếu thêm trực tiếp. Sửa an toàn: {{CREATE UNIQUE INDEX CONCURRENTLY}} trước (không giữ lock mạnh), rồi {{ALTER TABLE ... ADD CONSTRAINT ... UNIQUE USING INDEX}} (chỉ đổi catalog, lock vài ms).
+
+### Kiến thức nền: vì sao UNIQUE "nặng" hơn ADD COLUMN và CHECK
+Trước hết cần phân biệt ba câu DDL hay bị nhầm là "nhẹ như nhau":
+- **ADD COLUMN ... DEFAULT (PostgreSQL 11+)**: chỉ ghi default vào catalog ({{pg_attribute}}), **không đọc bảng** -> metadata-only, lock vài mili-giây.
+- **ADD CONSTRAINT ... CHECK (...) NOT VALID**: chỉ ghi constraint vào catalog với cờ "chưa kiểm tra", **không quét bảng**; sau đó {{VALIDATE CONSTRAINT}} quét bảng nhưng chỉ cần **ShareUpdateExclusiveLock** — loại lock này **không chặn** SELECT/INSERT/UPDATE, chỉ chặn DDL khác.
+- **ADD CONSTRAINT ... UNIQUE / PRIMARY KEY**: muốn đảm bảo không có giá trị trùng, PostgreSQL buộc phải (1) **xây một unique index thật** trên (org_id, email) và (2) trong lúc xây phải **kiểm tra từng dòng** xem có vi phạm không. Việc này đọc toàn bộ heap, sắp xếp, và ghi index mới; **không thể tách thành nhiều bước lock ngắn** vì kết quả phải nhất quán. Do đó nó giữ **AccessExclusiveLock liên tục** từ đầu đến cuối.
+
+Ví dụ đời thường: thêm cột mới có giá trị mặc định giống như dán thêm một dòng "mặc định là 0" vào mẫu — không cần in lại hồ sơ cũ. Thêm UNIQUE giống như khoá niêm phong toàn bộ tủ hồ sơ để vừa lập danh mục chống trùng vừa dán tem — trong lúc dán tem thì không ai được mở tủ (kể cả để đọc).
+
+### Nguyên nhân gốc, từng bước
+1. **10:00:00.015** Dev chạy {{ALTER TABLE account ADD CONSTRAINT uq_account_org_email UNIQUE (org_id, email)}}. Câu này xin **AccessExclusiveLock**.
+2. Có một transaction ngắn đang giữ AccessShareLock -> migration chờ vài ms (log 10:00:00.016).
+3. **10:00:05.123** Có lock, migration bắt đầu **quét 23,7 triệu dòng** (wait_event = DataFileRead) để vừa kiểm tra trùng vừa xây unique index. Trong **6 phút 12 giây** nó **giữ AccessExclusiveLock**.
+4. Mọi câu SELECT/INSERT/UPDATE của ứng dụng đến sau đều xếp hàng sau migration (FIFO) -> snapshot 10:02 cho **468 phiên chờ**.
+5. **10:06:17** Xong, COMMIT, nhả lock, 468 phiên drain trong ~8 giây. Tổng thời gian API không phục vụ ~6 phút, cộng timeout/retry của gateway -> người dùng thấy 504 kéo dài.
+
+### Dẫn chứng
+- Artifact 1: dòng **"ALTER TABLE account ADD CONSTRAINT ... UNIQUE ... duration: 372234.880 ms"** (6 phút 12 giây) và **"wait_event = DataFileRead"** cho thấy nó đang đọc đĩa (quét + xây index), không phải chờ lock.
+- Artifact 2: migration pid 41022 **AccessExclusiveLock granted = t** (đang giữ), 468 phiên khác granted = f; {{pg_blocking_pids(41023)}} trả về {41022} — mọi phiên bị chặn bởi migration. CPU 100% một core xác nhận đang quét + sắp xếp.
+- Artifact 3: truy vấn kiểm tra trùng trả **0 rows** — dữ liệu sạch, unique index hoàn toàn build được; vấn đề là **cách thêm** chứ không phải dữ liệu.
+
+### Cách sửa ngắn hạn (trong ngày 14/03)
+- **Huỷ migration đang treo**: {{SELECT pg_cancel_backend(41022);}} (hoặc {{pg_terminate_backend}}). Lock được nhả, ứng dụng phục hồi ngay. Flyway đánh dấu migration failed -> xử lý repair sau.
+- **Đặt lock_timeout cho migration**: {{SET lock_timeout = '2s';}} trước khi chạy; không lấy được lock trong 2 giây thì tự bỏ cuộc thay vì treo cả hệ thống.
+- **Chạy ngoài giờ cao điểm** (02:00–04:00) nếu buộc dùng câu ALTER trực tiếp.
+
+### Cách sửa dài hạn (quy trình an toàn trên bảng lớn)
+Nguyên tắc: **tách phần "xây index" (không giữ lock mạnh) khỏi phần "đăng ký constraint" (lock cực ngắn)**.
+
+1. **Dọn dòng trùng trước** (nếu có):
+~~~sql
+SELECT org_id, email, count(*) FROM account
+GROUP BY org_id, email HAVING count(*) > 1;
+~~~
+2. **Xây unique index bằng CONCURRENTLY** (không giữ AccessExclusiveLock, chạy được cả giờ cao điểm, **không** được bọc trong transaction):
+~~~sql
+CREATE UNIQUE INDEX CONCURRENTLY uq_account_org_email
+  ON account (org_id, email);
+~~~
+CONCURRENTLY quét bảng 2 pass, chèn được vào giữa, nên không chặn đọc/ghi. Nếu có dòng trùng, lệnh **FAIL giữa chừng** và để lại index INVALID -> phải {{DROP INDEX}} rồi dọn trùng rồi build lại.
+3. **Đăng ký constraint bằng USING INDEX** (chỉ đổi catalog, lock vài ms):
+~~~sql
+SET lock_timeout = '2s';
+ALTER TABLE account
+  ADD CONSTRAINT uq_account_org_email UNIQUE USING INDEX uq_account_org_email;
+~~~
+Vì index đã tồn tại và đã unique, PostgreSQL không cần quét lại — chỉ trỏ constraint vào index có sẵn.
+4. **Nếu dùng Flyway**: câu CREATE INDEX CONCURRENTLY phải tách migration riêng với {{executeInTransaction=false}} (xem lab-sql-056), còn câu ADD CONSTRAINT USING INDEX chạy trong transaction bình thường.
+
+### Phòng ngừa và monitoring
+- **Bắt buộc lock_timeout cho mọi migration DDL**; migration trên bảng > 1 triệu dòng phải kèm ước lượng thời gian giữ lock.
+- **Alert khi có phiên giữ AccessExclusiveLock > 5 giây**; theo dõi {{pg_stat_activity}} với {{wait_event_type = 'Lock'}} và số phiên chờ > 50.
+- **Quy tắc review**: thêm UNIQUE/PRIMARY KEY trên bảng lớn phải theo mẫu CREATE UNIQUE INDEX CONCURRENTLY + ADD CONSTRAINT USING INDEX, không dùng ALTER TABLE ADD CONSTRAINT trực tiếp.
+- **Test migration trên clone production** (RDS snapshot restore) để đo thời gian trước khi apply.
+
+> Senior tip: "constraint nhỏ không nên chậm" là suy nghĩ sai lầm giống hệt "ADD COLUMN DEFAULT nhẹ". UNIQUE và PRIMARY KEY không phải metadata — chúng phải quét bảng kiểm tra trùng và xây index, nên giữ AccessExclusiveLock suốt quá trình. Quy tắc vàng: **thêm UNIQUE trên bảng lớn = CREATE UNIQUE INDEX CONCURRENTLY rồi ADD CONSTRAINT ... USING INDEX**, và luôn kiểm tra dòng trùng trước, vì index CONCURRENTLY sẽ fail nếu dữ liệu bẩn.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: ADD CONSTRAINT UNIQUE phải quét toàn bộ 23,7 triệu dòng kiểm tra trùng + xây unique index, giữ AccessExclusiveLock suốt 6 phút 12 giây, chặn 468 phiên (FIFO queue)',
+    'Dẫn chứng đúng: artifact 1 ALTER duration 372234 ms + wait_event DataFileRead; artifact 2 AccessExclusiveLock granted=t, 468 phiên chờ, pg_blocking_pids = migration; CPU 100% một core',
+    'Phân biệt đúng: ADD COLUMN DEFAULT (metadata-only) và CHECK NOT VALID (ShareUpdateExclusiveLock không chặn DML) khác UNIQUE (AccessExclusiveLock + quét + xây index)',
+    'Đề xuất sửa đúng: CREATE UNIQUE INDEX CONCURRENTLY (2 pass, không lock mạnh, không trong transaction) rồi ADD CONSTRAINT ... UNIQUE USING INDEX (lock vài ms), dọn trùng trước, lock_timeout',
+    'Có monitoring/phòng ngừa: alert AccessExclusiveLock > 5s, quy tắc review UNIQUE/PK trên bảng lớn theo mẫu USING INDEX, test trên clone production',
+  ],
+  tags: ['postgresql', 'alter-table', 'unique-constraint', 'access-exclusive-lock', 'using-index', 'concurrently', 'migration'],
+},
+{
+  id: 'lab-sql-063',
+  category: 'sql',
+  title: 'Tìm đơn "mua HOẶC bán" + ORDER BY mới nhất: OR buộc sort 2,18 triệu dòng, UNION ALL thiếu LIMIT mỗi nhánh vẫn chậm',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử **MegaMart** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{orders}}: **41.820.000 dòng** (~8,1 GB heap + 3,2 GB index). Có 2 index: {{idx_orders_buyer}} trên {{(buyer_id, created_at DESC)}} và {{idx_orders_seller}} trên {{(seller_id, created_at DESC)}}. Endpoint GET /api/v1/orders/search?buyerId=...&sellerId=... trả về **50 đơn mới nhất** thoả "người mua = X HOẶC người bán = Y".
+
+**Triệu chứng (14/03/2026, 10:00).** p95 từ 15 ms lên **2,6 giây**, CPU RDS 18%→91%. Một "siêu seller" có khoảng 2,18 triệu đơn, nên câu OR khớp tới ~2,18 triệu dòng. EXPLAIN cho thấy Seq Scan + top-N heapsort. Đội dev thử viết lại bằng {{UNION ALL}} bọc ngoài {{ORDER BY created_at DESC LIMIT 50}} — **vẫn 2,4 giây** vì phần sort vẫn phải xử lý 2,18 triệu dòng.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE câu OR gốc, câu UNION ALL "ngây thơ" (không LIMIT trong mỗi nhánh), và câu UNION ALL có ORDER BY + LIMIT trong mỗi nhánh; kèm schema index. Hãy chỉ ra vì sao OR + ORDER BY + LIMIT không thể "đẩy LIMIT xuống dưới", vì sao UNION ALL thiếu LIMIT mỗi nhánh vẫn chậm, và viết lại đúng.`,
+  artifacts: [
+    {
+      name: 'explain-or-sort.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:12:03 +07, RDS megamart-primary (PostgreSQL 15.6)
+-- buyerId = X (1.240 đơn), sellerId = Y la "siêu seller" (~2.180.000 đơn)
+megamart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, buyer_id, seller_id, status, total_amount, created_at
+FROM orders
+WHERE buyer_id = '9f3c1a44-6b2e-4f0a-9d21-7c5b8e2f1041'::uuid
+   OR seller_id = 'b7f3c9e2-5d41-4a08-9c6b-1e2f3a4b5c6d'::uuid
+ORDER BY created_at DESC
+LIMIT 50;
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1241482.52..1241482.56 rows=50 width=64) (actual time=2609.498..2609.503 rows=50 loops=1)
+   Buffers: shared hit=742180 read=8421
+   ->  Sort  (cost=1241482.52..1241482.56 rows=50 width=64) (actual time=2609.410..2609.415 rows=50 loops=1)
+         Sort Key: created_at DESC
+         Sort Method: top-N heapsort  Memory Usage: 32kB
+         ->  Seq Scan on orders  (cost=0.00..1239895.56 rows=2197000 width=64) (actual time=0.031..2241.902 rows=2181240 loops=1)
+               Filter: ((buyer_id = '9f3c1a44-...'::uuid) OR (seller_id = 'b7f3c9e2-...'::uuid))
+               Rows Removed by Filter: 39638760
+               Buffers: shared hit=742180 read=8421
+ Planning Time: 0.284 ms
+ Execution Time: 2612.781 ms
+-- Seq Scan doc 41.820.000 dong, giu 2.181.240 dong khop, roi top-N heapsort de lay 50 dong moi nhat.
+-- LIMIT 50 KHONG the "day xuong" duoi vi phai doc HET tap khop truoc khi biet dong nao moi nhat.`,
+    },
+    {
+      name: 'explain-union-naive.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:16:41 +07, RDS megamart-primary (PostgreSQL 15.6)
+-- Cach viet lai "ngay tho": UNION ALL 2 nhanh, nhung KHONG co ORDER BY + LIMIT trong moi nhanh
+megamart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, buyer_id, seller_id, status, total_amount, created_at
+FROM (
+  SELECT id, buyer_id, seller_id, status, total_amount, created_at
+  FROM orders WHERE buyer_id = '9f3c1a44-6b2e-4f0a-9d21-7c5b8e2f1041'::uuid
+  UNION ALL
+  SELECT id, buyer_id, seller_id, status, total_amount, created_at
+  FROM orders WHERE seller_id = 'b7f3c9e2-5d41-4a08-9c6b-1e2f3a4b5c6d'::uuid
+) m
+ORDER BY created_at DESC
+LIMIT 50;
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=924.56..924.60 rows=50 width=64) (actual time=2471.112..2471.118 rows=50 loops=1)
+   ->  Sort  (cost=924.56..924.60 rows=50 width=64) (actual time=2471.010..2471.015 rows=50 loops=1)
+         Sort Key: created_at DESC
+         Sort Method: top-N heapsort  Memory Usage: 32kB
+         ->  Append  (cost=0.42..912.36 rows=2181240 width=64) (actual time=0.041..2210.402 rows=2181240 loops=1)
+               ->  Index Scan using idx_orders_buyer on orders  (cost=0.42..18.18 rows=1240 width=64) (actual time=0.031..1.204 rows=1240 loops=1)
+                     Index Cond: (buyer_id = '9f3c1a44-...'::uuid)
+               ->  Index Scan using idx_orders_seller on orders  (cost=0.42..894.18 rows=2180000 width=64) (actual time=0.041..2098.771 rows=2180000 loops=1)
+                     Index Cond: (seller_id = 'b7f3c9e2-...'::uuid)
+ Planning Time: 0.312 ms
+ Execution Time: 2478.451 ms
+-- UNION ALL da dung 2 index, NHUNG van phai doc HET 2.181.240 dong roi Sort top-N o ngoai.
+-- Khong LIMIT moi nhanh => Sort van xu ly 2,18 trieu dong => van cham ~2,4 giay.`,
+    },
+    {
+      name: 'explain-union-perbranch.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:20:11 +07, RDS megamart-primary (PostgreSQL 15.6)
+-- Cach viet DUNG: ORDER BY created_at DESC LIMIT 50 NGAY TRONG moi nhanh (moi nhanh trong ngoac don)
+megamart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, buyer_id, seller_id, status, total_amount, created_at
+FROM (
+  (SELECT id, buyer_id, seller_id, status, total_amount, created_at
+   FROM orders WHERE buyer_id = '9f3c1a44-6b2e-4f0a-9d21-7c5b8e2f1041'::uuid
+   ORDER BY created_at DESC LIMIT 50)
+  UNION
+  (SELECT id, buyer_id, seller_id, status, total_amount, created_at
+   FROM orders WHERE seller_id = 'b7f3c9e2-5d41-4a08-9c6b-1e2f3a4b5c6d'::uuid
+   ORDER BY created_at DESC LIMIT 50)
+) m
+ORDER BY created_at DESC
+LIMIT 50;
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=24.18..24.20 rows=50 width=64) (actual time=0.812..0.815 rows=50 loops=1)
+   ->  Sort  (cost=24.18..24.20 rows=100 width=64) (actual time=0.808..0.809 rows=100 loops=1)
+         Sort Key: created_at DESC
+         Sort Method: quicksort  Memory Usage: 40kB
+         ->  Unique  (cost=23.96..24.10 rows=100 width=64) (actual time=0.792..0.798 rows=100 loops=1)
+               ->  Append  (cost=0.42..23.96 rows=100 width=64) (actual time=0.412..0.781 rows=100 loops=1)
+                     ->  Limit  (cost=0.42..6.18 rows=50 width=64) (actual time=0.212..0.312 rows=50 loops=1)
+                           ->  Index Scan using idx_orders_buyer on orders  (cost=0.42..6.18 rows=50 width=64) (actual time=0.211..0.309 rows=50 loops=1)
+                                 Index Cond: (buyer_id = '9f3c1a44-...'::uuid)
+                     ->  Limit  (cost=0.42..6.18 rows=50 width=64) (actual time=0.202..0.301 rows=50 loops=1)
+                           ->  Index Scan using idx_orders_seller on orders  (cost=0.42..6.18 rows=50 width=64) (actual time=0.201..0.299 rows=50 loops=1)
+                                 Index Cond: (seller_id = 'b7f3c9e2-...'::uuid)
+ Planning Time: 0.284 ms
+ Execution Time: 0.918 ms
+-- Moi nhanh doc dung 50 dong da sap theo (created_at DESC) nho index, KHONG can sort lon.
+-- Append 100 dong -> Unique bo trung -> Sort 100 dong -> Limit 50. Nhanh ~2.850 lan.`,
+    },
+  ],
+  questions: [
+    'Vì sao câu OR gốc buộc Seq Scan + top-N heapsort trên 2,18 triệu dòng dù đã có 2 index (buyer_id, created_at DESC) và (seller_id, created_at DESC)? Vì sao LIMIT 50 không "đẩy" được xuống dưới Sort?',
+    'Vì sao viết lại bằng UNION ALL bọc ngoài ORDER BY created_at DESC LIMIT 50 (artifact 2) vẫn chậm 2,4 giây? UNION ALL "ngây thơ" này thiếu điều gì?',
+    'Hãy viết lại đúng bằng UNION với ORDER BY + LIMIT trong TỪNG nhánh (artifact 3). Giải thích vì sao lấy top-50 mỗi nhánh rồi trộn lại vẫn cho kết quả ĐÚNG, và cách xử lý đơn trùng (một đơn vừa có buyer vừa có seller bằng giá trị tìm).',
+  ],
+  hints: [
+    'ORDER BY created_at DESC LIMIT 50 nghĩa là "50 dòng mới nhất TOÀN CỤC". Với điều kiện OR, planner phải đọc HẾT các dòng khớp rồi mới sắp xếp để biết dòng nào mới nhất — Seq Scan hay BitmapOr đều không thể trả về "50 dòng mới nhất" mà không đọc toàn bộ tập khớp. Vì Sort nằm trên đường đi, LIMIT không thể push xuống dưới Sort.',
+    'UNION ALL "ngây thơ" chỉ tách 2 nhánh đọc bảng bằng 2 index, nhưng vẫn để một Sort top-N xử lý 2,18 triệu dòng ở NGOÀI. Phải đặt ORDER BY created_at DESC LIMIT 50 NGAY TRONG mỗi nhánh để mỗi nhánh dùng index (buyer_id, created_at DESC) trả về 50 dòng ĐÃ sắp, không cần sort lớn.',
+    'Vì mỗi nhánh đã sắp theo created_at DESC, 50 dòng mới nhất toàn cục chắc chắn nằm trong top-50 của nhánh chứa nó (một dòng ở top-50 toàn cục thì có tối đa 49 dòng mới hơn nó trên toàn cục, nên trong nhánh của nó cũng chỉ có tối đa 49 dòng mới hơn -> nó nằm trong top-50 của nhánh). Trộn 50+50 rồi sort 100 dòng lấy 50 là đủ và đúng. Dùng UNION (distinct) hoặc DISTINCT ON (id) để bỏ đơn trùng.',
+    'Lưu ý cú pháp: ORDER BY/LIMIT trong mỗi nhánh của UNION phải đặt trong ngoặc đơn riêng, nếu không PostgreSQL sẽ hiểu ORDER BY/LIMIT đó áp cho cả UNION.',
+  ],
+  answer: `**Tóm tắt:** Câu {{WHERE buyer_id = X OR seller_id = Y ORDER BY created_at DESC LIMIT 50}} chạy Seq Scan + top-N heapsort trên **2.181.240 dòng khớp** (**2.612 ms**) vì **LIMIT 50 không thể đẩy xuống dưới Sort**: muốn biết 50 dòng mới nhất thì phải đọc hết tập khớp rồi mới sắp xếp. Viết lại {{UNION ALL}} mà **không** có ORDER BY + LIMIT trong mỗi nhánh vẫn chậm (**2.478 ms**) vì Sort vẫn xử lý 2,18 triệu dòng. Cách đúng: đặt {{ORDER BY created_at DESC LIMIT 50}} **ngay trong từng nhánh** (mỗi nhánh dùng index (buyer_id, created_at DESC) trả về 50 dòng đã sắp), rồi trộn 50+50, sort 100 dòng, lấy 50 -> **0,918 ms** (nhanh ~2.850 lần).
+
+### Kiến thức nền: vì sao OR + ORDER BY + LIMIT là "bẫy"
+Với {{WHERE buyer_id = X}} đơn lẻ, index {{(buyer_id, created_at DESC)}} cho phép đọc thẳng 50 entry đầu tiên theo đúng thứ tự — **không cần sort**, LIMIT push xuống tận Index Scan. Nhưng khi có **OR giữa hai cột khác nhau**, planner phải gộp kết quả của hai tập hợp. Có hai cách, và cả hai đều vướng Sort:
+- **Seq Scan + Sort**: đọc cả bảng, lọc OR, rồi sort toàn bộ dòng khớp để lấy top-50.
+- **BitmapOr + Sort**: lấy TID từ hai index, đọc heap theo TID, rồi **vẫn phải sort** toàn bộ dòng khớp.
+
+Điểm mấu chốt: **Sort không thể "biết trước" 50 dòng mới nhất nếu chưa nhìn hết dữ liệu**. Do đó {{LIMIT 50}} nằm ở ngoài Sort, không có cách nào đẩy xuống dưới. Đây là lý do câu query "chỉ lấy 50 dòng" lại đọc tới 2,18 triệu dòng.
+
+Ví dụ đời thường: bạn có hai danh bạ (theo người mua, theo người bán) và muốn "50 giao dịch mới nhất của A HOẶC B". Nếu gộp hết giao dịch của A và B rồi mới xếp theo thời gian, bạn phải lật qua toàn bộ (hàng triệu) giao dịch. Nhưng nếu mỗi danh bạ đã xếp sẵn theo thời gian giảm dần, bạn chỉ cần xem 50 dòng đầu của mỗi danh bạ — vì 50 dòng mới nhất toàn cục chắc chắn nằm trong 50 dòng đầu của danh bạ chứa nó.
+
+### Vì sao UNION ALL "ngây thơ" vẫn chậm
+{{UNION ALL}} tách câu query thành hai nhánh độc lập, mỗi nhánh **dùng đúng index của mình** — đó là bước đi đúng. Nhưng nếu **không** đặt ORDER BY + LIMIT trong mỗi nhánh (artifact 2), thì hai nhánh trả về **toàn bộ** dòng khớp (1.240 + 2.180.000 = 2.181.240), rồi một Sort top-N ở ngoài vẫn phải xử lý 2,18 triệu dòng. Kết quả chỉ nhanh hơn chút xíu về I/O (đọc bằng index thay vì quét tuần tự) nhưng vẫn **2,4 giây** vì nút thắt là Sort, không phải cách đọc.
+
+### Cách viết lại đúng
+Đặt ORDER BY + LIMIT **trong từng nhánh**, mỗi nhánh trong ngoặc đơn riêng (nếu không, ORDER BY/LIMIT sẽ bị hiểu là áp cho cả UNION):
+~~~sql
+SELECT id, buyer_id, seller_id, status, total_amount, created_at
+FROM (
+  (SELECT id, buyer_id, seller_id, status, total_amount, created_at
+   FROM orders WHERE buyer_id = :buyerId
+   ORDER BY created_at DESC LIMIT 50)
+  UNION
+  (SELECT id, buyer_id, seller_id, status, total_amount, created_at
+   FROM orders WHERE seller_id = :sellerId
+   ORDER BY created_at DESC LIMIT 50)
+) m
+ORDER BY created_at DESC
+LIMIT 50;
+~~~
+Kết quả (artifact 3): mỗi nhánh là một **Index Scan + Limit 50** (đọc 50 dòng đã sắp, không sort lớn), Append 100 dòng, **Unique** bỏ đơn trùng, Sort 100 dòng, Limit 50 -> **0,918 ms**.
+
+### Vì sao lấy top-50 mỗi nhánh là ĐÚNG (chứng minh ngắn)
+Gọi G là tập 50 dòng mới nhất toàn cục. Lấy một dòng bất kỳ d trong G. Trên toàn cục có tối đa 49 dòng mới hơn d. Trong nhánh chứa d, số dòng mới hơn d cũng chỉ tối đa 49 (vì là tập con của toàn cục). Vậy d nằm trong **top-50 của nhánh chứa nó**. Do đó G ⊆ (top-50 nhánh 1 ∪ top-50 nhánh 2). Trộn hai top-50 rồi lấy top-50 là đủ để không sót dòng nào của G. Đây là lý do mỗi nhánh chỉ cần LIMIT 50, không cần LIMIT lớn hơn.
+
+### Xử lý đơn trùng
+Một đơn có thể vừa có {{buyer_id = X}} vừa có {{seller_id = Y}} (X và Y là hai UUID khác nhau nhưng cùng xuất hiện trên một đơn). Khi đó nó nằm ở cả hai nhánh. Dùng {{UNION}} (có distinct) thay cho {{UNION ALL}} để bỏ bản trùng, hoặc {{DISTINCT ON (id)}} ở ngoài. Vì chỉ có ≤ 100 dòng sau khi gộp, việc khử trùng rất rẻ.
+
+### Phòng ngừa và monitoring
+- Với tìm kiếm "A HOẶC B" trên bảng lớn, **luôn viết UNION với ORDER BY + LIMIT trong từng nhánh**; đừng để một Sort toàn cục xử lý hàng triệu dòng.
+- Nếu một nhánh (ví dụ siêu seller) quá lớn, cân nhắc **partial index** hoặc bảng tổng hợp riêng cho seller lớn.
+- Bật {{auto_explain}} ({{log_min_duration = 500}}, {{log_analyze = on}}) để soi các câu có **Sort rows rất lớn** so với LIMIT; cảnh báo khi Sort Method là top-N heapsort mà số dòng đầu vào > 100.000.
+- Theo dõi {{pg_stat_statements}}: query OR có {{mean_exec_time}} tăng vọt là dấu hiệu tập khớp phình to.
+
+> Senior tip: "LIMIT 50 mà đọc 2 triệu dòng" là dấu hiệu kinh điển của việc **LIMIT bị chặn bởi Sort**. Với OR, planner không có cách nào trả về top-N toàn cục mà không đọc hết tập khớp. Mẹo thực chiến: khi thấy EXPLAIN có Sort top-N heapsort với số dòng đầu vào khổng lồ, hãy tách thành UNION và **đẩy ORDER BY + LIMIT vào từng nhánh** — mỗi nhánh dùng index trả về N dòng đã sắp, rồi mới trộn. Nhớ bọc mỗi nhánh trong ngoặc đơn, nếu không ORDER BY sẽ áp cho cả UNION và bạn lại quay về vạch xuất phát.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: OR + ORDER BY created_at DESC LIMIT 50 buộc đọc hết 2,18 triệu dòng khớp rồi mới Sort top-N; LIMIT không thể push xuống dưới Sort',
+    'Dẫn chứng đúng: artifact 1 Seq Scan rows=2181240 + top-N heapsort 2612 ms; artifact 2 UNION ALL không LIMIT mỗi nhánh vẫn Sort 2,18 triệu dòng 2478 ms; artifact 3 mỗi nhánh Index Scan + Limit 50, 0,918 ms',
+    'Giải thích đúng vì sao UNION ALL "ngây thơ" vẫn chậm (Sort toàn cục không được đẩy xuống) và vì sao LIMIT mỗi nhánh là đủ + đúng (chứng minh top-50 toàn cục nằm trong top-50 mỗi nhánh)',
+    'Đề xuất viết lại đúng: UNION với ORDER BY + LIMIT trong từng nhánh (mỗi nhánh trong ngoặc đơn), khử trùng bằng UNION/DISTINCT ON (id)',
+    'Có phòng ngừa/monitoring: auto_explain log_analyze soi Sort rows lớn, pg_stat_statements, partial index/bảng tổng hợp cho seller lớn',
+  ],
+  tags: ['postgresql', 'index', 'or-condition', 'order-by-limit', 'union', 'sort', 'pagination', 'top-n'],
+},
 );
 
