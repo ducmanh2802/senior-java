@@ -12175,5 +12175,300 @@ Hệ thống thanh toán scale publisher outbox lên **3 instance** để tăng 
   refs: [
     { type: 'doc', title: 'PostgreSQL Docs: Explicit Locking (FOR UPDATE SKIP LOCKED)', url: 'https://www.postgresql.org/docs/current/sql-select.html' }
   ]
+},
+{
+  id: 'scenario-194',
+  topic: 'scenario',
+  level: 'lead',
+  refs: [{"type": "doc", "title": "PostgreSQL Docs: High Availability, Load Balancing, and Replication", "url": "https://www.postgresql.org/docs/current/high-availability.html"}],
+  q: 'Toàn bộ region chính (gồm cả primary database) mất do sự cố hạ tầng, không phải mất một bảng. Bạn failover sang region dự phòng thế nào để đạt RTO/RPO, đồng bộ lại dữ liệu khi region chính hồi phục, và giao tiếp với các bên ra sao?',
+  a: `**Tóm tắt:** đây là sự cố **mất cả region** (một khu vực hạ tầng gồm nhiều máy chủ, trong đó có primary database — cơ sở dữ liệu chính), không phải mất một bảng, nên không dùng PITR một bảng mà **failover toàn hệ thống** sang region DR (Disaster Recovery — dự phòng thảm họa). Điều kiện tiên quyết là từ trước đã có **replica bất đồng bộ** (bản sao chạy ở nơi khác, cập nhật trễ hơn chính) ở region khác; khi failover thì **promote** (nâng cấp) replica đó thành primary, trỏ DNS/load balancer sang region mới, chấp nhận **RPO** (Recovery Point Objective — mức mất dữ liệu tối đa tính bằng thời gian) bằng độ trễ replication; khi region cũ hồi phục thì **không ghi ngược tự động** mà dựng lại theo snapshot/log rồi mới ghép, tránh **split-brain** (hai nơi cùng tự nhận là primary).
+
+### Làm rõ yêu cầu
+- RTO (Recovery Time Objective — thời gian tối đa được phép gián đoạn) và RPO của hệ thống là bao nhiêu? Ví dụ RTO 30 phút, RPO 30 giây.
+- Replication giữa region là **đồng bộ** (chờ xác nhận mới commit, RPO ~ 0 nhưng trễ ghi) hay **bất đồng bộ** (RPO = độ trễ, nhanh hơn)?
+- Dữ liệu nào không được mất (giao dịch tiền), dữ liệu nào tái tạo được (cache, phiên đăng nhập)? Có bao nhiêu service phải chuyển cùng lúc?
+
+### Điều tra / Phân tích
+- Xác nhận region chính mất thật (không phải lỗi DNS/app): kiểm tra health check nhiều điểm, trạng thái cloud, thông báo từ nhà cung cấp hạ tầng.
+- Đo **replication lag** (độ trễ) ngay trước sự cố để biết RPO thực tế — đây là con số quyết định "mất bao nhiêu dữ liệu".
+- Liệt kê phụ thuộc: DNS, secret/config ở region mới, quota, dịch vụ bên thứ ba có endpoint theo region không.
+
+### Giải pháp (theo thứ tự)
+1. **Tuyên bố disaster, phong toả ghi**: dừng nhận ghi ở region lỗi để không phân mảnh dữ liệu; mở kênh sự cố, chỉ định người chỉ huy.
+2. **Promote replica** ở region DR thành primary (một lệnh, dứt khoát): {{SELECT pg_promote();}} trên PostgreSQL, hoặc API của dịch vụ quản lý.
+3. **Trỏ traffic**: cập nhật record DNS (TTL thấp, ví dụ 60 giây) hoặc chuyển load balancer sang region mới; đồng thời **nạp lại connection pool** vì client có thể giữ IP cũ (DNS cache, pool giữ connection chết).
+4. **Kiểm chứng**: chạy truy vấn kiểm tra số dư/đếm dòng bản ghi mới nhất, so với RPO đã công bố; mở lại ghi.
+5. **Dựng lại region cũ**: KHÔNG biến nó thành primary thứ hai. Dùng công cụ đồng bộ lại (ví dụ {{pg_rewind}}) hoặc snapshot mới nhất + replay WAL để đưa về trạng thái hiện tại, rồi mới cho làm replica.
+
+### Luồng failover và dựng lại
+~~~seq
+title: Failover to DR region and sync when primary recovers
+actors: OnCall | ReplicaDR | LBDNS | OldRegion
+OnCall -> ReplicaDR: check replication lag (actual RPO)
+OnCall -> ReplicaDR: promote to primary (pg_promote)
+OnCall -> LBDNS: point traffic to new region (TTL 60s)
+LBDNS --> OnCall: confirmed, client refresh pool
+OnCall -> OnCall: verify balance/row count, reopen writes
+OldRegion -> OldRegion: recovers, do NOT become primary
+OnCall -> OldRegion: rebuild with pg_rewind + WAL, then become replica
+~~~
+
+### Trade-off & pitfall
+| Phương án | RPO | RTO | Chi phí/rủi ro |
+|---|---|---|---|
+| Active-passive, async replica | = độ trễ (vài giây–vài phút) | vài phút | rẻ, dễ; mất dữ liệu nhỏ |
+| Active-passive, sync replica | ~ 0 | vài phút | ghi chậm, phụ thuộc mạng liên vùng |
+| Active-active (đa primary) | ~ 0 | gần 0 | rất phức tạp, dễ split-brain |
+
+- **Split-brain**: nếu mạng phân mảnh mà cả hai region tự promote, hai nơi cùng nhận ghi → dữ liệu mâu thuẫn. Phải có cơ chế quorum/lease, chỉ một nơi được promote.
+- **DNS cache + connection pool**: đổi DNS mà client giữ IP cũ (TTL dài, JVM cache, pool giữ socket chết) → vẫn lỗi vài phút; phải có TTL thấp và pool loại connection cũ.
+- **Không diễn tập restore/failover**: "failover chưa thử là chưa có"; replica có thể đã hỏng hoặc trễ quá RPO mà không ai biết.
+
+### Ví dụ đời thực
+Region chính mất điện 02:00, kéo theo primary PostgreSQL và toàn bộ service. Replica bất đồng bộ ở region DR trễ **30 giây** (RPO thực tế 30 giây), RTO mục tiêu 30 phút. Xử lý: 02:03 tuyên bố disaster, phong toả ghi; 02:06 promote replica (RPO = 30 giây, khoảng 1.200 giao dịch trong 30 giây cuối phải đối soát lại với đối tác); 02:09 đổi DNS TTL 60s và restart pool; 02:14 kiểm chứng số dư khớp, mở lại ghi. Downtime thực tế **52 phút** (chậm hơn RTO do phải xác minh). Khi region cũ hồi lúc 05:00, dùng {{pg_rewind}} + WAL để đồng bộ lại rồi cho làm replica, không ghi ngược. Giao tiếp: cập nhật cho khách và đối tác mỗi 15 phút, báo pháp chế vì có khoảng trống giao dịch 30 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi mất cả region, tôi không restore một bảng mà failover toàn hệ thống sang region dự phòng, với điều kiện đã có sẵn replica bất đồng bộ. Việc đầu tiên là phong toả ghi để không phân mảnh dữ liệu, rồi đo độ trễ replication để biết RPO thực tế, tức mất tối đa bao nhiêu dữ liệu. Sau đó tôi promote replica thành primary, trỏ DNS có TTL thấp hoặc load balancer sang region mới, và nạp lại connection pool vì client hay giữ IP cũ. Kiểm chứng số dư và số dòng rồi mới mở lại ghi. Khi region cũ hồi phục, tôi không cho nó làm primary ngay để tránh split-brain, mà dựng lại bằng công cụ đồng bộ như pg_rewind cộng WAL rồi mới cho làm replica. Suốt quá trình tôi giao tiếp theo nhịp cố định với khách, đối tác và pháp chế, và sau đó diễn tập failover định kỳ vì failover chưa thử là chưa có."
+
+> Senior tip: failover không phải bài toán chạy một lệnh promote, mà là bài toán đã chuẩn bị trước: replication lag đo được, DNS TTL thấp, pool chịu được đổi IP, và một quy trình diễn tập. RPO/RTO phải là con số đo được, không phải khẩu hiệu; một backup hay replica chưa thử khôi phục là chưa có.`,
+  follow: [
+    'Làm sao tránh split-brain khi cả hai region đều còn sống nhưng mạng phân mảnh?',
+    'RPO 30 giây nghĩa là 1.200 giao dịch có thể mất — bạn đối soát và bù với đối tác thế nào?',
+    'Active-active đa region khác active-passive thế nào về độ phức tạp và rủi ro dữ liệu?'
+  ],
+  tags: ['disaster-recovery', 'failover', 'RTO', 'RPO', 'multi-region', 'split-brain']
+},
+{
+  id: 'scenario-195',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau deploy, CPU tăng từ 30% lên 90% trên mọi pod, p99 tăng, traffic không đổi; GC log không có Full GC và heap sau GC vẫn ổn định. Bạn dùng JFR và async-profiler (chế độ alloc) thế nào để tìm nguồn allocation rate cao và sửa?',
+  a: `**Tóm tắt:** CPU cao mà **không phải GC pause** (không Full GC, heap sau GC ổn) thì nghi phạm số một là **allocation rate** (tốc độ cấp phát object) quá cao — rác sinh ra nhiều khiến **Young GC** (thu gom thế hệ trẻ) chạy liên tục và **GC thread chiếm CPU**. Dùng **async-profiler chế độ alloc** (chụp mẫu việc cấp phát bộ nhớ) và **JFR** sự kiện {{jdk.ObjectAllocationSample}} để chỉ ra method cấp phát nhiều nhất, so với bản trước deploy, rồi sửa object thừa (thường là nối chuỗi/parse/boxing trong vòng lặp nóng).
+
+### Phân biệt ba nhóm nguyên nhân CPU cao
+- **Code nóng thật**: method nghiệp vụ chiếm CPU, throughput (số request/giây) giữ nguyên hoặc tăng.
+- **Allocation rate cao**: CPU dồn vào GC thread; flame graph chế độ cpu thường chỉ thấy GC, phải chụp chế độ alloc mới thấy thủ phạm.
+- **Container bị throttle**: CPU chạm limit nhưng node còn rảnh; xem {{container_cpu_cfs_throttled_periods_total}} trước khi kết luận.
+
+### Thuật ngữ
+- **Allocation rate**: lượng bộ nhớ cấp phát mỗi giây. Càng cao, GC chạy càng nhiều.
+- **Young GC**: dọn object sống ngắn ở thế hệ trẻ; nhanh nhưng nếu allocation cao thì chạy dày, ngốn CPU.
+- **async-profiler**: công cụ lấy mẫu hiệu năng, có các chế độ {{cpu}}, {{wall}}, {{alloc}}, {{lock}}.
+
+### Điều tra bằng async-profiler (alloc) và JFR
+~~~bash
+# async-profiler: chụp 60 giây chế độ cấp phát, xuất flame graph
+./profiler.sh -e alloc -d 60 -f /tmp/alloc.html <pid>
+
+# JFR: bật 60 giây, thu mẫu cấp phát + sự kiện GC
+jcmd <pid> JFR.start name=alloc duration=60s filename=/tmp/alloc.jfr
+jfr print --events jdk.ObjectAllocationSample /tmp/alloc.jfr
+jfr print --events jdk.GC /tmp/alloc.jfr
+~~~
+- Flame graph alloc: cột rộng nhất là method cấp phát nhiều bytes nhất — thường là {{String.format}} / nối chuỗi bằng {{+}} trong vòng lặp, boxing primitive, hoặc parse JSON không stream.
+- JFR {{jdk.ObjectAllocationSample}}: đường phân bổ theo class; đối chiếu với GC log xem Young GC có dày lên đúng lúc deploy không.
+
+### Trade-off & pitfall
+| Công cụ | Thấy gì | Hạn chế |
+|---|---|---|
+| async-profiler -e cpu | method đốt CPU | không thấy nguồn cấp phát |
+| async-profiler -e alloc | method cấp phát nhiều | overhead cao hơn cpu, chụp ngắn |
+| JFR ObjectAllocationSample | phân bổ theo class, tích hợp GC | cần đọc JFR/JMC |
+
+- **Nhầm alloc với cpu**: chụp cpu khi vấn đề là allocation sẽ "không thấy gì" ngoài GC; phải chụp alloc.
+- **Bỏ qua throttling**: CPU cao có thể do bị bóp, không phải code; kiểm tra metric trước.
+- **Tối ưu mù**: không đọc flame graph mà đoán "do regex" là lỗi kinh điển; hãy để dữ liệu chỉ đường.
+
+### Ví dụ đời thực
+Service Java 17 trên Kubernetes, 6 pod, sau deploy 10:00 CPU từ 320m lên 920m (limit 1 vCPU), p99 từ 190ms lên 720ms, traffic vẫn 1.200 req/s. GC log: không Full GC, heap sau GC ổn định, nhưng Young GC từ 25ms lên 180ms và số lần tăng 6 lần. async-profiler chế độ cpu chỉ thấy GC thread; chụp {{alloc}} 60 giây: 46% bộ nhớ cấp phát từ {{OrderMapper.toJson()}} mới thêm, dùng {{String.format}} và nối chuỗi trong vòng lặp trên danh sách 5.000 dòng. Mỗi request cấp phát ~ 8MB rác. Sửa: dùng {{StringBuilder}} có {{setLength(0)}} tái dùng, bỏ {{String.format}} trong vòng lặp, chuyển serialize sang Jackson streaming; thêm test allocation vào CI. Sau deploy 20:00: allocation còn 300MB/s, Young GC về 30ms, CPU 350m, p99 200ms.
+
+### Trả lời mẫu khi phỏng vấn
+"CPU tăng sau deploy mà GC log không có Full GC, heap sau GC vẫn ổn định, thì tôi nghĩ ngay đến allocation rate cao chứ không phải rò rỉ. Tôi kiểm tra throttling trước để loại trừ container bị bóp CPU. Sau đó tôi chạy async-profiler chế độ alloc trong khoảng sáu mươi giây để lấy flame graph xem method nào cấp phát nhiều bytes nhất, đồng thời bật JFR và in sự kiện ObjectAllocationSample cùng sự kiện GC để đối chiếu. Trong một sự cố, flame graph chỉ một hàm serialize mới dùng String.format và nối chuỗi trong vòng lặp, cấp phát vài megabyte rác mỗi request, làm Young GC chạy dày và ngốn CPU; tôi đổi sang StringBuilder tái dùng và Jackson streaming, allocation giảm mạnh, CPU về mức cũ. Tôi cũng thêm cảnh báo throttling và benchmark allocation vào CI để chặn tái diễn."
+
+> Senior tip: "CPU cao + throughput không đổi + không Full GC" = nghi allocation rate; chụp async-profiler chế độ alloc (không phải cpu) và in jdk.ObjectAllocationSample là ra thủ phạm trong 30 giây. Đừng tối ưu regex theo cảm giác khi flame graph alloc còn chưa mở.`,
+  follow: [
+    'async-profiler chế độ alloc khác cpu ở cơ chế lấy mẫu và overhead thế nào?',
+    'Nếu allocation cao nhưng không sửa được code ngay, có cách giảm tần suất Young GC tạm thời không?',
+    'Làm sao đưa allocation budget vào CI để chặn regression trước khi lên production?'
+  ],
+  tags: ['CPU', 'allocation-rate', 'async-profiler', 'JFR', 'Young-GC', 'performance']
+},
+{
+  id: 'scenario-196',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Đối tác báo nhận cùng một webhook tới 3 lần, nhưng điều tra cho thấy đối tác sinh event_id MỚI mỗi lần gửi (mỗi lần một UUID khác nhau), nên dedup theo event_id không dùng được. Bạn tìm nguyên nhân và sửa thế nào để không xử lý trùng?',
+  a: `**Tóm tắt:** không ép được đối tác sửa event_id thì phải **dedup theo khoá nghiệp vụ** (business key, ví dụ order_id + loại sự kiện) trong một **cửa sổ thời gian**, kết hợp **state machine idempotent** (chỉ chuyển trạng thái một lần) ở tầng DB. Điều tra bằng **correlation ID** và access log để xác nhận 3 lần đến gần nhau và cùng một giao dịch; sửa bằng **trả 200 ngay rồi xử lý async qua queue**, ghi {{webhook_seen}} có unique constraint để lần 2–3 bị bỏ qua.
+
+### Vì sao dedup theo event_id thất bại
+- Đối tác sinh event_id theo **lần gửi** chứ không theo **giao dịch**: mỗi retry là một UUID mới → bảng processed_events theo event_id không nhận ra trùng.
+- Đây là lỗi thiết kế phía đối tác, nhưng bạn không kiểm soát được họ; phải phòng thủ ở phía mình bằng khoá ổn định hơn.
+
+### Thuật ngữ
+- **Business key (khoá nghiệp vụ)**: khoá ổn định theo giao dịch, ví dụ order_id + event_type, không đổi giữa các lần gửi.
+- **Cửa sổ dedup**: khoảng thời gian coi hai lần gửi cùng business key là trùng (ví dụ 24 giờ).
+- **State machine idempotent**: chỉ cho phép chuyển trạng thái hợp lệ một lần, dùng điều kiện WHERE.
+
+### Điều tra
+- Lấy **correlation ID** / request ID từ access log của 3 lần gọi: cùng order_id, cùng loại sự kiện, cách nhau vài giây đến vài phút.
+- Xác nhận event_id khác nhau nhưng payload nghiệp vụ giống hệt (cùng amount, cùng trạng thái).
+- Loại trừ khả năng 3 giao dịch thật: đối chiếu số tiền và thời điểm với sổ cái.
+
+### Giải pháp
+~~~sql
+CREATE TABLE webhook_seen (
+  business_key varchar(64) NOT NULL,
+  event_type   varchar(32) NOT NULL,
+  first_seen   timestamptz NOT NULL DEFAULT now(),
+  status       varchar(16) NOT NULL,
+  PRIMARY KEY (business_key, event_type)
+);
+-- Lần đầu: rowsAffected = 1 -> xử lý; lần 2,3: = 0 -> bỏ qua
+INSERT INTO webhook_seen (business_key, event_type, status)
+VALUES (:orderId, :type, 'RECEIVED')
+ON CONFLICT (business_key, event_type) DO NOTHING;
+~~~
+- **Trả 200 ngay, xử lý async**: endpoint chỉ ghi nhận vào queue rồi trả 200, tránh đối tác retry vì response chậm.
+- **State machine idempotent**: cập nhật đơn bằng {{UPDATE orders SET status='PAID' WHERE id=:id AND status='PENDING'}}, rowsAffected=0 nghĩa là đã xử lý.
+- **Dọn cửa sổ**: job xoá {{webhook_seen}} cũ hơn 24–48 giờ; state machine vẫn bảo vệ trường hợp retry đến muộn.
+- **Ngoài thứ tự**: sự kiện mang version, chỉ áp dụng transition mới hơn version hiện tại.
+
+### Luồng dedup theo business key
+~~~seq
+title: Webhook duplicate with different event_id
+actors: Partner | API | Queue | Service
+Partner -> API: POST webhook (new event_id, order=9527, type=PAID)
+API --> Partner: 200 OK immediately (received, not processed)
+API -> Queue: enqueue (order=9527, type=PAID)
+Queue -> Service: consume attempt 1
+Service -> Service: INSERT webhook_seen(9527,PAID) ON CONFLICT DO NOTHING
+note Service: rowsAffected=1 -> process, transition state
+Partner -> API: POST again (DIFFERENT event_id, order=9527, type=PAID)
+API --> Partner: 200 OK
+Queue -> Service: consume attempt 2
+Service -> Service: ON CONFLICT DO NOTHING -> rowsAffected=0, skip
+~~~
+
+### Trade-off & pitfall
+| Cách dedup | Khi nào dùng | Rủi ro |
+|---|---|---|
+| Theo event_id | đối tác sinh event_id ổn định | vô dụng nếu event_id đổi mỗi lần |
+| Theo business key + cửa sổ | không ép được đối tác | cửa sổ quá ngắn thì retry muộn lọt |
+| State machine idempotent | luôn nên có | cần transition rõ ràng, version |
+
+- **Cửa sổ quá ngắn**: retry sau nhiều giờ sẽ lọt; state machine idempotent là lớp cuối.
+- **Business key không duy nhất**: nếu cùng order có nhiều sự kiện cùng loại hợp lệ, phải thêm version/sequence vào khoá.
+- **Xử lý đồng bộ trong request**: response chậm khiến đối tác retry thêm; trả 200 rồi xử lý async.
+
+### Ví dụ đời thực
+Cổng thanh toán nhận webhook từ đối tác, mỗi giao dịch có order_id. Đối tác retry 3 lần khi timeout nhưng **sinh event_id mới mỗi lần**, nên bảng dedup theo event_id không chặn được; khoảng 2% đơn bị cập nhật "đã thanh toán" 3 lần, sinh 3 thông báo và 3 bút toán. Sửa: (1) endpoint ghi vào queue rồi trả 200 ngay; (2) bảng {{webhook_seen}} unique theo (order_id, event_type), insert {{ON CONFLICT DO NOTHING}} — lần 2,3 bị bỏ qua; (3) cập nhật đơn bằng {{WHERE status='PENDING'}}; (4) job dọn webhook_seen sau 48 giờ; (5) log correlation ID để đối soát. Sau fix: số lần xử lý trùng về 0, thời gian phản hồi webhook từ 1,8 giây xuống 40ms, đối tác không còn retry.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi đối tác sinh event_id mới mỗi lần gửi thì dedup theo event_id mất tác dụng, nên tôi chuyển sang khoá nghiệp vụ ổn định như order_id cộng loại sự kiện, trong một cửa sổ thời gian. Tôi điều tra bằng correlation ID và access log để xác nhận ba lần cùng một giao dịch và loại trừ khả năng là ba giao dịch thật. Cách sửa: endpoint trả 200 ngay rồi đẩy vào queue xử lý bất đồng bộ, để đối tác không retry vì response chậm; một bảng webhook_seen có unique constraint theo business key và event_type, insert ON CONFLICT DO NOTHING, lần hai và ba bị bỏ qua; cập nhật đơn bằng state machine có điều kiện status='PENDING' để idempotent. Tôi dọn bảng dedup sau một cửa sổ hợp lý và vẫn giữ state machine làm lớp cuối cho retry đến muộn, vì hai hệ phân tán không thể exactly-once chỉ bằng retry."
+
+> Senior tip: đừng tin event_id của đối tác là ổn định; luôn có một lớp dedup theo business key và một state machine idempotent ở DB. "Trả 200 nhanh + xử lý async" vừa giảm retry vừa mượt tải — webhook chậm là tự tạo thêm trùng.`,
+  follow: [
+    'Nếu cùng order_id có nhiều sự kiện cùng loại hợp lệ, bạn thêm gì vào business key để không dedup nhầm?',
+    'Retry đến sau cửa sổ dedup 48 giờ thì state machine bảo vệ thế nào?',
+    'Làm sao phát hiện đối tác gửi trùng hàng loạt để cảnh báo và tạm dừng xử lý?'
+  ],
+  tags: ['webhook', 'deduplication', 'business-key', 'idempotency', 'outbox', 'async']
+},
+{
+  id: 'scenario-197',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Bảng production bị ai đó xoá nhầm lúc 15:00 (DROP TABLE / DELETE không WHERE). Bạn xử lý khôi phục thế nào trong 30 phút đầu và giao tiếp ra sao?',
+  a: `**Tóm tắt:** Dừng mọi write, đánh giá blast radius, khôi phục từ backup + WAL/PITR tới thời điểm ngay trước sự cố, xác minh dữ liệu, rồi mới mở traffic; đồng thời thông báo stakeholder theo timeline rõ ràng.
+
+### 0–5 phút: containment
+- Tạm dừng deploy và write path (maintenance mode / circuit breaker) để không ghi thêm.
+- Xác định chính xác: bảng nào, DB nào, thời điểm, ai thực hiện (audit log, pg_stat_statements).
+- Không vội restore đè lên production; snapshot hiện trạng (disk/volume) để forensic.
+
+### Khôi phục
+- PostgreSQL: restore base backup + replay WAL tới trước thời điểm xoá (PITR, recovery_target_time).
+- Nếu chỉ một bảng: pg_restore --table từ dump gần nhất, rồi apply WAL incremental.
+- Sau restore: chạy checksum/row count, so sánh với audit/replica, smoke test API.
+
+### Giao tiếp
+- Thông báo internal ngay: ảnh hưởng, ETA, người phụ trách.
+- Với khách hàng/partner: trạng thái, thời gian dự kiến, kênh cập nhật; không hứa sai ETA.
+
+### Pitfall
+- Restore sai thời điểm (quá sớm/quá muộn) → mất dữ liệu mới.
+- Không có runbook → panic và thao tác sai.
+
+> Senior tip: chuẩn bị runbook PITR và diễn tập quarterly; immutable backup + WAL archiving là bảo hiểm rẻ nhất.`,
+  follow: [
+    'Nếu không có WAL archiving thì khôi phục tối đa tới đâu?',
+    'Làm sao xác minh không mất dữ liệu sau restore?',
+    'Ai có quyền DROP TABLE và làm sao ngăn chặn?'
+  ],
+  tags: ['incident', 'pitr', 'backup', 'postgresql', 'recovery']
+},
+{
+  id: 'scenario-198',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau deploy, CPU service tăng từ 30% lên 90% và p99 tăng. Bạn điều tra thế nào bằng JFR/async-profiler?',
+  a: `**Tóm tắt:** Thu thập JFR recording và async-profiler flame graph trong lúc sự cố, so sánh với baseline, xác định hotspot (code mới, GC, lock), rồi rollback hoặc hotfix có số liệu.
+
+### Thu thập
+- JFR: jcmd <pid> JFR.start duration=60s filename=cpu.jfr; sau đó jfr print hoặc JDK Mission Control.
+- async-profiler: ./profiler.sh -d 60 -f flame.svg <pid> (CPU mode).
+- GC log: -Xlog:gc*; thread dump: jcmd <pid> Thread.print.
+
+### Phân tích
+- Flame graph: frame rộng nhất là hotspot; chú ý code mới trong deploy.
+- JFR: event {{jdk.ExecutionSample}} (CPU profiling), {{jdk.GCPhasePause}}, {{jdk.JavaMonitorEnter}} (lock contention).
+- So sánh với baseline recording trước deploy.
+
+### Quyết định
+- Nếu hotspot rõ ràng và fix nhanh → hotfix.
+- Nếu chưa rõ hoặc rủi ro → rollback, rồi phân tích offline.
+
+### Pitfall
+- Profiling chỉ khi đang chạy → overhead; dùng continuous profiling sampling thấp.
+- Không lưu baseline → khó so sánh.
+
+> Senior tip: bật continuous profiling (async-profiler/JFR) ở production với sampling thấp; có baseline thì incident điều tra nhanh gấp nhiều lần.`,
+  follow: [
+    'async-profiler CPU mode và wall-clock mode khác nhau thế nào?',
+    'Làm sao phân biệt CPU-bound và I/O-bound bằng profiler?',
+    'Khi nào nên rollback thay vì debug tiếp?'
+  ],
+  tags: ['performance', 'jfr', 'async-profiler', 'cpu', 'profiling']
+},
+{
+  id: 'scenario-199',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Đối tác báo họ nhận webhook trùng 3 lần. Tìm nguyên nhân và sửa thế nào (góc độ khác scenario-050)?',
+  a: `**Tóm tắt:** Trùng webhook thường do timeout phía đối tác + retry, hoặc xử lý đồng bộ chậm; sửa bằng trả 200 nhanh, queue async, dedup theo business key, và state machine idempotent.
+
+### Điều tra
+- Correlation ID + access log: xem 3 request cùng payload/timestamp.
+- Đo thời gian xử lý endpoint: nếu > timeout của đối tác → retry.
+- Kiểm tra dedup key: event_id có ổn định không.
+
+### Sửa
+- Endpoint ghi queue rồi trả 200 ngay (< timeout).
+- Bảng webhook_seen unique theo (order_id, event_type), insert ON CONFLICT DO NOTHING.
+- Cập nhật đơn bằng WHERE status='PENDING' (state machine).
+- Dọn dedup sau cửa sổ hợp lý (48h).
+
+### Pitfall
+- Dedup theo event_id không ổn định → bỏ sót.
+- Xử lý đồng bộ trong request → chậm → retry thêm.
+
+> Senior tip: trả 200 nhanh + xử lý async vừa giảm retry vừa mượt tải; dedup theo business key + state machine là hai lớp bảo vệ. Ngoài ra, log đầy đủ correlation ID, lưu payload gốc vào queue để replay, và đặt alert khi tỷ lệ trùng vượt ngưỡng; review định kỳ business key để tránh dedup nhầm khi nghiệp vụ thay đổi.`,
+  follow: [
+    'Nếu cùng order có nhiều sự kiện cùng loại, business key thêm gì?',
+    'Retry đến sau cửa sổ dedup thì state machine bảo vệ thế nào?',
+    'Làm sao phát hiện đối tác gửi trùng hàng loạt để cảnh báo?'
+  ],
+  tags: ['webhook', 'deduplication', 'idempotency', 'async', 'retry']
 }
 );
