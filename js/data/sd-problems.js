@@ -10489,5 +10489,396 @@ Worker consume {{code}}, chạy song song 4 task:
     'Gian lận "deepfake real-time" (bộ lọc khuôn mặt live stream): liveness passive ensemble + challenge ngẫu nhiên còn đủ không, cần thêm lớp gì?'
   ],
   related: ['banking-001', 'security-001', 'design-022', 'scenario-057']
+},
+{
+  id: 'sd-053',
+  title: 'Hệ thống loyalty đa thương hiệu (coalition loyalty): gộp điểm chéo giữa chuỗi bán lẻ, F&B, du lịch',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống loyalty liên minh (coalition loyalty) cho một tập đoàn có nhiều thương hiệu: chuỗi siêu thị 2.000 cửa hàng, chuỗi nhà hàng 500 chi nhánh, ứng dụng đặt vé máy bay/khách sạn, và ngân hàng đồng hành. Quy mô: 15 triệu thành viên, 100 triệu giao dịch/ngày trên toàn hệ sinh thái. Yêu cầu: thành viên kiếm điểm từ bất kỳ thương hiệu nào và đổi quà ở thương hiệu khác, quy đổi điểm giữa các thương hiệu (conversion rate), chia sẻ lợi nhuận (revenue share) giữa các bên, chống gian lận chéo thương hiệu, và báo cáo thống nhất cho ban lãnh đạo. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: kiếm điểm (earn) ở brand A, đổi (redeem) ở brand B, conversion rate linh hoạt, revenue share tự động, anti-fraud chéo brand, dashboard thống nhất. Non-functional: earn/redeem < 200 ms, consistency eventual cho conversion, audit trail đầy đủ. Hỏi: conversion rate cố định hay động? Có quy tắc floor/ceiling? Brand mới tham gia như thế nào? Out-of-scope: marketing campaign engine.` },
+    { name: 'Estimation', minutes: 5, guide: `100M txn/ngày = 1.157 TPS trung bình, peak 15.000 TPS (ngày lễ). Mỗi txn có thể touch 2-3 brand (earn brand A, redeem brand B). Ledger: 100M x 300 byte = 30 GB/ngày, 11 TB/năm. Partition theo member_id và tháng. Conversion rate cache Redis TTL 1 tiếng. Revenue share job chạy hàng ngày/ngày.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /coalition/earn {memberId, brandId, txnId, amount, category}, POST /coalition/redeem {memberId, brandId, points, rewardId}, GET /coalition/balance/{memberId}. Bảng coalition_ledger (id, member_id, txn_id, brand_id, type, points, base_points, conversion_rate, partner_brand_id, created_at), member_balance (member_id, brand_id, available, held, lifetime_earned, version), conversion_rate (from_brand, to_brand, rate, effective_from, effective_to), revenue_share (id, from_brand, to_brand, date, gross_points, net_amount, status).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: POS/App các brand -> API Gateway -> Coalition Service -> Ledger DB (sharded by member_id) + Redis cache. Conversion engine tính điểm theo rate hiện tại. Revenue share worker hàng ngày aggregate ledger -> tính tiền chia sẻ. Anti-fraud service consume ledger events. Giải thích eventual consistency cho balance cross-brand.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: conversion rate versioning (đổi rate không ảnh hưởng điểm đã earn), earn/redeem atomic cross-brand, revenue share reconciliation, anti-fraud: velocity cross-brand, collusion detection, failure modes (brand offline, rate change mid-day), monitoring.` }
+  ],
+  rubric: [
+    'Ledger append-only ghi đủ base_points, conversion_rate, partner_brand_id để audit',
+    'Conversion rate versioned (effective_from/to), không sửa rate của giao dịch đã xảy ra',
+    'Earn/redeem cross-brand: conditional update trên member_balance với version',
+    'Revenue share daily job: aggregate ledger, tính net_amount, đối soát với từng brand',
+    'Anti-fraud cross-brand: velocity tổng hợp, collusion (cùng nhóm earn/redeem lặp lại)',
+    'Partition ledger theo member_id + tháng; cache balance hot member',
+    'Eventual consistency: balance cross-brand sync trong < 5 giây qua Kafka',
+    'Failure modes: brand offline (queue earn), rate change (versioning), revenue mismatch'
+  ],
+  reference: `**Tóm tắt:** Coalition loyalty khác loyalty đơn brand ở chỗ: **điểm là đồng tiền chung** lưu chuyển giữa các thương hiệu. Mỗi giao dịch earn ở brand A có thể redeem ở brand B nhờ conversion rate. Ba thách thức cốt lõi: (1) **conversion rate versioning** — rate thay đổi không được ảnh hưởng giao dịch quá khứ; (2) **revenue share tự động** — hàng ngày tính tiền chuyển giữa các brand dựa trên ledger; (3) **anti-fraud chéo brand** — kẻ gian có thể earn ở brand A, redeem ngay ở brand B để "rửa" điểm.
+
+### Yêu cầu và quy mô
+- 4 nhóm thương hiệu: siêu thị (2.000 cửa hàng), F&B (500 chi nhánh), Travel app, Bank partner.
+- 15 triệu thành viên, 100 triệu giao dịch/ngày, peak 15.000 TPS.
+- Earn/redeem cross-brand < 200 ms; conversion rate linh hoạt; revenue share hàng ngày.
+
+### Ước lượng
+- 100M txn/ngày = 1.157 TPS trung bình, peak 15.000 TPS.
+- Mỗi txn touch 2-3 brand => ~300M balance updates/ngày; ledger ~100M rows ~ 30 GB/ngày thô.
+- Partition ledger theo member_id hash + tháng (12 partition/năm).
+- Redis cache balance cho top 20% member (80% traffic).
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE coalition_ledger (
+  id                  BIGSERIAL PRIMARY KEY,
+  member_id           BIGINT NOT NULL,
+  txn_id              VARCHAR(64) NOT NULL,
+  brand_id            BIGINT NOT NULL,
+  type                VARCHAR(20) NOT NULL CHECK (type IN ('EARN','REDEEM','EXPIRE','ADJUST','CONVERT')),
+  base_points         BIGINT NOT NULL,           -- điểm gốc tại brand earn
+  conversion_rate     NUMERIC(10,6) NOT NULL DEFAULT 1.0,
+  partner_brand_id    BIGINT,                    -- brand đối tác khi redeem/convert
+  points              BIGINT NOT NULL,           -- điểm sau conversion (points = base_points * rate)
+  store_id            BIGINT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (member_id, txn_id, type, brand_id)
+);
+CREATE TABLE member_balance (
+  member_id       BIGINT NOT NULL,
+  brand_id        BIGINT NOT NULL,
+  available       BIGINT NOT NULL DEFAULT 0,
+  held            BIGINT NOT NULL DEFAULT 0,
+  lifetime_earned BIGINT NOT NULL DEFAULT 0,
+  version         BIGINT NOT NULL DEFAULT 0,
+  updated_at      TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (member_id, brand_id)
+);
+CREATE TABLE conversion_rate (
+  from_brand_id   BIGINT NOT NULL,
+  to_brand_id     BIGINT NOT NULL,
+  rate            NUMERIC(10,6) NOT NULL CHECK (rate > 0),
+  effective_from  TIMESTAMPTZ NOT NULL,
+  effective_to    TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (from_brand_id, to_brand_id, effective_from)
+);
+CREATE TABLE revenue_share (
+  id                  BIGSERIAL PRIMARY KEY,
+  from_brand_id       BIGINT NOT NULL,
+  to_brand_id         BIGINT NOT NULL,
+  date                DATE NOT NULL,
+  gross_points        BIGINT NOT NULL,
+  gross_amount_vnd    BIGINT NOT NULL,
+  net_amount_vnd      BIGINT NOT NULL,
+  status              VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  settled_at          TIMESTAMPTZ,
+  UNIQUE (from_brand_id, to_brand_id, date)
+);
+~~~
+- coalition_ledger append-only; mọi thay đổi ghi ADJUST/CONVERT row mới.
+- conversion_rate versioned bằng effective_from/to; query rate tại thời điểm txn: {{WHERE effective_from <= txn_time ORDER BY effective_from DESC LIMIT 1}}.
+- member_balance per brand; redeem cross-brand: trừ available tại brand redeem, cộng available tại brand earn (nếu convert ngược) — dùng conditional UPDATE version.
+
+### Conversion rate versioning
+- Khi ban lãnh đạo đổi rate (ví dụ 1 điểm siêu thị = 0.8 điểm F&B -> 0.75), tạo row mới conversion_rate với effective_from = ngày mới.
+- Giao dịch earn trước đó vẫn dùng rate cũ (đã lưu trong ledger.conversion_rate).
+- Redeem cross-brand: lookup rate tại thời điểm redeem; points_to_redeem = base_points * rate.
+- Không bao giờ UPDATE rate cũ — vi phạm audit và gây mất mát điểm cho thành viên.
+
+### Luồng earn cross-brand
+1. Brand A POS gửi POST /coalition/earn {memberId, brandId: A, txnId, amount, category}.
+2. Coalition service kiểm tra idempotency (member_id, txn_id, EARN, brand_id).
+3. Lookup conversion_rate hiện tại từ A -> các brand khác (cache Redis TTL 1h).
+4. Tính base_points = floor(amount * earn_rate_A). points_A = base_points.
+5. Transaction: insert ledger EARN (brand_id=A, base_points, conversion_rate=1.0, points=base_points), update member_balance (brand=A) available += base_points, lifetime_earned += base_points.
+6. Publish event earn cho revenue share + anti-fraud.
+7. Trả về balance tất cả brand (để app hiển thị "bạn có 1.000 điểm siêu thị = 800 điểm F&B").
+
+### Luồng redeem cross-brand
+1. Brand B App gửi POST /coalition/redeem {memberId, brandId: B, points: 800, rewardId}.
+2. Kiểm tra member_balance (brand=B).available >= 800.
+3. Lookup conversion_rate từ B -> A (brand gốc earn) tại thời điểm hiện tại.
+4. Hold: available_B -= 800, held_B += 800 (conditional WHERE version).
+5. Tạo redeem order; nếu capture thành công: held_B -= 800, ledger REDEEM (brand=B, points=-800).
+6. Nếu cần convert ngược về brand A (ví dụ hoàn tiền): ledger CONVERT (from_brand=B, to_brand=A, points=+800/rate), update member_balance brand A available += converted_points.
+
+### Revenue share hàng ngày
+- Job 02:00 chạy: quét coalition_ledger ngày trước, group by (from_brand, to_brand).
+- Earn ở brand A, redeem ở brand B -> brand A nợ brand B giá trị điểm đã redeem.
+- Tính gross_points, gross_amount_vnd (theo quy đổi VND/điểm), net_amount_vnd (trừ chi phí vận hành).
+- Ghi revenue_share PENDING; sau khi đối soát hai bên -> SETTLED.
+- Mismatch > ngưỡng -> alert, tạo ticket reconciliation.
+
+### Anti-fraud cross-brand
+- **Velocity tổng hợp**: earn/redeem count per member per hour/day TRÊN TẤT CẢ BRAND; alert nếu vượt ngưỡng.
+- **Collusion detection**: nhóm thành viên earn lặp lại ở brand A, redeem ngay ở brand B (pattern vòng tròn). Graph analysis trên ledger: tìm cycle member-brand-member trong cửa sổ ngắn.
+- **Conversion arbitrage**: earn khi rate cao, redeem khi rate thấp (nếu rate động). Chống bằng: rate chỉ đổi theo lịch công bố trước (effective_from), không đổi theo realtime.
+- **Brand insider fraud**: nhân viên brand A tạo earn giả -> redeem ở brand B. Chống: earn cần receipt validation, redeem cần approval workflow cho giá trị lớn.
+
+### Kiến trúc
+~~~text
+Brand POS/App -> API Gateway -> Coalition Service -> Ledger DB (sharded member_id)
+                                    |                  |
+                                    |             Redis (balance cache, rate cache)
+                                    v
+                              Kafka (coalition-events)
+                                    |
+                    +---------------+---------------+
+                    |               |               |
+             Revenue          Anti-fraud        Reporting
+             share worker     (cross-brand)     warehouse
+                    |               |
+               Settlement       Alert/Case
+               (daily job)       management
+~~~
+
+~~~seq
+title: Earn tại siêu thị, redeem tại nhà hàng
+actors: Siêu thị POS | API Gateway | Coalition Service | Ledger DB | Kafka | Nhà hàng App
+Siêu thị POS -> API Gateway: POST /earn (memberId, brand=Supermarket, txnId, amount)
+API Gateway -> Coalition Service: xử lý
+Coalition Service -> Ledger DB: insert ledger EARN + update balance
+Ledger DB --> Coalition Service: OK
+Coalition Service -> Kafka: event earn (cache balance vào Redis)
+note Kafka: revenue share worker + anti-fraud consume event
+note Coalition Service: ... (ngày sau) ...
+Nhà hàng App -> API Gateway: POST /redeem (memberId, brand=Restaurant, points=800)
+API Gateway -> Coalition Service: kiểm tra balance brand=Restaurant
+Coalition Service -> Ledger DB: hold + ledger REDEEM
+Ledger DB --> Coalition Service: OK
+Coalition Service -> Kafka: event redeem
+note Kafka: revenue share: Supermarket nợ Restaurant 800 điểm
+~~~
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Brand offline (POS mất mạng) | Earn không ghi được | Queue earn cục bộ tại POS, sync khi online; idempotency key tránh trùng |
+| Conversion rate đổi giữa ngày | Giao dịch dùng rate nào? | Rate versioned bằng effective_from; lookup rate tại created_at của txn |
+| Revenue share mismatch | Brand tranh chấp tiền | Đối soát daily, mismatch_detail JSONB, escalation thủ công |
+| Cross-brand redeem race | Trừ hai lần available | Conditional UPDATE version trên member_balance |
+| Anti-fraud false positive | Khách tốt bị chặn | Quarantine thay vì block; officer review SLA 15 phút |
+
+### Giám sát
+- Earn/redeem TPS per brand, p99 latency, conversion rate distribution, revenue share mismatch amount, cross-brand fraud alert count, cache hit rate, ledger lag.
+
+> Senior tip: coalition loyalty **không phải là gộp balance thành một cột**. Mỗi brand giữ balance riêng, conversion rate là "tỷ giá" giữa các "tiền tệ" điểm. Sai lầm hay gặp: lưu một cột total_points -> khi đổi rate, không biết điểm nào earn ở brand nào, revenue share không tách được. Tôi luôn lưu base_points, conversion_rate, partner_brand_id ở từng row ledger — đây là "hóa đơn" điểm, đủ để đối soát, audit, và xử lý tranh chấp sau này.`,
+  followups: [
+    'Nếu một brand muốn rút khỏi liên minh, bạn xử lý điểm của thành viên và revenue share chưa settled thế nào?',
+    'Conversion rate động theo cung/cầu (real-time bidding giữa brand): kiến trúc thay đổi ra sao?',
+    'Một thành viên earn 100.000 điểm ở siêu thị, ngay lập tức redeem 80.000 điểm ở nhà hàng, rồi trả hàng ở siêu thị: flow hoàn tiền cross-brand ra sao?',
+    'Mất region chứa Ledger DB shard cho 2 triệu member: failover và data loss thế nào?'
+  ],
+  related: ['design-005', 'sd-045']
+},
+{
+  id: 'sd-054',
+  title: 'Hệ thống thanh toán hoá đơn trả góp (BNPL cho bill): chia trả điện, nước, học phí 3-12 kỳ',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống thanh toán hoá đơn trả góp (Bill Installment / BNPL cho bill) cho một công ty fintech. Khách hàng tra cứu hoá đơn điện, nước, học phí... rồi chọn chia trả 3, 6, 9, 12 tháng với lãi suất 0% (merchant chịu) hoặc có lãi. Quy mô: 500 nhà cung cấp bill, 10 triệu khách hàng, 500.000 đơn installment/ngày, peak 10.000 TPS lúc mở đợt nhập học/tháng học phí. Yêu cầu: tra cứu bill, approve (phê duyệt) hạn mức realtime, tạo lịch trả góp, tự động thu tiền hàng tháng từ thẻ/ tài khoản, xử lý trả trước (early payoff), quá hạn (late fee), và đối soát với nhà cung cấp bill. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: tra cứu bill, kiểm tra hạn mức (credit limit), approve realtime (< 500 ms), tạo installment plan, auto-debit định kỳ, early payoff, late fee, partial payment, đối soát cuối ngày với provider. Non-functional: approve latency, auto-debit success rate > 99.5%, idempotency, PCI-DSS. Hỏi: ai chịu rủi ro (fintech hay merchant)? Có scoring riêng cho bill installment không? Out-of-scope: card issuance, core banking.` },
+    { name: 'Estimation', minutes: 5, guide: `500k installment/ngày = 5,8 TPS trung bình, peak 10.000 TPS. Mỗi installment plan 3-12 kỳ => 1.5-6 triệu schedule/ngày. Auto-debit: mỗi ngày thu ~ 500k lần, success rate 95% -> 25k retry. Storage: 500k plan x 500 byte = 250 MB/ngày. Credit check: gọi bureau/credit engine < 200 ms. Kết luận: approve path async không, phải sync realtime; auto-debit batch hàng ngày.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /bills/inquiry, POST /installments/apply {billId, tenor, idempotencyKey}, GET /installments/{id}/schedule, POST /installments/{id}/payoff. Bảng bill (id, provider_id, customer_ref, amount, status), installment_plan (id, bill_id, customer_id, tenor, principal, interest_rate, fee, status, approved_at), installment_schedule (id, plan_id, seq, due_date, principal_due, interest_due, fee_due, status, paid_at), auto_debit_config (plan_id, payment_method_id, retry_policy), credit_assessment (application_id, score, limit, decision, reasons).` },
+    { name: 'High-level design', minutes: 5, guide: `Vẽ: Client -> API -> Bill service (inquiry) -> Credit engine (approve) -> Installment service (tạo plan + schedule) -> Scheduler (hàng ngày chạy auto-debit) -> Payment gateway -> Provider (gạch nợ bill gốc). Webhook receiver nhận kết quả debit. Reconciliation job đối soát provider. Giải thích separation: approve sync, debit async batch.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: credit engine realtime (rule + score), installment plan versioning (sửa lãi/phí không ảnh hưởng kỳ đã qua), auto-debit idempotent với retry exponential, early payoff calculation (principal remaining + fee), late fee accrual, reconciliation với provider bill, failure modes (debit fail, provider status mismatch), monitoring.` }
+  ],
+  rubric: [
+    'Tra cứu bill -> credit approve realtime < 500 ms (rule engine + score)',
+    'Installment plan immutable sau approve; schedule tạo trước toàn bộ kỳ',
+    'Auto-debit batch hàng ngày: idempotent, retry exponential, DLQ cho failed',
+    'Early payoff: tính principal remaining + early settlement fee (nếu có)',
+    'Late fee: accrue hàng ngày, cap tối đa, ghi nhận riêng không gộn principal',
+    'Reconciliation cuối ngày: so khớp schedule paid vs provider gạch nợ',
+    'Payment method tokenization (PCI-DSS), không lưu PAN thô',
+    'Failure modes: debit fail (retry, thay payment method), provider mismatch, customer dispute'
+  ],
+  reference: `**Tóm tắt:** Bill Installment (BNPL cho bill) tách làm ba luồng: (1) **Approve realtime** — tra cứu bill, credit scoring, approve hạn mức, tạo plan + schedule toàn bộ kỳ; (2) **Auto-debit batch** — hàng ngày chạy thu tiền theo schedule, retry thất bại, xử lý late fee; (3) **Reconciliation** — đối soát với provider bill gốc. Điểm mấu chốt: **plan immutable sau approve** (không sửa lịch đã tạo), **auto-debit idempotent** (mỗi kỳ một lần, retry không tạo giao dịch mới), **early payoff formula** công khai.
+
+### Yêu cầu và quy mô
+- 500 nhà cung cấp bill, 10 triệu khách hàng, 500.000 đơn installment/ngày, peak 10.000 TPS.
+- Tenor 3-12 tháng, lãi 0% (merchant sub) hoặc có lãi.
+- Auto-debit từ thẻ/ tài khoản, early payoff, late fee, đối soát provider.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Installment/ngày | 500.000 | 5,8 TPS trung bình |
+| Peak | 10.000 TPS | lúc mở đợt học phí |
+| Schedule/ngày | 500k x 6 (TB) | 3 triệu rows |
+| Auto-debit/ngày | ~500k lần | success 95%, retry 25k |
+| Credit check | < 200 ms p99 | rule + score |
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE bill (
+  id                  UUID PRIMARY KEY,
+  provider_id         BIGINT NOT NULL,
+  customer_ref        VARCHAR(64) NOT NULL,
+  amount_minor        BIGINT NOT NULL CHECK (amount_minor > 0),
+  currency            CHAR(3) NOT NULL DEFAULT 'VND',
+  status              VARCHAR(16) NOT NULL DEFAULT 'OPEN',  -- OPEN, PARTIAL_PAID, PAID, EXPIRED
+  due_date            DATE NOT NULL,
+  provider_bill_ref   VARCHAR(64),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE installment_plan (
+  id                    UUID PRIMARY KEY,
+  bill_id               UUID NOT NULL,
+  customer_id           BIGINT NOT NULL,
+  tenor                 SMALLINT NOT NULL CHECK (tenor BETWEEN 3 AND 12),
+  principal_minor       BIGINT NOT NULL,
+  interest_rate_annual  NUMERIC(6,4) NOT NULL DEFAULT 0,  -- 0.0000 = 0%
+  processing_fee_minor  BIGINT NOT NULL DEFAULT 0,
+  early_payoff_fee_pct  NUMERIC(5,2) NOT NULL DEFAULT 0,  -- % principal remaining
+  late_fee_pct_daily    NUMERIC(5,4) NOT NULL DEFAULT 0.05, -- 0.05%/ngày
+  late_fee_cap_pct      NUMERIC(5,2) NOT NULL DEFAULT 5.00, -- cap 5% principal
+  status                VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, PAID_OFF, DEFAULTED, CANCELLED
+  approved_at           TIMESTAMPTZ NOT NULL,
+  version               INT NOT NULL DEFAULT 1,
+  UNIQUE (bill_id)
+);
+CREATE TABLE installment_schedule (
+  id                    BIGSERIAL PRIMARY KEY,
+  plan_id               UUID NOT NULL,
+  seq                   SMALLINT NOT NULL CHECK (seq > 0),
+  due_date              DATE NOT NULL,
+  principal_due_minor   BIGINT NOT NULL,
+  interest_due_minor    BIGINT NOT NULL DEFAULT 0,
+  fee_due_minor         BIGINT NOT NULL DEFAULT 0,
+  late_fee_accrued_minor BIGINT NOT NULL DEFAULT 0,
+  status                VARCHAR(16) NOT NULL DEFAULT 'PENDING', -- PENDING, PAID, PARTIAL_PAID, OVERDUE, WAIVED
+  paid_at               TIMESTAMPTZ,
+  payment_ref           VARCHAR(64),
+  UNIQUE (plan_id, seq)
+);
+CREATE TABLE auto_debit_config (
+  plan_id               UUID PRIMARY KEY,
+  payment_method_token  VARCHAR(128) NOT NULL,  -- tokenized, PCI-DSS
+  payment_method_type   VARCHAR(16) NOT NULL,   -- CARD, BANK_ACCOUNT, EWALLET
+  retry_policy          JSONB NOT NULL,         -- {max_retries: 3, intervals_hours: [24, 48, 72]}
+  status                VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE credit_assessment (
+  application_id        UUID PRIMARY KEY,
+  customer_id           BIGINT NOT NULL,
+  bill_id               UUID NOT NULL,
+  score                 SMALLINT,               -- 300-850
+  limit_minor           BIGINT,                 -- hạn mức approve
+  decision              VARCHAR(16) NOT NULL,   -- APPROVED, REJECTED, MANUAL_REVIEW
+  reasons               TEXT[],
+  assessed_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+- installment_plan **immutable sau approve** (version = 1); sửa lãi/phí chỉ tạo plan mới (version++) cho bill mới, không sửa plan cũ.
+- schedule tạo **toàn bộ kỳ** ngay lúc approve; due_date cố định, không đổi trừ khi early payoff.
+- late_fee_accrued_minor tính riêng, không gộn vào principal/interest -> dễ waive, dễ báo cáo.
+
+### Credit engine realtime (< 500 ms)
+1. Client tra cứu bill -> POST /installments/apply {billId, tenor, idempotencyKey}.
+2. Kiểm tra idempotency key.
+3. Lấy bill amount, due_date.
+4. Credit assessment song song:
+   - Rule engine: age, income, existing debt, bill payment history (internal), bureau score (cached).
+   - ML score (nếu có): model serving < 50 ms.
+   - Kết hợp: decision = APPROVED/REJECTED/MANUAL_REVIEW; limit = min(bill_amount, credit_limit).
+5. Nếu APPROVED: tính schedule (annuity hoặc equal principal), tạo installment_plan + toàn bộ installment_schedule rows trong **một transaction**.
+6. Tạo auto_debit_config với payment_method_token (client đã bind thẻ trước đó).
+7. Trả về plan_id, schedule, monthly_payment.
+
+### Tạo lịch trả góp (schedule)
+- **Equal principal (trả gốc đều)**: principal_due = principal / tenor cố định; interest_due = remaining_principal * daily_rate * days_in_month.
+- **Annuity (trả đều gốc+lãi)**: PMT formula; principal_due tăng dần, interest_due giảm dần.
+- Mỗi kỳ: total_due = principal_due + interest_due + fee_due.
+- Tạo sẵn toàn bộ rows schedule khi approve -> immutable, dễ audit, dễ auto-debit.
+
+### Auto-debit batch hàng ngày
+- Scheduler chạy 06:00 hàng ngày: {{SELECT * FROM installment_schedule WHERE due_date = CURRENT_DATE AND status = 'PENDING'}}.
+- Với mỗi schedule: gọi payment gateway debit payment_method_token với amount = total_due + late_fee_accrued.
+- **Idempotent**: payment_ref = {{plan_id:seq:attempt}}; gateway unique constraint.
+- **Retry**: nếu fail (thẻ hết hạn, hạn mức, network), retry theo retry_policy intervals (24h, 48h, 72h). Cập nhật late_fee_accrued_minor hàng ngày cho kỳ OVERDUE.
+- **DLQ**: sau max_retries -> status = OVERDUE, tạo case cho collections team, alert.
+- **Success**: cập nhật schedule PAID, paid_at, payment_ref; cập nhật bill status (PARTIAL_PAID/PAID); publish event cho reconciliation.
+
+### Early payoff (trả trước)
+- Client xem schedule còn lại -> POST /installments/{id}/payoff.
+- Tính: {{principal_remaining = SUM(principal_due WHERE status IN ('PENDING','OVERDUE'))}}.
+- {{early_fee = principal_remaining * early_payoff_fee_pct / 100}}.
+- {{total_payoff = principal_remaining + early_fee + late_fee_accrued_total}}.
+- Tạo payoff transaction idempotent; debit payment_method_token.
+- Success: cập nhật tất cả schedule còn lại -> WAIVED (hoặc PAID với paid_at = now), plan status = PAID_OFF.
+- Ghi log payoff_detail cho audit.
+
+### Late fee accrual
+- Job 02:00 hàng ngày: quét schedule OVERDUE, {{late_fee_accrued_minor += principal_due * late_fee_pct_daily / 100}}.
+- Cap: {{late_fee_accrued_minor <= principal_due * late_fee_cap_pct / 100}}.
+- Late fee tách biệt: không cộng vào principal, không tính lãi trên late fee -> công bằng, dễ waive.
+- Khi trả kỳ OVERDUE: thanh toán principal_due + interest_due + late_fee_accrued_minor.
+
+### Reconciliation với provider bill
+- Provider bill gốc: khách chia trả qua fintech, fintech gạch nợ bill gốc tại provider.
+- Hàng ngày: fintech gọi provider API gạch nợ (hoặc provider webhook) cho các schedule PAID.
+- Cuối ngày: tải sao kê provider, so khớp:
+  - Fintech PAID schedule -> provider phải PAID.
+  - Provider PAID nhưng fintech chưa PAID -> điều tra (có thể customer trả trực tiếp provider).
+  - Mismatch -> revenue_share mismatch table, alert.
+
+### Kiến trúc
+~~~text
+Client -> API Gateway -> Bill Inquiry -> Credit Engine (rule + ML) -> Installment Service
+                                                              |              |
+                                                              |          Schedule creator (TXN)
+                                                              v              v
+                                                        Plan DB      Schedule DB
+                                                              |
+                                                    Scheduler (daily 06:00)
+                                                              |
+                                                    Auto-debit -> Payment Gateway
+                                                              |
+                                                    Webhook Receiver -> Schedule update
+                                                              |
+                                                    Reconciliation Job (daily) -> Provider
+~~~
+
+~~~seq
+title: Apply installment và auto-debit kỳ đầu
+actors: Khách | API Gateway | Credit Engine | Installment Service | Scheduler | Payment Gateway
+Khách -> API Gateway: POST /apply (billId, tenor=6, idemKey)
+API Gateway -> Credit Engine: assess (bill amount, customer profile)
+Credit Engine --> Installment Service: APPROVED, limit=20tr
+Installment Service -> Installment Service: TXN create plan + 6 schedule rows
+Installment Service --> API Gateway: plan_id, schedule, monthly=3.5tr
+note Installment Service: bind payment_method_token
+note Scheduler: ... (ngày đến hạn kỳ 1) ...
+Scheduler -> Payment Gateway: debit token, amount=3.5tr
+Payment Gateway --> Scheduler: success, payment_ref
+Scheduler -> Installment Service: update schedule PAID, bill PARTIAL_PAID
+note Scheduler: gạch nợ bill gốc tại Provider (partial)
+note Scheduler: ... (cuối ngày) ...
+note Installment Service: reconciliation so khớp provider, mismatch -> alert
+~~~
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Debit fail (thẻ hết hạn) | Kỳ PENDING -> OVERDUE | Retry 24/48/72h; late fee accrue; sau max retry -> DLQ, collections case |
+| Customer đổi payment method | Auto-debit fail | API cập nhật payment_method_token; scheduler đọc config mới |
+| Trả trực tiếp provider | Fintech không biết | Reconciliation phát hiện mismatch; update schedule PAID, waive late fee |
+| Early payoff disputa fee | Khách khiếu nại early_fee | Formula công khai trong hợp đồng; waive case-by-case, log audit |
+| Provider gạch nợ sai số tiền | Mismatch reconciliation | Mismatch_detail JSONB; ticket thủ công; provider refund/adjust |
+| Credit engine timeout | Approve > 500 ms | Fallback rule-only (bỏ ML score); log degrade; alert |
+
+### Giám sát
+- Approve rate, approve latency p50/p99, auto-debit success rate (target > 99.5%), retry rate, late fee volume, early payoff rate, reconciliation mismatch count/amount, DLQ size, payment method token expiry upcoming.
+
+> Senior tip: **installment plan immutable** là quy tắc vàng. Một khi approve xong, schedule không được sửa (kể cả lãi, phí, due_date) — nếu merchant muốn chạy promotion "giảm lãi kỳ 3-6", hãy tạo plan mới cho bill mới, đừng sửa plan cũ. Điều này bảo vệ audit trail, tránh tranh chấp "khi ký lãi 0% mà sau đó bị tính lãi". Auto-debit **phải idempotent theo (plan_id, seq, attempt)** — một lần retry không được tạo hai lần ghi nợ. Và **late fee tách riêng** không gộn principal: khi waive late fee cho khách khó khăn, bạn chỉ xoá late_fee_accrued_minor, principal/interest nguyên vẹn cho báo cáo tài chính.`,
+  followups: [
+    'Nếu customer muốn đổi tenor (từ 6 tháng sang 12 tháng) sau khi đã approve 2 kỳ: bạn xử lý thế nào?',
+    'Provider bill thay đổi số tiền (ví dụ điều chỉnh học phí sau khi đã installment): reconciliation xử lý ra sao?',
+    'Payment gateway bị sự cố 4 giờ lúc đợt auto-debit 06:00: recovery plan và customer communication?',
+    'Cần hỗ trợ "skip một kỳ" (deferral) cho khách bị thất nghiệp: thiết kế schedule adjustment ra sao?'
+  ],
+  related: ['design-005', 'sd-046']
 }
 ];

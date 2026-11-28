@@ -3706,6 +3706,8 @@ window.DATA_INDEX = {
     {"id":"sd-067","title":"Ký quỹ và quản lý rủi ro real-time cho sàn phái sinh hàng hoá (clearing, margin, EOD settlement)"},
     {"id":"sd-068","title":"Hệ thống trả góp / BNPL: duyệt hạn mức 3 giây, lịch trả nợ, nhắc nợ, phạt trễ, đối soát đối tác"},
     {"id":"sd-069","title":"Hệ thống eKYC mở tài khoản online: CCCD + selfie + NFC, hàng đợi duyệt thủ công, lưu ảnh an toàn, 50.000 hồ sơ/ngày"},
+    {"id":"sd-053","title":"Hệ thống loyalty đa thương hiệu (coalition loyalty): gộp điểm chéo giữa chuỗi bán lẻ, F&B, du lịch"},
+    {"id":"sd-054","title":"Hệ thống thanh toán hoá đơn trả góp (BNPL cho bill): chia trả điện, nước, học phí 3-12 kỳ"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
