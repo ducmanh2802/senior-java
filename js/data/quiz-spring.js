@@ -8564,5 +8564,237 @@ readOnly=true là hint cho transaction manager/Hibernate: không cần dirty che
 - **Bắt buộc replica**: cần cấu hình routing datasource.
 
 > Senior tip: dùng readOnly cho query để giảm overhead; vẫn phải đảm bảo code không write.`
+},
+
+{
+  id: 'qz-spring-943',
+  topic: 'spring',
+  q: 'Trong Spring, method {{process()}} gọi {{this.save()}} (cùng class) và {{save()}} có @Transactional. Giao dịch có được mở không?',
+  options: [
+    'Có, vì annotation nằm trên method',
+    'Không, vì gọi qua this bypass proxy',
+    'Có nếu method là public',
+    'Có nếu dùng @Transactional trên class'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không, vì gọi qua this bypass proxy.**
+
+### Vì sao đúng
+Spring AOP dựa vào proxy bao quanh bean. Khi code bên trong cùng object gọi this.save(), không đi qua proxy nên advice @Transactional không chạy. Đây là lỗi self-invocation kinh điển.
+
+### Vì sao các phương án còn lại sai
+- **Có vì annotation**: annotation chỉ có tác dụng khi invocation qua proxy.
+- **Public**: visibility không giải quyết self-invocation.
+- **Class-level**: vẫn cần đi qua proxy.
+
+> Senior tip: tách logic vào bean khác hoặc gọi qua ApplicationContext/AopContext.`
+},
+{
+  id: 'qz-spring-944',
+  topic: 'spring',
+  multi: true,
+  q: 'Method @Transactional private có hoạt động transaction không? (Chọn 2)',
+  options: [
+    'Không, proxy không intercept private method (CGLIB/JDK)',
+    'Có nếu dùng AspectJ weaving',
+    'Có nếu method public',
+    'Không bao giờ vì Spring cấm @Transactional'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: không qua proxy; có nếu AspectJ weaving.**
+
+### Vì sao đúng
+Proxy-based AOP mặc định không intercept private method. AspectJ (compile/load-time weaving) có thể weave cả private.
+
+### Vì sao các phương án còn lại sai
+- **Có nếu public**: public vẫn qua proxy được, nhưng câu hỏi về private.
+- **Không bao giờ**: sai vì AspectJ hỗ trợ.
+
+> Senior tip: giữ @Transactional trên public method của bean.`
+},
+{
+  id: 'qz-spring-945',
+  topic: 'spring',
+  q: 'REQUIRES_NEW được dùng khi nào?',
+  options: [
+    'Luôn luôn thay thế REQUIRED',
+    'Khi cần transaction độc lập commit/rollback riêng',
+    'Để tăng performance',
+    'Để đọc dữ liệu only'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: transaction độc lập.**
+
+### Vì sao đúng
+REQUIRES_NEW suspend transaction hiện tại và tạo transaction mới; commit/rollback độc lập. Hữu ích cho audit log phải lưu dù business transaction rollback.
+
+### Vì sao các phương án còn lại sai
+- **Thay thế REQUIRED**: sai, khác ngữ nghĩa.
+- **Performance**: overhead lớn hơn.
+- **Read only**: dùng readOnly.
+
+> Senior tip: audit/notification nên REQUIRES_NEW để không bị rollback theo business.`
+},
+{
+  id: 'qz-spring-946',
+  topic: 'spring',
+  q: 'Checked exception mặc định có rollback transaction không?',
+  options: [
+    'Có',
+    'Không, chỉ rollback unchecked (RuntimeException/Error)',
+    'Tùy DB',
+    'Chỉ rollback nếu @Rollback'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không, chỉ unchecked.**
+
+### Vì sao đúng
+Spring mặc định rollback cho RuntimeException và Error. Checked exception không rollback trừ khi khai báo rollbackFor.
+
+### Vì sao các phương án còn lại sai
+- **Có**: nhầm với EJB.
+- **Tùy DB**: DB không quyết định.
+- **@Rollback**: annotation test, không phải runtime default.
+
+> Senior tip: khai báo rollbackFor = Exception.class nếu muốn rollback cả checked.`
+},
+{
+  id: 'qz-spring-947',
+  topic: 'spring',
+  q: 'Bean scope prototype: mỗi lần inject/getBean trả về instance mới?',
+  options: [
+    'Có',
+    'Không, singleton mặc định',
+    'Chỉ khi @Lazy',
+    'Chỉ trong web scope'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: có.**
+
+### Vì sao đúng
+Scope prototype tạo instance mới mỗi lần request bean từ container.
+
+### Vì sao các phương án còn lại sai
+- **Singleton mặc định**: đúng là default nhưng prototype thì mới mỗi lần.
+- **@Lazy**: không đổi scope.
+- **Web scope**: request/session là scope web khác.
+
+> Senior tip: prototype bean inject vào singleton sẽ bị "frozen" singleton instance; dùng ObjectProvider/lookup.`
+},
+{
+  id: 'qz-spring-948',
+  topic: 'spring',
+  q: '@Async method trả về void: exception được xử lý thế nào?',
+  options: [
+    'Tự propagate cho caller',
+    'Mất nếu không có AsyncUncaughtExceptionHandler',
+    'Luôn log error',
+    'Rollback transaction'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: mất nếu không handler.**
+
+### Vì sao đúng
+@Async void không trả future; exception không propagate. Cần đăng ký AsyncUncaughtExceptionHandler để xử lý.
+
+### Vì sao các phương án còn lại sai
+- **Propagate**: chỉ Future/CompletableFuture trả về mới propagate.
+- **Luôn log**: không tự động.
+- **Rollback tx**: không liên quan.
+
+> Senior tip: prefer trả CompletableFuture để xử lý lỗi rõ ràng.`
+},
+{
+  id: 'qz-spring-949',
+  topic: 'spring',
+  q: '@ConditionalOnMissingBean dùng để làm gì trong auto-configuration?',
+  options: [
+    'Bắt buộc bean phải tồn tại',
+    'Chỉ tạo bean nếu user chưa định nghĩa',
+    'Tạo bean theo profile',
+    'Tạo bean khi property true'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: chỉ tạo nếu user chưa định nghĩa.**
+
+### Vì sao đúng
+@ConditionalOnMissingBean cho phép auto-config cung cấp default bean, nhưng bị override khi user khai báo bean cùng type.
+
+### Vì sao các phương án còn lại sai
+- **Bắt buộc tồn tại**: là ConditionalOnBean.
+- **Profile**: ConditionalOnProfile.
+- **Property**: ConditionalOnProperty.
+
+> Senior tip: đây là cơ chế "convention over configuration" của Spring Boot.`
+},
+{
+  id: 'qz-spring-950',
+  topic: 'spring',
+  q: 'Spring profile active qua property nào?',
+  options: [
+    'spring.profiles.active',
+    'spring.profile.name',
+    'spring.env.active',
+    'app.profile'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: spring.profiles.active.**
+
+### Vì sao đúng
+Property chuẩn Spring Boot: spring.profiles.active=dev,prod.
+
+### Vì sao các phương án còn lại sai
+- **spring.profile.name**: không chuẩn.
+- **spring.env.active**: không có.
+- **app.profile**: custom.
+
+> Senior tip: dùng spring.config.activate.on-profile trong file yaml hiện đại.`
+},
+{
+  id: 'qz-spring-951',
+  topic: 'spring',
+  q: 'Bảo vệ Actuator endpoints nên làm thế nào?',
+  options: [
+    'Mở hết cho tiện debug',
+    'Chỉ expose cần thiết và bảo vệ bằng security',
+    'Dùng port mặc định 8080',
+    'Tắt management entirely'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: expose cần thiết + security.**
+
+### Vì sao đúng
+Actuator có endpoint nhạy cảm (env, beans, threaddump). Chỉ expose cần thiết và bảo vệ bằng Spring Security, thường port riêng.
+
+### Vì sao các phương án còn lại sai
+- **Mở hết**: rò rỉ thông tin.
+- **Port mặc định**: nên tách port management.
+- **Tắt entirely**: mất observability.
+
+> Senior tip: management.server.port + security filter chain riêng.`
+},
+{
+  id: 'qz-spring-952',
+  topic: 'spring',
+  multi: true,
+  q: 'Cách tránh transaction proxy không áp dụng cho method gọi nội bộ? (Chọn 2)',
+  options: [
+    'Tách method sang bean khác',
+    'Dùng AopContext.currentProxy()',
+    'Đổi tên method',
+    'Thêm @Transactional trên class'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: tách bean hoặc dùng AopContext.**
+
+### Vì sao đúng
+Self-invocation bypass proxy. Tách sang bean khác hoặc lấy proxy qua AopContext.currentProxy() (khi exposeProxy=true) giải quyết.
+
+### Vì sao các phương án còn lại sai
+- **Đổi tên**: không ảnh hưởng.
+- **Class-level annotation**: vẫn bypass khi self-call.
+
+> Senior tip: enable exposeProxy khi cần self-call có transaction.`
 }
+
 );
