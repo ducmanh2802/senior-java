@@ -24,6 +24,51 @@
   ];
   const KIND = 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n- role: control-plane\n- role: worker\n- role: worker';
 
+  function ytParse(url) {
+    const m = String(url).match(/v=([\w-]{11})/);
+    if (!m) return null;
+    const tm = String(url).match(/[?&]t=(\d+)s/);
+    return { id: m[1], start: tm ? '&start=' + tm[1] : '' };
+  }
+  function vItem(v) { return Array.isArray(v) ? { url: v[0], title: v[1], note: v[2] || '' } : v; }
+  function ytCard(v) {
+    const p = ytParse(v.url);
+    const title = esc(v.title);
+    const note = v.note ? ' <span class="small muted">' + esc(v.note) + '</span>' : '';
+    const link = '<a href="' + esc(v.url) + '" target="_blank" rel="noopener" class="link-btn">Mở YouTube ↗</a>';
+    if (!p) {
+      return '<li class="ck-video"><div class="ck-video-card"><div class="ck-video-info"><b>' + title + '</b>' + note + '</div>' +
+        '<div class="ck-video-actions">' + link + '</div></div></li>';
+    }
+    return '<li class="ck-video"><div class="ck-video-card"><div class="ck-video-info"><b>' + title + '</b>' + note + '</div>' +
+      '<div class="ck-video-actions"><button class="btn sm" data-yt="' + esc(p.id) + '" data-yt-title="' + esc(v.title) + '">▶ Xem</button>' + link +
+      '</div></div><div class="ck-video-frame" hidden></div></li>';
+  }
+  function ckYt(root, onAction) {
+    let openBtn = null, openFrame = null;
+    function close() {
+      if (openFrame) { openFrame.innerHTML = ''; openFrame.classList.remove('open'); openFrame.hidden = true; openFrame = null; }
+      if (openBtn) { openBtn.textContent = '▶ Xem'; openBtn = null; }
+    }
+    root.onclick = ev => {
+      const b = ev.target.closest('[data-yt],[data-mark],[data-copy]'); if (!b) return;
+      if (b.dataset.yt) {
+        ev.preventDefault();
+        if (openBtn === b) { close(); return; }
+        close();
+        const card = b.closest('.ck-video');
+        const fr = card.querySelector('.ck-video-frame');
+        fr.classList.add('open'); fr.hidden = false;
+        fr.innerHTML = '<iframe src="https://www.youtube-nocookie.com/embed/' + esc(b.dataset.yt) +
+          '?autoplay=1&rel=0" title="YouTube: ' + esc(b.dataset.ytTitle) +
+          '" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+        openFrame = fr; openBtn = b; b.textContent = '✕ Đóng';
+        return;
+      }
+      if (onAction) onAction(b);
+    };
+  }
+
   function st() {
     const d = App.store.data;
     d.ckad = d.ckad || {};
@@ -64,8 +109,7 @@
         '### Alias nên gõ ngay đầu giờ thi\n' +
         '~~~bash\nalias k=kubectl\nexport do="--dry-run=client -o yaml"\nexport now="--force --grace-period 0"\nk config use-context kind-ckad\n~~~\n' +
         '> Senior tip: đề thật cho sẵn context cho từng bài. Luôn chạy lệnh {{kubectl config use-context}} ghi ở đầu bài trước khi làm, sai context là mất trọn điểm bài đó.') + '</div>' +
-      '<div class="card"><h3>🎬 Video hướng dẫn</h3><ul class="ck-videos">' + VIDEOS.map(v =>
-        '<li><a href="' + v[0] + '" target="_blank" rel="noopener">' + esc(v[1]) + '</a> <span class="small muted">' + esc(v[2]) + '</span></li>').join('') + '</ul>' +
+      '<div class="card"><h3>🎬 Video hướng dẫn</h3><ul class="ck-videos">' + VIDEOS.map(v => ytCard(vItem(v))).join('') + '</ul>' +
       '<p class="small muted">Video theo từng chủ đề nằm trong mỗi module Lab.</p></div>';
   }
 
@@ -171,12 +215,11 @@
     function draw() {
       root.innerHTML = head('Module ' + l.order + '. ' + esc(l.title)) + tabs('lab') +
         '<div class="card md">' + App.md(l.concepts || '') + '</div>' +
-        ((l.videos || []).length ? '<div class="card"><h3>🎬 Video hướng dẫn</h3><ul class="ck-videos">' + l.videos.map(v =>
-          '<li><a href="' + esc(v.url) + '" target="_blank" rel="noopener">' + esc(v.title) + '</a>' + (v.note ? ' <span class="small muted">' + esc(v.note) + '</span>' : '') + '</li>').join('') + '</ul></div>' : '') +
+        ((l.videos || []).length ? '<div class="card"><h3>🎬 Video hướng dẫn</h3><ul class="ck-videos">' + l.videos.map(v => ytCard(v)).join('') + '</ul></div>' : '') +
         l.tasks.map(t => taskHtml(t, { solution: true })).join('') +
         '<div class="row"><a class="btn" href="#/ckad/lab">← Danh sách lab</a>' + (all[i + 1] ? '<a class="btn primary" href="#/ckad/lab/' + esc(all[i + 1].id) + '">Module tiếp →</a>' : '') + '</div>';
+      ckYt(root, b => mark(b, draw));
     }
-    root.onclick = ev => { const b = ev.target.closest('[data-mark],[data-copy]'); if (b) mark(b, draw); };
     draw();
   }
 
@@ -189,7 +232,7 @@
       else if (params[0] === 'exam' && params[1]) viewExam(root, params[1], cleanups);
       else if (params[0] === 'lab' && params[1]) viewLab(root, params[1]);
       else if (params[0] === 'lab') root.innerHTML = viewLabs();
-      else root.innerHTML = viewHome();
+      else { root.innerHTML = viewHome(); ckYt(root); }
       return () => cleanups.forEach(f => f());
     },
   });

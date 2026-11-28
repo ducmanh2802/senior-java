@@ -19,3 +19,10 @@
 .view-ckad .ck-code summary, .view-ckad details > summary { cursor: pointer; font-weight: 500; }
 .view-ckad .ck-code pre { max-height: 360px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: var(--fs-sm); }
 .view-ckad .ck-code .row { margin: 6px 0; }
+.view-ckad .ck-video { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); margin: 8px 0; overflow: hidden; }
+.view-ckad .ck-video-card { padding: 12px 14px; display: grid; gap: 8px; }
+.view-ckad .ck-video-info { display: grid; gap: 2px; line-height: 1.45; }
+.view-ckad .ck-video-info b { display: block; font-size: var(--fs-md); }
+.view-ckad .ck-video-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.view-ckad .ck-video-frame { padding: 0 14px 14px; background: var(--surface-2); }
+.view-ckad .ck-video-frame iframe { width: 100%; aspect-ratio: 16/9; border-radius: var(--radius-sm); border: 0; display: block; }

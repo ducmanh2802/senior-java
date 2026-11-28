@@ -319,6 +319,25 @@
   }
 
   // ---------- tips ----------
+  function ytParse(url) {
+    const m = String(url).match(/v=([\w-]{11})/);
+    if (!m) return null;
+    const tm = String(url).match(/[?&]t=(\d+)s/);
+    return { id: m[1], start: tm ? '&start=' + tm[1] : '' };
+  }
+  function ytLi(v) {
+    const p = ytParse(v.url);
+    const title = esc(v.title);
+    const note = v.note ? ' <span class="small muted">' + esc(v.note) + '</span>' : '';
+    const link = '<a href="' + esc(v.url) + '" target="_blank" rel="noopener" class="link-btn">Mở YouTube ↗</a>';
+    if (!p) {
+      return '<li class="tl-video"><div class="tl-video-card"><div class="tl-video-info"><b>' + title + '</b>' + note + '</div>' +
+        '<div class="tl-video-actions">' + link + '</div></div></li>';
+    }
+    return '<li class="tl-video"><div class="tl-video-card"><div class="tl-video-info"><b>' + title + '</b>' + note + '</div>' +
+      '<div class="tl-video-actions"><button class="btn sm" data-yt="' + esc(p.id) + '" data-yt-title="' + esc(v.title) + '">▶ Xem</button>' + link +
+      '</div></div><div class="tl-video-frame" hidden></div></li>';
+  }
   function renderTips(root, skill) {
     const all = (window.TOEIC_TIPS || []).slice().sort((a, b) => a.order - b.order);
     const s = st();
@@ -327,8 +346,7 @@
       SKILLS.map(([k, l]) => '<a class="chip' + (skill === k ? ' active' : '') + '" href="#/toeiclr/tips/' + k + '">' + l +
         ' <span class="small">' + all.filter(t => t.skill === k).length + '</span></a>').join('') + '</div>';
     const body = list.map(t => {
-      const vids = (t.videos || []).length ? '<div class="tl-videos"><b>🎬 Video hướng dẫn</b><ul>' + t.videos.map(v =>
-        '<li><a href="' + esc(v.url) + '" target="_blank" rel="noopener">' + esc(v.title) + '</a>' + (v.note ? ' <span class="small muted">' + esc(v.note) + '</span>' : '') + '</li>').join('') + '</ul></div>' : '';
+    const vids = (t.videos || []).length ? '<div class="tl-videos"><b>🎬 Video hướng dẫn</b><ul>' + t.videos.map(v => ytLi(v)).join('') + '</ul></div>' : '';
       const checks = (t.checklist || []).map((c, i) => {
         const k = t.id + ':' + i;
         return '<label class="tl-check"><input type="checkbox" data-tip="' + esc(k) + '"' + (s.tips[k] ? ' checked' : '') + '> ' + esc(c) + '</label>';
@@ -343,6 +361,24 @@
       const c = e.target.closest('[data-tip]'); if (!c) return;
       if (c.checked) s.tips[c.dataset.tip] = true; else delete s.tips[c.dataset.tip];
       App.store.save();
+    };
+    let ytOpenBtn = null, ytOpenFrame = null;
+    function ytClose() {
+      if (ytOpenFrame) { ytOpenFrame.innerHTML = ''; ytOpenFrame.classList.remove('open'); ytOpenFrame.hidden = true; ytOpenFrame = null; }
+      if (ytOpenBtn) { ytOpenBtn.textContent = '▶ Xem'; ytOpenBtn = null; }
+    }
+    root.onclick = e => {
+      const b = e.target.closest('[data-yt]'); if (!b) return;
+      e.preventDefault();
+      if (ytOpenBtn === b) { ytClose(); return; }
+      ytClose();
+      const card = b.closest('.tl-video');
+      const fr = card.querySelector('.tl-video-frame');
+      fr.classList.add('open'); fr.hidden = false;
+      fr.innerHTML = '<iframe src="https://www.youtube-nocookie.com/embed/' + esc(b.dataset.yt) +
+        '?autoplay=1&rel=0" title="YouTube: ' + esc(b.dataset.ytTitle) +
+        '" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+      ytOpenFrame = fr; ytOpenBtn = b; b.textContent = '✕ Đóng';
     };
   }
 })();

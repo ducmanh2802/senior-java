@@ -36,6 +36,13 @@
 .view-toeiclr .tl-videos ul { margin: 6px 0 0; padding-left: 20px; }
 .view-toeiclr .tl-checklist { display: grid; gap: 6px; margin-top: 12px; }
 .view-toeiclr .tl-check { display: flex; gap: 8px; align-items: flex-start; }
+.view-toeiclr .tl-video { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); margin: 8px 0; overflow: hidden; }
+.view-toeiclr .tl-video-card { padding: 12px 14px; display: grid; gap: 8px; }
+.view-toeiclr .tl-video-info { display: grid; gap: 2px; line-height: 1.45; }
+.view-toeiclr .tl-video-info b { display: block; font-size: var(--fs-md); }
+.view-toeiclr .tl-video-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.view-toeiclr .tl-video-frame { padding: 0 14px 14px; background: var(--surface-2); }
+.view-toeiclr .tl-video-frame iframe { width: 100%; aspect-ratio: 16/9; border-radius: var(--radius-sm); border: 0; display: block; }
 @media (max-width: 480px) {
   .view-toeiclr .tl-table td:last-child { width: 30%; }
 }
