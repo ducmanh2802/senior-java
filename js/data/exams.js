@@ -54,8 +54,8 @@ window.EXAMS = [
     icon: '🏆',
     desc: 'Mô phỏng đề Architect Professional: thiết kế giải pháp Claude end-to-end cho doanh nghiệp. 120 phút, đậu từ 720/1000.',
     topics: { claude: 1 },
-    // 7 domain theo exam guide (trọng số chưa công bố → chia đều, 2026-11-16)
-    domains: { 'Enterprise Integration': 15, 'Solution Design': 15, 'Eval & Optimization': 14, 'Governance & Risk': 14, 'Stakeholder & Lifecycle': 14, 'Models & Context': 14, 'Operational Enablement': 14 },
+    // trọng số theo trang ôn thi bên thứ ba (anthropic.cloudexam.pro, đối chiếu 2026-11-28); Anthropic chưa công bố bảng chính thức
+    domains: { 'Enterprise Integration': 19, 'Solution Design': 17, 'Eval & Optimization': 16, 'Governance & Risk': 14, 'Stakeholder & Lifecycle': 14, 'Models & Context': 13, 'Operational Enablement': 7 },
     count: 60, minutes: 120, passScore: 720,
   },
   {
