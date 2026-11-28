@@ -2236,6 +2236,947 @@ Nhân viên hỗ trợ yêu cầu agent cập nhật địa chỉ giao hàng. Ag
 Tin vào system prompt để ngăn chặn hành động nguy hiểm là hiểu lầm phổ biến; prompt là lời nhắc, không phải tường lửa.
 
 > Mẹo phỏng vấn: hành động nguy hiểm thì thêm một bước người, và luôn kiểm tra lại ở phía hệ thống.`,
+},
+{
+  id: 'qz-ccap-381',
+  topic: 'claude',
+  q: '[Enterprise Integration] A document platform processes 3 million invoices per month by publishing each one to a message queue; a worker calls Claude to extract fields and writes the result to the database. Occasionally a worker crashes after Claude returns but before the database write, so the message is redelivered and the invoice is processed twice. Which design best prevents duplicate side effects?',
+  options: [
+    'Increase the worker timeout so crashes are less likely',
+    'Store a deterministic idempotency key per invoice and skip work if the result already exists',
+    'Process messages on a single worker to avoid concurrency',
+    'Disable message redelivery in the queue'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Dùng idempotency key (khoá nhận dạng ổn định theo invoice) để hệ thống nhận ra "đã xử lý rồi" và bỏ qua, thay vì tin vào việc message chỉ đến một lần.
+
+### Vì sao đáp án đúng
+Queue kiểu at-least-once (giao ít nhất một lần) luôn có thể giao lại message khi worker chết giữa chừng. Cách chắc chắn để tránh tác dụng phụ lặp là lưu một idempotency key tất định (ví dụ hash của invoice id) cùng trạng thái xử lý; khi worker nhận lại message, nó kiểm tra key, thấy đã có kết quả thì bỏ qua. Đây là mẫu "exactly-once effect" (hiệu ứng đúng một lần) trên nền giao ít nhất một lần.
+
+### Vì sao từng phương án sai
+- **Tăng timeout:** chỉ giảm tần suất crash, không loại bỏ redelivery; vẫn có thể lặp.
+- **Một worker duy nhất:** giảm throughput, vẫn crash được, và không giải quyết gốc rễ.
+- **Tắt redelivery:** mất message khi crash, chuyển từ trùng lặp sang mất dữ liệu — tệ hơn.
+
+> Nguyên tắc: đừng cố chống trùng ở tầng vận chuyển; hãy làm cho thao tác idempotent ở tầng nghiệp vụ.`
+},
+{
+  id: 'qz-ccap-382',
+  topic: 'claude',
+  multi: true,
+  q: '[Enterprise Integration] An order service emits an event for every order; a consumer calls Claude to classify the order and then charges a payment. The team needs exactly-once business effect even though the broker is at-least-once. Which two patterns best achieve this? (Choose 2)',
+  options: [
+    'Persist an idempotency key with the order id and check it before charging',
+    'Use the transactional outbox pattern so the event and the state change commit together',
+    'Retry forever with no backoff until it succeeds',
+    'Charge first and classify later to save time',
+    'Write a separate audit file for each attempt'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Idempotency key chống tính tiền hai lần, còn transactional outbox đảm bảo event không bị mất hoặc phát sinh lệch với dữ liệu gốc.
+
+### Vì sao đáp án đúng
+(1) **Idempotency key** theo order id: trước khi charge, kiểm tra xem order này đã charge chưa; nếu rồi thì bỏ qua, nên redelivery không gây charge lặp. (2) **Transactional outbox** (hộp thư giao dịch): ghi event vào cùng một transaction CSDL với thay đổi trạng thái order, rồi một process đọc outbox phát event — nhờ đó event và dữ liệu luôn khớp nhau, không có tình trạng "đã đổi trạng thái nhưng chưa phát event".
+
+### Vì sao từng phương án sai
+- **Retry vô hạn không backoff:** gây bão retry, quá tải hệ thống, và không chống trùng.
+- **Charge trước classify sau:** nếu classify lỗi thì đã thu tiền sai, khó đối soát.
+- **File audit riêng:** không tạo ra tính exactly-once, chỉ là ghi log.
+
+> Nguyên tắc: exactly-once effect = idempotent sink + outbox/inbox, không phải "gửi đúng một lần".`
+},
+{
+  id: 'qz-ccap-383',
+  topic: 'claude',
+  q: '[Enterprise Integration] A bank runs on AWS and must call Claude from inside its VPC without exposing long-lived API keys and without sending traffic over the public internet. Which approach best meets these constraints?',
+  options: [
+    'Store the Anthropic API key in an environment variable and call the public endpoint',
+    'Ship the API key into each container image at build time',
+    'Use Amazon Bedrock with an IAM role and a VPC endpoint so traffic stays private and no static key is stored',
+    'Call Claude through a public proxy that puts the key in the URL'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Gọi qua Amazon Bedrock với IAM role và VPC endpoint: không lưu key tĩnh, traffic không ra internet công cộng.
+
+### Vì sao đáp án đúng
+IAM role cấp quyền tạm thời cho compute (không có secret dài hạn để rò rỉ). VPC endpoint giữ lưu lượng giữa VPC và dịch vụ model nằm trên mạng riêng, không đi qua internet công cộng — đúng yêu cầu của ngân hàng. Đây là mẫu "private connectivity + short-lived credentials".
+
+### Vì sao từng phương án sai
+- **Key trong biến môi trường:** vẫn là secret dài hạn, dễ lộ qua log/ảnh container, và traffic đi internet công cộng.
+- **Đóng key vào image:** key bị "đóng băng" trong image, rất khó xoay vòng (rotate) và rò rỉ khi chia sẻ image.
+- **Proxy công cộng để key trên URL:** URL vào log, proxy là điểm rò rỉ, traffic vẫn công cộng.
+
+> Nguyên tắc: trong doanh nghiệp, ưu tiên IAM role tạm thời + private endpoint hơn API key tĩnh.`
+},
+{
+  id: 'qz-ccap-384',
+  topic: 'claude',
+  q: '[Enterprise Integration] A support app streams Claude responses to the browser, but the API gateway in front buffers the whole response before forwarding, so the user sees nothing for 20 seconds. Which change best restores token-by-token streaming?',
+  options: [
+    'Increase the gateway idle timeout',
+    'Disable response buffering at the gateway and use SSE or chunked passthrough for the streaming endpoint',
+    'Ask Claude to produce the full answer faster',
+    'Move the call into the browser with the API key embedded'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Vấn đề nằm ở buffering của gateway; tắt buffering và cho stream đi thẳng (SSE/chunked) là cách đúng.
+
+### Vì sao đáp án đúng
+Streaming chỉ có ý nghĩa khi từng chunk được đẩy ngay tới client. Gateway mặc định gom trọn response rồi mới gửi (buffering) để dễ xử lý; với endpoint stream, cần tắt buffering và chuyển tiếp chunk (Server-Sent Events hoặc chunked transfer) để token hiện ra ngay khi model sinh.
+
+### Vì sao từng phương án sai
+- **Tăng idle timeout:** chỉ tránh gateway tự ngắt, không bỏ buffering; người dùng vẫn chờ.
+- **Bảo model trả lời nhanh hơn:** không sửa được buffering; và không ép được tốc độ sinh token.
+- **Gọi từ browser kèm key:** làm lộ API key cho client — lỗ hổng bảo mật nghiêm trọng.
+
+> Nguyên tắc: streaming hỏng thường do một tầng trung gian đang buffer, không phải do model.`
+},
+{
+  id: 'qz-ccap-385',
+  topic: 'claude',
+  q: '[Enterprise Integration] A media company must summarise 5 million archived articles by the end of the quarter. The work is not urgent and the main goal is the lowest cost. Which API is the best fit?',
+  options: [
+    'Messages API called synchronously in a tight loop',
+    'A single request that packs all articles into one prompt',
+    'Message Batches API, which is asynchronous and costs about half of the standard price',
+    'Streaming Messages API for each article'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Message Batches API chạy bất đồng bộ, giá khoảng một nửa, hợp với khối lượng lớn không gấp.
+
+### Vì sao đáp án đúng
+Message Batches API (bó yêu cầu) nhận cả lô, xử lý nền và trả kết quả sau (theo tài liệu là trong khoảng 24 giờ) với chi phí giảm khoảng 50% so với gọi chuẩn. Với 5 triệu bài, không gấp, mục tiêu là chi phí thấp, đây là lựa chọn tối ưu.
+
+### Vì sao từng phương án sai
+- **Gọi đồng bộ trong vòng lặp:** đắt gấp đôi, dễ vướng rate limit, không tận dụng giảm giá.
+- **Một prompt cho tất cả:** vượt context window, không chia nhỏ được, chất lượng kém.
+- **Streaming từng bài:** vẫn là giá chuẩn, streaming không giảm giá, chỉ giảm thời gian thấy token.
+
+> Nguyên tắc: việc lớn, không gấp, chịu được trễ → batch; việc cần ngay → gọi đồng bộ/stream.`
+},
+{
+  id: 'qz-ccap-386',
+  topic: 'claude',
+  multi: true,
+  q: '[Enterprise Integration] Thirty product teams share one Claude gateway. Finance needs cost per team and the platform team needs to enforce per-team quotas. Which two changes best enable this? (Choose 2)',
+  options: [
+    'Require each team to send a unique API key or header tag that the gateway attributes usage to',
+    'Emit per-request usage records (tokens, model, team) to a metrics store',
+    'Rotate one shared key every month',
+    'Split into thirty separate cloud accounts',
+    'Log only the total daily token count'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Gắn danh tính theo team (key/tag) để quy trách nhiệm, và phát bản ghi usage theo từng request để đo và đặt quota.
+
+### Vì sao đáp án đúng
+(1) Mỗi team một key hoặc header tag: gateway biết request của ai để quy cost và áp quota theo team. (2) Ghi usage theo request (token vào/ra, model, team) vào kho số liệu: từ đó tính chi phí theo team, phát hiện bất thường, và chặn khi vượt quota.
+
+### Vì sao từng phương án sai
+- **Xoay một key chung:** mọi team dùng chung danh tính, không tách được cost.
+- **Tách 30 account:** cực kỳ nặng quản trị, không cần thiết cho mục tiêu quy cost.
+- **Chỉ log tổng token ngày:** không có breakdown theo team nên không quy trách nhiệm được.
+
+> Nguyên tắc: muốn quy cost và quota theo nhóm, phải có danh tính theo nhóm ngay tại gateway.`
+},
+{
+  id: 'qz-ccap-387',
+  topic: 'claude',
+  q: '[Enterprise Integration] An ERP only speaks XML over SOAP, but a new Claude feature needs JSON in and JSON out. The team does not want to rewrite the ERP. Which pattern best isolates the mismatch?',
+  options: [
+    'Rewrite the ERP so it emits JSON',
+    'Send raw XML to Claude and hope it parses correctly',
+    'Expose the ERP database directly to the Claude feature',
+    'Add an adapter or anti-corruption layer that translates between XML/SOAP and the JSON the feature expects'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Dùng adapter / anti-corruption layer (lớp chống "ô nhiễm" mô hình) để dịch XML/SOAP sang JSON và ngược lại, cô lập hệ thống cũ.
+
+### Vì sao đáp án đúng
+Anti-corruption layer là lớp trung gian giữ cho mô hình của hệ thống mới (JSON, REST) không bị "lây" ràng buộc của hệ thống cũ (XML, SOAP). Adapter nhận XML từ ERP, chuyển thành JSON cho feature, và chuyển kết quả ngược lại. Nhờ đó ERP không phải sửa, và feature không phụ thuộc chi tiết của ERP.
+
+### Vì sao từng phương án sai
+- **Viết lại ERP:** tốn kém, rủi ro, đúng thứ team muốn tránh.
+- **Gửi XML thô cho Claude:** không đảm bảo cấu trúc, dễ lỗi, không có hợp đồng rõ ràng.
+- **Cho feature chạm thẳng CSDL ERP:** phá vỡ đóng gói, coupling chặt, rủi ro bảo mật và toàn vẹn.
+
+> Nguyên tắc: tích hợp hệ thống cũ – mới nên qua adapter, đừng để mô hình hai bên rò rỉ vào nhau.`
+},
+{
+  id: 'qz-ccap-388',
+  topic: 'claude',
+  q: '[Enterprise Integration] A single user request triggers three independent Claude calls that the current code runs one after another, and p99 latency is 12 seconds. The three calls do not depend on each other. Which change most directly reduces latency?',
+  options: [
+    'Run the three calls in parallel and combine the results',
+    'Increase max_tokens on each call',
+    'Use a larger model for all three calls',
+    'Add a longer client timeout'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Ba call độc lập chạy tuần tự nên cộng dồn thời gian; chạy song song rồi gộp kết quả giảm còn khoảng thời gian của call chậm nhất.
+
+### Vì sao đáp án đúng
+Nếu mỗi call mất khoảng 4 giây và chạy tuần tự thì tổng ~12 giây. Chạy song song (ví dụ Promise.all / Future.all) và đợi cả ba thì tổng xấp xỉ max(4s) cộng chi phí gộp, tức giảm mạnh p99. Đây là tối ưu trực tiếp vì các call không phụ thuộc nhau.
+
+### Vì sao từng phương án sai
+- **Tăng max_tokens:** làm mỗi call sinh nhiều hơn, chậm hơn.
+- **Dùng model lớn hơn:** thường chậm và đắt hơn.
+- **Tăng timeout client:** chỉ chịu đựng chậm chứ không giảm độ trễ thực.
+
+> Nguyên tắc: việc độc lập thì song song hoá; đừng để tổng độ trễ là phép cộng.`
+},
+{
+  id: 'qz-ccap-389',
+  topic: 'claude',
+  q: '[Enterprise Integration] A platform team wants to send 5 percent of production traffic to a new model version while keeping 95 percent on the current one, and roll back instantly if the error rate rises. Where is the safest place to implement this split?',
+  options: [
+    'In the client application code of every product team',
+    'At the shared gateway using weighted routing or a feature flag with instant rollback',
+    'By editing the system prompt',
+    'By redeploying the model weights'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Chia lưu lượng tại gateway (weighted routing / feature flag) để điều chỉnh và rollback tức thì ở một nơi.
+
+### Vì sao đáp án đúng
+Gateway là điểm điều khiển tập trung: đặt trọng số 5/95, theo dõi lỗi, và chuyển về 0% cho model mới ngay khi sự cố. Một nơi thay đổi, áp dụng tức thì, không cần deploy lại từng team. Đây là mẫu canary (thả bướm) an toàn.
+
+### Vì sao từng phương án sai
+- **Sửa code từng client:** phân tán, chậm, khó rollback đồng loạt, dễ lệch cấu hình.
+- **Sửa system prompt:** không chia được lưu lượng theo tỉ lệ, không phải cơ chế canary.
+- **Triển khai lại trọng số model:** không khả thi với model do nhà cung cấp vận hành, và không instant.
+
+> Nguyên tắc: canary nên đặt ở gateway, nơi có thể đổi tỉ lệ và rollback trong vài giây.`
+},
+{
+  id: 'qz-ccap-390',
+  topic: 'claude',
+  multi: true,
+  q: '[Enterprise Integration] A platform team is defining the contract that every product team must follow when calling the internal Claude gateway. Which three elements make the contract robust? (Choose 3)',
+  options: [
+    'A versioned, pinned model id and prompt version per capability',
+    'Schema validation of Claude outputs before they are used downstream',
+    'Timeouts plus bounded retries with exponential backoff and jitter',
+    'A single hard-coded API key shared by all clients',
+    'One global prompt shared by all teams with no versioning'
+  ],
+  answer: [0, 1, 2],
+  explain: `**Tóm tắt:** Ghim phiên bản model/prompt, kiểm tra schema đầu ra, và timeout + retry có backoff là ba trụ của một hợp đồng tích hợp ổn định.
+
+### Vì sao đáp án đúng
+(1) **Pinned version** (ghim cứng phiên bản model và prompt) giúp hành vi không đổi âm thầm khi nhà cung cấp cập nhật; đổi phiên bản là quyết định có kiểm soát. (2) **Schema validation** chặn JSON sai định dạng lan xuống downstream. (3) **Timeout + bounded retry với backoff và jitter** (giãn có ngẫu nhiên) tránh treo và tránh bão retry đồng loạt.
+
+### Vì sao từng phương án sai
+- **Key cứng dùng chung:** không quy trách nhiệm, khó rotate, rò rỉ một chỗ là hỏng tất cả.
+- **Prompt global không phiên bản:** mọi team phụ thuộc lẫn nhau, một thay đổi làm hỏng tất cả, không rollback được.
+
+> Nguyên tắc: hợp đồng tốt = phiên bản rõ + hợp đồng dữ liệu + chính sách lỗi rõ.`
+},
+{
+  id: 'qz-ccap-391',
+  topic: 'claude',
+  q: '[Solution Design] A multi-tenant SaaS stores documents of every tenant in one shared vector index. A tenant must never receive chunks that belong to another tenant. Which design best enforces isolation?',
+  options: [
+    'Rely on the model to ignore chunks of other tenants',
+    'Shuffle the shared index every night',
+    'Store a tenant_id on every chunk and apply a mandatory tenant filter at query time, ideally with per-tenant namespaces',
+    'Use one shared cache for all tenants'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Gắn tenant_id cho mọi chunk và lọc bắt buộc theo tenant khi truy vấn (tốt nhất là namespace riêng) để cách ly dữ liệu.
+
+### Vì sao đáp án đúng
+Cách ly phải được thực thi ở tầng dữ liệu, không phải bằng lời nhắc model. Lưu tenant_id trên từng chunk và luôn lọc theo tenant khi retrieve (hoặc tách namespace/collection theo tenant) đảm bảo không chunk của tenant khác lọt vào ngữ cảnh. Đây là "tenant isolation" (cách ly theo khách thuê).
+
+### Vì sao từng phương án sai
+- **Nhờ model bỏ qua:** model không đáng tin để làm ranh giới bảo mật; vẫn có thể dùng nhầm dữ liệu.
+- **Xáo trộn index:** không tạo ranh giới, chỉ gây nhiễu, không ngăn truy hồi chéo.
+- **Cache chung:** dễ rò dữ liệu chéo tenant qua cache.
+
+> Nguyên tắc: cách ly tenant là việc của truy vấn và lưu trữ, không phải của prompt.`
+},
+{
+  id: 'qz-ccap-392',
+  topic: 'claude',
+  q: '[Solution Design] An agent must complete a five-step task that calls several tools. The team wants reliable completion without the agent looping forever. Which design is best?',
+  options: [
+    'Give the agent one giant prompt and no step limit',
+    'Let the agent call tools with no schema',
+    'Use an explicit planner with a step budget, structured tool schemas, and a validation step after each tool result',
+    'Remove the tools and ask for a plain text answer'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Planner có ngân sách bước, schema tool rõ ràng, và bước kiểm tra sau mỗi tool giúp agent hoàn thành mà không lặp vô hạn.
+
+### Vì sao đáp án đúng
+**Step budget** (giới hạn số bước) chặn vòng lặp vô hạn. **Structured tool schemas** buộc tham số đúng dạng, giảm lỗi gọi tool. **Validation sau mỗi tool result** phát hiện sai và sửa trước khi đi tiếp. Ba thứ này cho "controlled autonomy" (tự chủ có kiểm soát).
+
+### Vì sao từng phương án sai
+- **Một prompt khổng lồ, không giới hạn bước:** dễ lạc, dễ lặp, khó debug.
+- **Tool không schema:** tham số sai, lỗi âm thầm, khó tái lập.
+- **Bỏ tool, chỉ trả text:** mất khả năng hành động, không hoàn thành được tác vụ thực.
+
+> Nguyên tắc: agent cần ngân sách, hợp đồng tool, và vòng kiểm tra — không chỉ một prompt dài.`
+},
+{
+  id: 'qz-ccap-393',
+  topic: 'claude',
+  multi: true,
+  q: '[Solution Design] A long-running agent keeps exceeding the context window as it reads files and keeps the full transcript. Which two techniques best keep it within budget? (Choose 2)',
+  options: [
+    'Summarise older turns and keep only the recent messages verbatim',
+    'Offload large artefacts to external storage and pass references instead of full content',
+    'Raise temperature to shorten answers',
+    'Disable the transcript entirely from turn one',
+    'Send every file again on each turn'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Tóm tắt các lượt cũ và đưa artefact lớn ra kho ngoài (chỉ truyền con trỏ tham chiếu) để giảm token nạp vào context.
+
+### Vì sao đáp án đúng
+(1) **Summarise older turns** (tóm tắt lượt cũ) giữ ngữ cảnh chính, chỉ giữ nguyên văn vài lượt gần nhất — giảm token mà không mất mạch. (2) **External memory / offload** (đưa nội dung lớn ra ngoài, truyền id/đường dẫn) để agent nạp lại khi cần thay vì nhồi toàn bộ vào mỗi lượt. Đây là mẫu "context management" cho agent dài.
+
+### Vì sao từng phương án sai
+- **Tăng temperature:** không giảm token, chỉ tăng ngẫu nhiên.
+- **Tắt transcript từ đầu:** mất ngữ cảnh, agent không biết đã làm gì.
+- **Gửi lại mọi file mỗi lượt:** làm context phình to, đúng nguyên nhân gây tràn.
+
+> Nguyên tắc: context là tài nguyên hữu hạn; tóm tắt + offload là hai đòn bẩy chính.`
+},
+{
+  id: 'qz-ccap-394',
+  topic: 'claude',
+  q: '[Solution Design] A RAG assistant gives outdated answers because the knowledge base is re-indexed only once a year while policies change every month. Which change best fixes the root cause?',
+  options: [
+    'Increase the number of retrieved chunks',
+    'Re-index documents when they change and store a version or recency signal used to filter or rank results',
+    'Use a larger model',
+    'Lower temperature to 0'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Nguyên nhân gốc là dữ liệu cũ; phải re-index khi tài liệu đổi và dùng tín hiệu phiên bản/độ mới để lọc hoặc xếp hạng.
+
+### Vì sao đáp án đúng
+RAG chỉ tốt bằng kho dữ liệu của nó. Re-index theo sự kiện (khi tài liệu thay đổi) và lưu version/recency (phiên bản, thời điểm) cho phép ưu tiên bản mới, loại bản cũ. Đây là sửa gốc rễ chứ không phải che triệu chứng.
+
+### Vì sao từng phương án sai
+- **Lấy nhiều chunk hơn:** vẫn là chunk cũ, không sửa được lỗi thời.
+- **Dùng model lớn hơn:** model không biết tài liệu mới nếu không được nạp.
+- **Temperature 0:** chỉ giảm ngẫu nhiên, không liên quan độ mới.
+
+> Nguyên tắc: RAG lỗi thời là vấn đề pipeline dữ liệu, không phải vấn đề model.`
+},
+{
+  id: 'qz-ccap-395',
+  topic: 'claude',
+  q: '[Solution Design] A legal assistant must give answers with citations that a lawyer can verify in the source. Which design best ensures the citations are trustworthy?',
+  options: [
+    'Ask the model to invent plausible citation titles',
+    'Cite the training data of the model',
+    'Show a citation without checking it against the source',
+    'Return the exact source chunk ids used and verify each quote actually appears in the retrieved text before showing it'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Trả về id chunk nguồn đã dùng và kiểm tra trích dẫn có thật trong văn bản truy hồi trước khi hiển thị.
+
+### Vì sao đáp án đúng
+Citation đáng tin phải truy vết được về nguồn. Bằng cách giữ chunk id và xác minh câu trích xuất hiện thật trong retrieved text (chống "citation bịa"), người dùng kiểm chứng được. Đây là "grounded citation with verification".
+
+### Vì sao từng phương án sai
+- **Bịa tiêu đề hợp lý:** chính là hallucination, nguy hiểm trong pháp lý.
+- **Trích training data:** không truy vết được, không kiểm chứng.
+- **Hiện citation không kiểm tra:** có thể sai, mất niềm tin.
+
+> Nguyên tắc: citation phải kiểm chứng được, không phải trông có vẻ đúng.`
+},
+{
+  id: 'qz-ccap-396',
+  topic: 'claude',
+  q: '[Solution Design] A customer-facing assistant must stay useful when the primary Claude model is temporarily unavailable. Which design best provides graceful degradation?',
+  options: [
+    'Return a 500 error to every user',
+    'Block all requests until the model comes back',
+    'Send the API key to users so they can retry themselves',
+    'Fall back to a smaller or alternate model or cached answers, queue non-urgent requests, and show a clear message to the user'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Graceful degradation (suy giảm êm) = chuyển sang model nhỏ/dự phòng hoặc câu trả lời cache, hàng đợi việc không gấp, và báo rõ cho người dùng.
+
+### Vì sao đáp án đúng
+Khi model chính lỗi, hệ thống vẫn phục vụ ở mức thấp hơn thay vì sập: fallback sang model khác/cache, giữ trải nghiệm cơ bản, và xếp hàng việc không khẩn. Người dùng được thông báo trung thực. Đây là thiết kế "graceful degradation".
+
+### Vì sao từng phương án sai
+- **500 cho mọi request:** sập hoàn toàn, trải nghiệm tệ.
+- **Chặn tới khi model trở lại:** không có degraded mode, downtime kéo dài.
+- **Gửi key cho user:** rò rỉ secret, lỗ hổng bảo mật.
+
+> Nguyên tắc: luôn có đường lui; sập hoàn toàn là lỗi thiết kế, không phải sự cố hiếm.`
+},
+{
+  id: 'qz-ccap-397',
+  topic: 'claude',
+  multi: true,
+  q: '[Solution Design] A domain assistant must reduce confident wrong answers. Which two design choices most directly help? (Choose 2)',
+  options: [
+    'Ground answers in retrieved sources and require the model to say when evidence is missing',
+    'Ask the model to always answer confidently',
+    'Show sources so users and reviewers can check the claims',
+    'Remove all context to keep answers short',
+    'Increase temperature for more creativity'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Grounding (neo câu trả lời vào nguồn truy hồi) và hiển thị nguồn để kiểm chứng là hai cách trực tiếp giảm trả lời sai tự tin.
+
+### Vì sao đáp án đúng
+(1) **Grounding + cho phép nói "không đủ dữ kiện"** buộc model dựa vào bằng chứng thay vì bịa. (2) **Hiện nguồn** cho phép người dùng/reviewer phát hiện sai và tạo vòng phản hồi. Cả hai tác động thẳng vào hallucination.
+
+### Vì sao từng phương án sai
+- **Luôn trả lời tự tin:** làm tăng thiệt hại của câu sai.
+- **Bỏ hết ngữ cảnh:** mất grounding, model càng dễ bịa.
+- **Tăng temperature:** tăng ngẫu nhiên, dễ sai hơn.
+
+> Nguyên tắc: chống hallucination = grounding + minh bạch nguồn, không phải "nhờ model cố gắng".`
+},
+{
+  id: 'qz-ccap-398',
+  topic: 'claude',
+  q: '[Solution Design] An assistant can approve refunds above a threshold. The company wants a human-in-the-loop for high-value actions. Which design is best?',
+  options: [
+    'Let the model approve any amount on its own',
+    'Route actions above the threshold to a human approval queue and record who approved what',
+    'Lower the threshold to zero so nothing is ever approved',
+    'Remove logging to save cost'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Human-in-the-loop (con người trong vòng lặp): việc giá trị cao đẩy sang hàng chờ người phê duyệt, kèm ghi vết ai duyệt gì.
+
+### Vì sao đáp án đúng
+Với hành động rủi ro cao, thêm bước người phê duyệt và log quyết định (ai, khi nào, duyệt gì) tạo kiểm soát và truy vết. Model chỉ đề xuất, con người quyết. Đây là HITL đúng nghĩa.
+
+### Vì sao từng phương án sai
+- **Model tự duyệt mọi mức:** bỏ kiểm soát người, rủi ro tài chính lớn.
+- **Ngưỡng bằng 0:** không duyệt gì, vô dụng.
+- **Bỏ log:** mất truy vết, không quy trách nhiệm được.
+
+> Nguyên tắc: rủi ro cao thì thêm bước người, và luôn ghi lại quyết định.`
+},
+{
+  id: 'qz-ccap-399',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team is about to launch a Claude feature and has no quality measurements yet. What should they do first?',
+  options: [
+    'Launch to all users and rely on complaints',
+    'Compare token prices of candidate models',
+    'Build a small golden set from real traffic with labelled expected answers and run it as a baseline',
+    'Skip measurement to save time'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Bắt đầu bằng một golden set nhỏ lấy từ traffic thật, có đáp án kỳ vọng đã gán nhãn, để có baseline.
+
+### Vì sao đáp án đúng
+Không đo thì không cải thiện. Golden set (bộ "vàng") đại diện + nhãn kỳ vọng cho phép so sánh trước/sau mỗi thay đổi và phát hiện regression. Đây là bước nền tảng của eval.
+
+### Vì sao từng phương án sai
+- **Launch rồi chờ phàn nàn:** quá trễ, người dùng chịu lỗi trước.
+- **So giá token:** không nói gì về chất lượng.
+- **Bỏ đo:** mù chất lượng, không thể tối ưu.
+
+> Nguyên tắc: trước khi tối ưu, phải có một bộ đo lặp lại được.`
+},
+{
+  id: 'qz-ccap-400',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval & Optimization] A team builds an automated eval that runs after every prompt change. Which two practices make the results trustworthy? (Choose 2)',
+  options: [
+    'Version the dataset and the judge prompt so results are comparable over time',
+    'Use a fixed representative sample and review a human spot-check of the judge decisions',
+    'Change the dataset every run so it stays fresh',
+    'Let the same prompt grade itself with no oversight',
+    'Judge only on answer length'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Version hoá dataset và judge prompt để so sánh được, cộng lấy mẫu cố định và spot-check của người để tránh judge sai lệch.
+
+### Vì sao đáp án đúng
+(1) **Version** dataset và judge prompt: nếu đổi ngầm, so sánh trước/sau sẽ vô nghĩa. (2) **Mẫu cố định, đại diện + human spot-check**: kết quả ổn định và có người kiểm tra độ tin của judge (tránh "judge tự chấm mình"). Đây là eval đáng tin.
+
+### Vì sao từng phương án sai
+- **Đổi dataset mỗi run:** mất tính so sánh, regression bị che.
+- **Prompt tự chấm không giám sát:** thiên lệch, không phát hiện lỗi của chính nó.
+- **Chỉ chấm độ dài:** không đo chất lượng.
+
+> Nguyên tắc: eval đáng tin cần dữ liệu cố định, phiên bản rõ, và một chút giám sát người.`
+},
+{
+  id: 'qz-ccap-401',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team must estimate cost per request before launch. Each request sends about 1,000 input tokens and receives about 500 output tokens. What is the most reliable way to estimate?',
+  options: [
+    'Guess from the monthly bill',
+    'Count only the number of requests',
+    'Multiply input tokens by the published input price and output tokens by the published output price of the model, then add them',
+    'Always pick the cheapest model regardless of quality'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Cost = token vào × giá vào + token ra × giá ra; dùng đúng bảng giá của model.
+
+### Vì sao đáp án đúng
+Nhà cung cấp tính tiền theo token vào và token ra với đơn giá khác nhau (output thường đắt hơn). Nhân đúng số token với đơn giá rồi cộng là cách ước lượng chuẩn. Đây là "cost estimation" theo token.
+
+### Vì sao từng phương án sai
+- **Đoán từ bill tháng:** không suy ra được cho một request, nhiều nhiễu.
+- **Chỉ đếm số request:** bỏ qua độ dài, sai lệch lớn.
+- **Chọn model rẻ nhất bất kể chất lượng:** tối ưu sai mục tiêu, hỏng trải nghiệm.
+
+> Nguyên tắc: token vào và token ra có giá khác nhau; phải tính riêng rồi cộng.`
+},
+{
+  id: 'qz-ccap-402',
+  topic: 'claude',
+  q: '[Eval & Optimization] A Claude feature has high p95 latency mainly because responses are long. Which lever most directly reduces latency without changing the model?',
+  options: [
+    'Cap max_tokens and stream the response so the user sees output early',
+    'Increase max_tokens',
+    'Use a larger model',
+    'Turn off streaming'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Giới hạn max_tokens để sinh ít hơn, và stream để người dùng thấy token sớm — giảm độ trễ cảm nhận và p95.
+
+### Vì sao đáp án đúng
+Độ trễ tỉ lệ với số token sinh. Cắt max_tokens giảm khối lượng sinh; streaming cho kết quả hiện dần thay vì chờ trọn. Cả hai giảm p95 mà không đổi model.
+
+### Vì sao từng phương án sai
+- **Tăng max_tokens:** sinh nhiều hơn, chậm hơn.
+- **Dùng model lớn hơn:** thường chậm hơn.
+- **Tắt streaming:** người dùng chờ lâu hơn, p95 cảm nhận tệ hơn.
+
+> Nguyên tắc: độ trễ sinh tỉ lệ với độ dài; cắt bớt và stream là đòn bẩy nhanh nhất.`
+},
+{
+  id: 'qz-ccap-403',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team uses prompt caching with a 5-minute TTL. When does the cache-miss rate spike the most?',
+  options: [
+    'When the cached prefix changes, such as right after a deploy or when the prefix has high cardinality',
+    'When traffic is steady and the prefix is identical every time',
+    'When the model is smaller',
+    'When outputs are short'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Cache miss tăng vọt khi prefix thay đổi (sau deploy) hoặc prefix quá đa dạng (high cardinality) khiến ít gặp lại.
+
+### Vì sao đáp án đúng
+Prompt caching chỉ hit khi phần đầu (prefix) giống hệt và còn trong TTL. Sau khi deploy đổi prompt, hoặc khi prefix chứa yếu tố thay đổi liên tục (ví dụ ghép cả nội dung động vào đầu), cache gần như không dùng lại được → miss tăng, mất lợi ích.
+
+### Vì sao từng phương án sai
+- **Traffic đều, prefix giống nhau:** điều kiện lý tưởng để cache hit cao.
+- **Model nhỏ hơn:** không liên quan tới hit/miss của cache.
+- **Output ngắn:** cache liên quan input prefix, không phải độ dài output.
+
+> Nguyên tắc: cache chỉ hiệu quả khi prefix ổn định và được lặp lại trong TTL.`
+},
+{
+  id: 'qz-ccap-404',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval & Optimization] Executives want metrics that reflect business value, not just model internals. Which two metrics best show value? (Choose 2)',
+  options: [
+    'Task success rate on real user goals',
+    'Human escalation or handoff rate and its trend',
+    'Average tokens per request',
+    'Number of API calls',
+    'The model temperature setting'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Tỉ lệ hoàn thành tác vụ thật và tỉ lệ phải chuyển cho người xử lý là hai thước đo giá trị nghiệp vụ trực tiếp.
+
+### Vì sao đáp án đúng
+(1) **Task success rate** đo bao nhiêu yêu cầu thực sự được giải quyết — gắn thẳng với giá trị. (2) **Escalation rate** (tỉ lệ phải nhờ người) thấp và ổn định nghĩa là assistant gánh việc thật; xu hướng tăng là dấu hiệu chất lượng giảm.
+
+### Vì sao từng phương án sai
+- **Token mỗi request:** chỉ là chi phí, không phải giá trị.
+- **Số call API:** hoạt động, không phải kết quả.
+- **Temperature:** tham số cấu hình, không đo giá trị.
+
+> Nguyên tắc: đo kết quả cho người dùng, đừng đo thông số nội bộ của model.`
+},
+{
+  id: 'qz-ccap-405',
+  topic: 'claude',
+  q: '[Eval & Optimization] A team wants to A/B test a model change on a high-traffic feature. Which approach is valid?',
+  options: [
+    'Randomly split traffic, fix the eval and guardrail metrics in advance, and compare over a full business cycle',
+    'Show the new model only to internal staff and decide by feeling',
+    'Compare a single day before and after with no control group',
+    'Let users pick the model and count votes'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** A/B hợp lệ = chia ngẫu nhiên, cố định metric và guardrail trước, so sánh trên trọn một chu kỳ kinh doanh.
+
+### Vì sao đáp án đúng
+Chia ngẫu nhiên loại thiên lệch, guardrail (metric bảo vệ như lỗi, tỉ lệ escalate) chặn việc "thắng chỉ số chính nhưng hại trải nghiệm", và chạy đủ một chu kỳ để tránh nhiễu theo ngày/giờ. Đây là thực nghiệm có kiểm soát.
+
+### Vì sao từng phương án sai
+- **Chỉ nội bộ, quyết bằng cảm giác:** không đại diện, không định lượng.
+- **So một ngày trước/sau, không nhóm chứng:** nhiễu thời gian, không kết luận được nhân quả.
+- **Cho user chọn, đếm vote:** thiên lệch tự chọn, không đo chất lượng.
+
+> Nguyên tắc: thay đổi model phải test như thực nghiệm — ngẫu nhiên, có guardrail, đủ chu kỳ.`
+},
+{
+  id: 'qz-ccap-406',
+  topic: 'claude',
+  q: '[Eval & Optimization] Sixty percent of requests are simple FAQs and forty percent are complex analysis. The team wants lower cost with minimal quality loss. Which approach is best?',
+  options: [
+    'Use one large model for everything',
+    'Use the most expensive model for all requests',
+    'Disable the feature for simple FAQs',
+    'Route simple FAQs to a cheaper small model and complex requests to a stronger model'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Model routing (định tuyến theo độ khó): việc dễ đi model nhỏ rẻ, việc khó đi model mạnh.
+
+### Vì sao đáp án đúng
+Đa số request là FAQ đơn giản, không cần model đắt. Định tuyến theo độ phức tạp (hoặc theo điểm tin cậy) đưa 60% sang model nhỏ, giữ 40% khó cho model mạnh — giảm chi phí mà ít ảnh hưởng chất lượng. Đây là "model routing / cascade".
+
+### Vì sao từng phương án sai
+- **Một model lớn cho tất cả:** trả giá cao cho cả việc dễ.
+- **Model đắt nhất cho tất cả:** tốn kém tối đa.
+- **Tắt cho FAQ:** mất phần lớn lưu lượng, vô dụng.
+
+> Nguyên tắc: đừng dùng model đắt cho việc dễ; hãy định tuyến theo độ khó.`
+},
+{
+  id: 'qz-ccap-407',
+  topic: 'claude',
+  q: '[Governance & Risk] A company stores customer documents in a vector index and sends them to Claude for a RAG assistant. A customer exercises a GDPR right-to-erasure request. Which action is most complete?',
+  options: [
+    'Delete only the chat history',
+    'Delete the source documents of the customer, their derived chunks and embeddings, and apply the retention policy to logs, then confirm completion',
+    'Keep the embeddings but hide them from the user',
+    'Anonymise only the display name'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Xoá toàn bộ: tài liệu gốc, chunk/embedding phái sinh, và áp chính sách lưu trữ cho log — rồi xác nhận hoàn tất.
+
+### Vì sao đáp án đúng
+Quyền được xoá (right to erasure) bao trùm mọi bản sao và dữ liệu phái sinh. Nếu chỉ xoá chat mà giữ embedding thì dữ liệu cá nhân vẫn còn và có thể bị truy hồi. Xoá cả gốc lẫn phái sinh, xử lý log theo retention, và xác nhận là cách đầy đủ.
+
+### Vì sao từng phương án sai
+- **Chỉ xoá chat:** bỏ sót tài liệu và embedding.
+- **Giữ embedding, chỉ ẩn:** dữ liệu cá nhân vẫn tồn tại, vi phạm.
+- **Ẩn danh mỗi tên hiển thị:** không xoá dữ liệu gốc và phái sinh.
+
+> Nguyên tắc: quyền xoá áp dụng cho cả dữ liệu phái sinh (embedding, cache, log), không chỉ bản gốc.`
+},
+{
+  id: 'qz-ccap-408',
+  topic: 'claude',
+  multi: true,
+  q: '[Governance & Risk] An agent can call internal tools such as refund, update address, and read orders. Which two controls best enforce least privilege? (Choose 2)',
+  options: [
+    'Give each tool a scoped credential limited to the specific actions and records it needs',
+    'Maintain an allowlist of permitted actions and validate arguments before execution',
+    'Give the agent one admin key for all tools',
+    'Disable all logging of tool calls',
+    'Let the model decide permissions from the prompt'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Least privilege (quyền tối thiểu): mỗi tool một credential phạm vi hẹp, cộng allowlist hành động và kiểm tra tham số trước khi chạy.
+
+### Vì sao đáp án đúng
+(1) **Scoped credential** cho từng tool: nếu một tool bị lạm dụng, thiệt hại giới hạn trong phạm vi của nó. (2) **Allowlist + validate arguments**: chỉ cho phép hành động hợp lệ và kiểm tra tham số (ví dụ không vượt hạn mức) trước khi thực thi — không tin lời model.
+
+### Vì sao từng phương án sai
+- **Một admin key cho mọi tool:** vi phạm least privilege, rò một chỗ là mất tất cả.
+- **Tắt log tool call:** mất truy vết, không phát hiện lạm dụng.
+- **Để model tự quyết quyền từ prompt:** prompt không phải cơ chế phân quyền.
+
+> Nguyên tắc: phân quyền là việc của hệ thống (scope + allowlist), không phải của prompt.`
+},
+{
+  id: 'qz-ccap-409',
+  topic: 'claude',
+  q: '[Governance & Risk] A regulator asks the company to reproduce exactly what a Claude-based decision did on a given day. Which record is most essential?',
+  options: [
+    'An immutable log of the exact prompt, model id and version, parameters, retrieved context, and output for each decision',
+    'A screenshot of the dashboard',
+    'The training description of the model',
+    'A daily total token count'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Log bất biến gồm prompt, model/version, tham số, ngữ cảnh truy hồi và output cho từng quyết định.
+
+### Vì sao đáp án đúng
+Để tái lập (reproduce) một quyết định, cần đủ đầu vào và cấu hình đã dùng: prompt chính xác, model và phiên bản, tham số, context đã nạp, và kết quả. Log bất biến (immutable) đảm bảo không bị sửa về sau — điều kiện cho audit.
+
+### Vì sao từng phương án sai
+- **Ảnh dashboard:** không đủ chi tiết để tái lập.
+- **Mô tả training của model:** không phải bản ghi quyết định cụ thể.
+- **Tổng token ngày:** chỉ là thống kê, không tái lập được.
+
+> Nguyên tắc: auditability = log bất biến, đủ đầu vào + cấu hình + đầu ra cho từng quyết định.`
+},
+{
+  id: 'qz-ccap-410',
+  topic: 'claude',
+  q: '[Governance & Risk] A company worries that Claude outputs could leak secrets. Which control best reduces data exfiltration through outputs?',
+  options: [
+    'Put secrets into the prompt so the model can redact them itself',
+    'Apply an egress DLP filter on model outputs and never place secrets in the context in the first place',
+    'Rely on the model to keep secrets safe',
+    'Disable output logging only'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Không đưa secret vào context ngay từ đầu, và lọc DLP ở lối ra (egress) để chặn rò rỉ qua output.
+
+### Vì sao đáp án đúng
+Phòng thủ theo lớp: (1) không nạp secret vào prompt nên model không có gì để lộ; (2) **egress DLP** (data loss prevention — phòng chống mất dữ liệu) quét output trước khi trả về để bắt pattern nhạy cảm. Đây là "data exfiltration" (rò rỉ dữ liệu ra ngoài) defense.
+
+### Vì sao từng phương án sai
+- **Đưa secret vào prompt để model tự che:** model có thể lặp lại, prompt injection có thể moi ra.
+- **Tin model giữ secret:** không đảm bảo, không kiểm soát.
+- **Chỉ tắt log output:** log không phải đường rò rỉ chính; output vẫn tới người dùng.
+
+> Nguyên tắc: chặn rò rỉ bằng "không đưa vào" + lọc ở lối ra, đừng tin model tự giữ bí mật.`
+},
+{
+  id: 'qz-ccap-411',
+  topic: 'claude',
+  q: '[Governance & Risk] A governance team wants a concise artefact describing the intended use, limitations, and evaluation results of a Claude model for reviewers. Which artefact is this?',
+  options: [
+    'A load-balancer configuration',
+    'A prompt template',
+    'A model card',
+    'A rate-limit dashboard'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Model card là tài liệu tóm tắt mục đích dùng, giới hạn và kết quả đánh giá của một model.
+
+### Vì sao đáp án đúng
+**Model card** (thẻ model) ghi rõ use case dự kiến, điều kiện không phù hợp, và kết quả eval — giúp reviewer và stakeholder hiểu nhanh. Đây là artefact quản trị chuẩn.
+
+### Vì sao từng phương án sai
+- **Cấu hình load balancer:** hạ tầng, không mô tả model.
+- **Prompt template:** cách dùng cụ thể, không phải tổng quan model.
+- **Dashboard rate limit:** vận hành, không phải tài liệu quản trị.
+
+> Nguyên tắc: model card là "hộ chiếu" của model cho governance và review.`
+},
+{
+  id: 'qz-ccap-412',
+  topic: 'claude',
+  multi: true,
+  q: '[Governance & Risk] A company uses Claude for automated loan decisions. Which two safeguards are most important for such high-stakes decisions? (Choose 2)',
+  options: [
+    'A human appeal and review path for declined applicants',
+    'Bias and fairness testing across groups plus ongoing monitoring',
+    'Let the model set its own approval threshold with no review',
+    'Remove all records to avoid liability',
+    'Use a single prompt with no evaluation'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Quyền khiếu nại/duyệt lại của con người, và kiểm thử công bằng (bias/fairness) kèm giám sát liên tục.
+
+### Vì sao đáp án đúng
+(1) **Human appeal/review**: quyết định rủi ro cao cần đường cho người xem lại, tránh thiệt hại không thể sửa. (2) **Bias/fairness testing + monitoring**: phát hiện phân biệt đối xử theo nhóm và theo dõi theo thời gian. Đây là hai trụ của responsible AI cho quyết định tín dụng.
+
+### Vì sao từng phương án sai
+- **Model tự đặt ngưỡng, không review:** mất kiểm soát, rủi ro pháp lý.
+- **Xoá hết hồ sơ:** mất truy vết, vi phạm nghĩa vụ lưu trữ.
+- **Một prompt không eval:** không đo công bằng, không phát hiện sai.
+
+> Nguyên tắc: quyết định rủi ro cao cần quyền con người xem lại và kiểm thử công bằng liên tục.`
+},
+{
+  id: 'qz-ccap-413',
+  topic: 'claude',
+  q: '[Models & Context] A team needs Claude to return valid JSON on every call for downstream parsing. Which approach is most reliable?',
+  options: [
+    'Ask for JSON in the prompt and hope for the best',
+    'Use tool use or structured outputs with a JSON schema, then validate and retry on parse failure',
+    'Increase temperature',
+    'Use a larger model only'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Dùng tool use / structured outputs với JSON schema, rồi validate và retry khi parse lỗi.
+
+### Vì sao đáp án đúng
+Structured outputs (đầu ra có cấu trúc) / tool use ràng buộc output theo schema, cho JSON hợp lệ ổn định. Validate + retry là lớp an toàn cuối. Đây là cách "reliable JSON".
+
+### Vì sao từng phương án sai
+- **Nhờ trong prompt rồi cầu mong:** không đảm bảo, vẫn có thể sai định dạng.
+- **Tăng temperature:** tăng ngẫu nhiên, dễ sai hơn.
+- **Chỉ dùng model lớn:** không giải quyết vấn đề định dạng.
+
+> Nguyên tắc: cần JSON ổn định thì ép bằng schema, đừng "nhờ" model.`
+},
+{
+  id: 'qz-ccap-414',
+  topic: 'claude',
+  q: '[Models & Context] When using the extended thinking feature on supported Claude models (e.g., Claude 3.7 Sonnet with thinking enabled), which sampling parameters become incompatible and return HTTP 400 if included in the same request?',
+  options: [
+    'temperature, top_p, top_k',
+    'max_tokens, stop_sequences',
+    'system, messages',
+    'model, stream'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Khi bật extended thinking (thinking: { type: "enabled", budget_tokens: N }), các tham số lấy mẫu temperature, top_p, top_k không được phép cùng request và sẽ gây lỗi 400.
+
+### Vì sao đáp án đúng
+Extended thinking thay thế cơ chế lấy mẫu bằng budget tư duy. Khi thinking được bật, API yêu cầu không gửi temperature, top_p, top_k trong cùng request; gửi sẽ bị từ chối (400). Các tham số khác như max_tokens, stop_sequences, system, messages, model, stream vẫn hoạt động bình thường.
+
+### Vì sao từng phương án sai
+- **max_tokens, stop_sequences:** vẫn được phép dùng khi thinking bật.
+- **system, messages:** bắt buộc cho mọi request, không liên quan thinking.
+- **model, stream:** bắt buộc/tùy chọn chuẩn, không bị thinking ảnh hưởng.
+
+> Nguyên tắc: bật thinking → bỏ temperature/top_p/top_k; dùng budget_tokens trong thinking config để kiểm soát độ sâu suy luận.`
+},
+{
+  id: 'qz-ccap-415',
+  topic: 'claude',
+  multi: true,
+  q: '[Models & Context] Regarding the 200K-token context window and up to 128K max output of current Claude models (e.g., Claude 3.5/3.7 Sonnet, Opus 4), which two statements are correct? (Choose 2)',
+  options: [
+    'A larger context window does not guarantee the model uses all of it reliably, so relevant content should still be surfaced',
+    'Cost and latency grow with the number of input and output tokens actually processed',
+    'A 200K context window is always free of extra cost',
+    'Output length is unlimited',
+    'Context length has no effect on latency'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Context lớn không đảm bảo model dùng hết một cách đáng tin, và chi phí/độ trễ tăng theo số token thực xử lý.
+
+### Vì sao đáp án đúng
+(1) "Lost in the middle": model không chắc chắn dùng toàn bộ context; nên đưa nội dung liên quan lên trước/lọc bớt. (2) Tiền và thời gian tỉ lệ với token vào/ra thực tế — context càng lớn càng tốn. Đây là hiểu đúng về context window.
+
+### Vì sao từng phương án sai
+- **200K context miễn phí:** sai, token vẫn tính tiền.
+- **Output không giới hạn:** sai, có trần max output (128K).
+- **Context không ảnh hưởng latency:** sai, nhiều token hơn thì chậm hơn.
+
+> Nguyên tắc: context lớn là khả năng, không phải miễn phí hay dùng hết tự động.`
+},
+{
+  id: 'qz-ccap-416',
+  topic: 'claude',
+  q: '[Models & Context] A streaming call returns stop_reason max_tokens and the JSON is cut off mid-way. What is the best handling?',
+  options: [
+    'Treat the truncated output as final',
+    'Continue the response from where it stopped or raise max_tokens, then validate the JSON',
+    'Delete the request',
+    'Increase temperature'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** stop_reason max_tokens nghĩa là bị cắt do hết hạn mức token; nối tiếp hoặc tăng max_tokens rồi validate lại.
+
+### Vì sao đáp án đúng
+max_tokens báo output bị cắt giữa chừng, không phải model đã xong. Cách xử lý là tiếp tục sinh phần còn lại (continue) hoặc nâng max_tokens cho đủ, sau đó kiểm tra JSON hợp lệ. Coi là "đã xong" sẽ hỏng downstream.
+
+### Vì sao từng phương án sai
+- **Coi là final:** JSON dở dang, parse lỗi.
+- **Xoá request:** mất việc, không sửa gốc.
+- **Tăng temperature:** không liên quan, không thêm token.
+
+> Nguyên tắc: max_tokens là tín hiệu "còn nữa", phải nối tiếp chứ không dừng.`
+},
+{
+  id: 'qz-ccap-417',
+  topic: 'claude',
+  q: '[Models & Context] A company must classify 10 million short support tickets per month into a fixed set of categories. Cost and throughput matter most. Which model is the best default choice?',
+  options: [
+    'A top-tier large model for every ticket',
+    'No model, use manual review only',
+    'A small fast model such as Haiku 3.5, escalating only low-confidence cases',
+    'The most expensive model available'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Phân loại khối lượng lớn, tác vụ đơn giản → model nhỏ nhanh (Haiku 3.5), chỉ escalate ca độ tin cậy thấp.
+
+### Vì sao đáp án đúng
+Phân loại vào tập nhãn cố định là việc đơn giản, lặp nhiều; model nhỏ/nhanh tối ưu chi phí và throughput. Chỉ đẩy ca mơ hồ (low confidence) lên model mạnh là "cascade" (thác tầng) — rẻ mà vẫn chính xác.
+
+### Vì sao từng phương án sai
+- **Model lớn cho mọi ticket:** trả giá cao cho việc dễ.
+- **Không model, thủ công:** không scale nổi 10 triệu.
+- **Model đắt nhất:** tốn kém tối đa, không cần thiết.
+
+> Nguyên tắc: việc đơn giản, lặp nhiều → model nhỏ; chỉ escalate ca khó.`
+},
+{
+  id: 'qz-ccap-418',
+  topic: 'claude',
+  q: '[Models & Context] Prompt caching has a 5-minute TTL and charges a write premium over the base input price. Which statement about the cost trade-off is correct?',
+  options: [
+    'The cache write premium is always worth it regardless of reuse',
+    'The cache pays off when the same prefix is reused many times within the 5-minute TTL, because cache reads are cheaper than recomputing the prefix',
+    'Cache writes are free',
+    'TTL has no effect on cost'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Cache ghi có phụ phí (write đắt hơn input thường), TTL 5 phút. Nếu prefix được dùng lại nhiều lần trong 5 phút, chi phí đọc cache (rẻ) nhiều lần sẽ bù lại write đắt.
+
+### Vì sao đáp án đúng
+Ghi cache có phụ phí (write premium), và TTL là 5 phút cố định. Nhưng nếu prefix được dùng lại rất nhiều lần trong cửa sổ TTL, chi phí đọc cache (rẻ hơn input thường) nhiều lần sẽ bù lại write premium. Bài toán là tần suất tái sử dụng trong cửa sổ TTL.
+
+### Vì sao từng phương án sai
+- **Luôn đáng giá:** sai, nếu ít dùng lại thì write premium không bù.
+- **Ghi cache miễn phí:** sai, có phụ phí write.
+- **TTL không ảnh hưởng cost:** sai, TTL quyết định cửa sổ tái sử dụng.
+
+> Nguyên tắc: Prompt caching chỉ đáng khi prefix ổn định và được tái sử dụng nhiều lần trong TTL 5 phút.`
+},
+{
+  id: 'qz-ccap-419',
+  topic: 'claude',
+  multi: true,
+  q: '[Models & Context] Which two are good prompt-engineering practices for reliable Claude outputs? (Choose 2)',
+  options: [
+    'State a clear role and task, and separate instructions from data with delimiters',
+    'Provide a few well-chosen examples (few-shot) for the target format',
+    'Make the prompt as vague as possible',
+    'Put contradictory instructions to test the model',
+    'Hide the output format from the model'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Nêu rõ vai trò/nhiệm vụ và tách chỉ dẫn khỏi dữ liệu bằng delimiter, cộng few-shot ví dụ đúng định dạng.
+
+### Vì sao đáp án đúng
+(1) **Rõ vai trò + delimiter** (ký hiệu phân tách) giúp model phân biệt chỉ dẫn và dữ liệu, giảm nhầm lẫn và prompt injection. (2) **Few-shot** (vài ví dụ mẫu) cho model thấy đúng định dạng mong đợi, tăng độ ổn định.
+
+### Vì sao từng phương án sai
+- **Prompt mơ hồ:** tăng suy diễn sai.
+- **Chỉ dẫn mâu thuẫn:** gây hành vi thất thường.
+- **Giấu định dạng output:** model không biết cần gì, dễ sai.
+
+> Nguyên tắc: rõ ràng + delimiter + ví dụ là ba thói quen prompt cơ bản.`
+},
+{
+  id: 'qz-ccap-420',
+  topic: 'claude',
+  q: '[Models & Context] A team wants Claude to read photographed receipts and extract totals together with a text question. Which capability enables this?',
+  options: [
+    'Convert the image to CSV first, then send only text',
+    'Use a text-only model with no image support',
+    'Send image blocks (base64 or URL) in the messages alongside the text question',
+    'Ask the model to guess the total from the file name'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Gửi image block (base64 hoặc URL) trong messages cùng câu hỏi text để Claude đọc ảnh.
+
+### Vì sao đáp án đúng
+Claude hỗ trợ đầu vào đa phương thức: đặt image block (dữ liệu base64 hoặc URL) vào nội dung message cùng phần text. Model "nhìn" ảnh hoá đơn và trả lời câu hỏi. Đây là "vision" (thị giác) input.
+
+### Vì sao từng phương án sai
+- **Chuyển ảnh sang CSV trước:** không khả thi cho ảnh chụp, mất thông tin.
+- **Model text-only:** không đọc được ảnh.
+- **Đoán từ tên file:** vô nghĩa, không trích xuất được.
+
+> Nguyên tắc: muốn đọc ảnh, gửi image block trong message, không "mô tả" ảnh bằng lời.`
 }
 // qtool append point
 );

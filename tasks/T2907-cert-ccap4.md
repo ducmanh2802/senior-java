@@ -1,6 +1,6 @@
 # T2907 — 40 câu luyện thi CCAR-P: tăng ngân hàng cho đề full
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/quiz-ccap-1.js`
 After: T2906
@@ -32,3 +32,12 @@ AGENTS.md mục "Câu trắc nghiệm" + mục 5 (không backtick, không ký hi
 Xong: `Status: DONE`, Notes ghi id + số câu theo domain.
 
 ## Notes
+Added qz-ccap-381..420 (40 câu tiếng Anh, explain tiếng Việt) vào cuối `js/data/quiz-ccap-1.js` (sau câu 160, trước `// qtool append point`):
+- [Enterprise Integration] 10 (381–390)
+- [Solution Design] 8 (391–398)
+- [Eval & Optimization] 8 (399–406)
+- [Governance & Risk] 6 (407–412)
+- [Models & Context] 8 (413–420)
+11/40 câu multi (Choose 2/3), còn lại single 4 options, đáp án rải đều 0..3. Ý khác hoàn toàn pool 1/pool 2 (đã đọc lướt q).
+`node --check` OK; `node scripts/build-light-index.js` OK; `node scripts/validate.js` → OK — không có lỗi. Không commit.
+Reviewed-by: kilo (T2907R)
