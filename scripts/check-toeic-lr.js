@@ -95,7 +95,9 @@ function check() {
       if (qs.length >= 10) {
         const cnt = {};
         qs.forEach(q => { cnt[q.answer] = (cnt[q.answer] || 0) + 1; });
-        for (const [a, c] of Object.entries(cnt)) if (c / qs.length > 0.35) errors.push(`${f}: part ${p} đáp án ${'ABCD'[a]} chiếm ${Math.round(100 * c / qs.length)}% (tối đa 35%)`);
+        // 35%, but never below ceil(n/options)+1: Part 2 has 25 questions × 3 options, so one letter always has ≥ 9 (36%)
+        const cap = Math.max(Math.floor(qs.length * 0.35), Math.ceil(qs.length / spec.opts) + 1);
+        for (const [a, c] of Object.entries(cnt)) if (c > cap) errors.push(`${f}: part ${p} đáp án ${'ABCD'[a]} chiếm ${c}/${qs.length} câu (tối đa ${cap})`);
       }
       const types = qs.map(q => q && q.type);
       const count = t => types.filter(x => x === t).length;

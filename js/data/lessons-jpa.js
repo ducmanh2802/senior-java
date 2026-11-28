@@ -2985,5 +2985,218 @@ class Service {
   check:[{q:'Hai transaction cùng đọc version=5. A commit thành công (version=6). B commit với version=5. Điều gì xảy ra?',options:['B thành công vì sửa field khác','B bị OptimisticLockException vì UPDATE ... WHERE version=5 ảnh hưởng 0 hàng','B tự động retry','B ghi đè A'],answer:1,explain:`@Version thêm điều kiện WHERE version=? vào UPDATE. Khi A đã tăng version lên 6, câu UPDATE của B với version=5 không khớp hàng nào → 0 row affected → Hibernate ném OptimisticLockException. Không phân biệt field nào đổi: version là điều kiện chung cho cả hàng.`},{q:'Retry sau OptimisticLockException đúng cách là gì?',options:['Gửi lại UPDATE với version cũ','Mở transaction mới, đọc entity (version mới), áp dụng lại ý định, giới hạn số lần','Xóa cột version','Bắt exception rồi tiếp tục trong cùng transaction'],answer:1,explain:`Version cũ chắc chắn fail. Transaction hiện tại đã rollback-only nên không thể tiếp tục. Phải mở transaction mới, đọc state mới, áp dụng lại ý định (ví dụ cộng delta), có giới hạn (3 lần) và backoff. Retry vô hạn khuếch đại tải khi tranh chấp.`},{q:'Khi nào pessimistic lock (SELECT ... FOR UPDATE) hợp hơn @Version?',options:['Xung đột cực hiếm','Tranh chấp cao trên ít hàng nóng, đoạn xử lý ngắn','Người dùng mở form sửa 10 phút','Muốn tránh hoàn toàn deadlock'],answer:1,explain:`Tranh chấp cao trên hàng nóng làm optimistic liên tục fail và retry; giữ lock ngắn hiệu quả hơn. Form mở 10 phút mà giữ lock DB thì chặn người khác suốt thời gian đó → optimistic hợp hơn. Xung đột hiếm cũng là đất của optimistic. Pessimistic lock vẫn có thể deadlock chứ không tránh được.`}],
   related:['jpa-024','jpa-022'],
   tags:['optimistic locking','@Version','lost update','retry','pessimistic lock']
+},
+{
+  id:'lesson-jpa-019',track:'jpa',order:19,title:'Dirty checking theo field: snapshot và UPDATE chỉ cột đã đổi',level:'senior',minutes:30,
+  goals:['Hiểu Hibernate so sánh entity với snapshot để biết field nào đổi','Biết @DynamicUpdate sinh UPDATE chỉ các cột đổi và khi nên dùng','Mô phỏng persistence context theo dõi field thay đổi và sinh UPDATE chỉ những cột đổi','Biết chi phí dirty checking và @DynamicUpdate khi entity có nhiều cột'],
+  body:`**Tóm tắt:** Dirty checking là cơ chế Hibernate tự phát hiện entity nào đã thay đổi: lúc load entity, Hibernate lưu **snapshot** (bản sao giá trị từng property). Khi flush, nó so sánh entity hiện tại với snapshot theo từng property; property nào khác thì đưa vào câu UPDATE. Mặc định Hibernate sinh UPDATE chứa **tất cả cột** để câu SQL cố định (cache được prepared statement). {{@DynamicUpdate}} bật thì sinh UPDATE chỉ các cột đã đổi, câu SQL thay đổi theo tập cột — phù hợp entity nhiều cột (30–50+) mà thường chỉ đổi 1–2 cột.
+
+### Cơ chế từng bước: từ load đến UPDATE
+1. **Load entity**: Hibernate SELECT và tạo **snapshot** — mảng giá trị property lúc đọc (String, int, Long...), **không phải tham chiếu** tới object entity. Nếu snapshot trỏ tới cùng object, setter đổi object thì snapshot cũng đổi theo, dirty checking sẽ không bao giờ phát hiện thay đổi.
+2. **Setter thay đổi field**: Chỉ sửa object Java trong RAM, **không chạy SQL**. Snapshot vẫn giữ giá trị cũ.
+3. **Flush**: Hibernate duyệt identity map, so từng property của entity managed với snapshot. Property nào khác → đánh dấu dirty, thu vào tập changed properties.
+4. **Sinh UPDATE**:
+   - Mặc định: UPDATE chứa **tất cả cột** của entity (kể cả cột không đổi). Lợi: câu SQL cố định → JDBC/DB tái dùng prepared statement (statement cache). Tốn: payload lớn hơn, DB ghi cột không đổi (kích hoạt trigger, cập nhật index).
+   - Với {{@DynamicUpdate}}: chỉ các cột trong tập changed properties. Lợi: giảm I/O, giảm lock duration, tốt cho bảng có trigger/index nhạy cảm. Cái giá: câu SQL thay đổi mỗi lần → giảm cơ hội tái dùng prepared statement; Hibernate vẫn phải so snapshot toàn bộ để tìm cột dirty.
+5. **Sau flush**: Hibernate ghi đè snapshot bằng trạng thái hiện tại. Nếu quên bước này, flush lần sau sẽ lặp lại UPDATE.
+
+### Khi nào nên dùng @DynamicUpdate (và khi nào không)
+| Trường hợp | Khuyến nghị |
+|---|---|
+| Entity 30–50+ cột, thường chỉ sửa 1–2 cột | **Bật @DynamicUpdate** — giảm payload và I/O đáng kể |
+| Bảng có trigger/index trên cột nhạy cảm | **Bật** — tránh kích hoạt trigger/index khi cột không đổi |
+| Entity nhỏ (< 10 cột) | **Không bật** — chi phí build SQL động + mất statement cache không bù lại lợi ích |
+| Entity sửa nhiều cột cùng lúc | **Không bật** — câu SQL gần như giống mặc định, thêm chi phí build |
+
+> **Lưu ý:** @DynamicUpdate **không tự động bật**; phải khai báo tường minh trên entity. Bytecode enhancement (plugin hibernate-enhance-maven-plugin) là tối ưu khác: chèn code vào setter để đánh dấu field bẩn ngay lúc gán, flush chỉ đọc danh sách field đã đổi thay vì so toàn bộ snapshot. Cần bật trong build; đừng giả định project đã có.
+
+### Ví dụ đời thực: bảng hồ sơ khách hàng 45 cột
+Hệ thống CRM có entity {{CustomerProfile}} 45 cột (thông tin cá nhân, địa chỉ, sở thích, lịch sử...). Endpoint PATCH {{/profile}} cho phép khách hàng tự cập nhật avatar và nickname (2 cột). Trước khi bật @DynamicUpdate: mỗi lần PATCH sinh UPDATE 45 cột, DB mất 3 ms ghi index/trigger cho 43 cột không đổi; 1000 req/s → 3000 ms/s CPU DB cho việc vô nghĩa. Sau khi bật @DynamicUpdate: UPDATE chỉ 2 cột, CPU DB giảm 85%, p99 latency từ 45 ms xuống 28 ms. Đo bằng {{hibernate.generate_statistics}} và slow query log.
+
+### Lỗi hay gặp
+- **Quên @DynamicUpdate**: entity nhiều cột vẫn sinh UPDATE toàn bộ — đo statistics mới phát hiện.
+- **Dirty checking chạy trên entity chỉ đọc**: transaction dài import 500k entity, mỗi entity managed tốn RAM snapshot và CPU so sánh lúc flush. Dùng {{@Transactional(readOnly = true)}} cho phần chỉ đọc để Hibernate bỏ snapshot và dirty checking.
+- **Bulk JPQL UPDATE**: {{@Modifying @Query("UPDATE Profile p SET p.updated = now()")}} bypass dirty checking, không tăng {{@Version}}, entity managed vẫn giữ giá trị cũ — phải {{clearAutomatically = true}} hoặc tự clear context.
+- **Quên cập nhật snapshot sau flush** (khi tự viết persistence context): flush lặp lại UPDATE cho cùng thay đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Dirty checking: Hibernate lưu snapshot giá trị property lúc load. Flush so từng property với snapshot; property khác → đưa vào UPDATE. Mặc định UPDATE tất cả cột để câu SQL cố định (statement cache). @DynamicUpdate sinh UPDATE chỉ cột dirty — phù hợp entity nhiều cột đổi ít (giảm I/O, tránh trigger), chi phí là mất statement cache. Bulk update bypass dirty checking, không tự tăng @Version. Import lớn phải chunk + flush + clear, read-only transaction bỏ snapshot."
+
+> **Senior tip:** Đừng bật @DynamicUpdate cho mọi entity. Chỉ bật khi đã đo (statistics, profiler) thấy lợi. Entity nhỏ thì UPDATE tất cả cột tái dùng prepared statement tốt hơn. Bytecode enhancement giảm chi phí so snapshot nhưng phải bật trong build và test tương thích AOP/JaCoCo. Luôn đo: payload, CPU DB, heap, p99 latency — không chỉ "giảm cột UPDATE".`,
+  exercises:[{title:'Mini persistence context: theo dõi field đổi và sinh UPDATE',prompt:`Cài {{MiniContext}} theo dõi entity {{Row}} có id, name, email. snapshot lưu giá trị lúc load. setField(id, field, value) đặt giá trị và đánh dấu field dirty. flush() sinh câu UPDATE chỉ các cột dirty (theo thứ tự name, email), rồi reset dirty và cập nhật snapshot. Nếu không dirty trả về rỗng.`,
+  starter:`class Row {long id;String name;String email;Row(long i,String n,String e){id=i;name=n;email=e;}}
+class MiniContext {
+    Map<Long,Row> entities=new HashMap<>();
+    Map<Long,Map<String,String>> snapshot=new HashMap<>();
+    Map<Long,Set<String>> dirty=new HashMap<>();
+    void load(Row r){throw new UnsupportedOperationException("TODO");}
+    void setField(long id,String field,String value){throw new UnsupportedOperationException("TODO");}
+    List<String> flush(){throw new UnsupportedOperationException("TODO");}
+}`,
+  tests:`public class Main {
+    static int passed=0,total=0;
+    static void check(String name,boolean ok,String detail){total++;if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+detail);}
+    public static void main(String[] args){
+        MiniContext ctx=new MiniContext();
+        Row r=new Row(1,"A","a@x");
+        ctx.load(r);
+        ctx.setField(1,"name","B");
+        List<String> sql=ctx.flush();
+        check("only changed column",sql.equals(List.of("UPDATE row SET name='B' WHERE id=1")),"sql="+sql);
+        check("dirty cleared",ctx.flush().isEmpty(),"second flush should be empty");
+        ctx.setField(1,"name","C");ctx.setField(1,"email","c@x");
+        List<String> sql2=ctx.flush();
+        check("multiple changed columns",sql2.equals(List.of("UPDATE row SET name='C', email='c@x' WHERE id=1")),"sql="+sql2);
+        ctx.load(new Row(2,"X","x@x"));
+        ctx.setField(2,"email","y@x");
+        check("per entity",ctx.flush().equals(List.of("UPDATE row SET email='y@x' WHERE id=2")),"sql="+ctx.flush());
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+  reference:`class Row {long id;String name;String email;Row(long i,String n,String e){id=i;name=n;email=e;}}
+class MiniContext {
+    Map<Long,Row> entities=new HashMap<>();
+    Map<Long,Map<String,String>> snapshot=new HashMap<>();
+    Map<Long,Set<String>> dirty=new HashMap<>();
+    void load(Row r){entities.put(r.id,r);Map<String,String> s=new HashMap<>();s.put("name",r.name);s.put("email",r.email);snapshot.put(r.id,s);dirty.put(r.id,new LinkedHashSet<>());}
+    void setField(long id,String field,String value){Row r=entities.get(id);if(field.equals("name"))r.name=value;else if(field.equals("email"))r.email=value;dirty.get(id).add(field);}
+    List<String> flush(){
+        List<String> out=new ArrayList<>();
+        for(Long id:entities.keySet()){
+            Set<String> d=dirty.get(id);
+            if(d==null||d.isEmpty())continue;
+            List<String> cols=new ArrayList<>();
+            if(d.contains("name"))cols.add("name='"+entities.get(id).name+"'");
+            if(d.contains("email"))cols.add("email='"+entities.get(id).email+"'");
+            out.add("UPDATE row SET "+String.join(", ",cols)+" WHERE id="+id);
+            Map<String,String> s=snapshot.get(id);s.put("name",entities.get(id).name);s.put("email",entities.get(id).email);
+            d.clear();
+        }
+        return out;
+    }
+}`,
+  hints:['load lưu snapshot name/email; setField đổi giá trị và thêm field vào dirty set.','flush chỉ sinh cột dirty theo thứ tự name rồi email; sau đó clear dirty và cập nhật snapshot.'],
+  explain:`Bài tập tách bạch: load (snapshot), setField (dirty), flush (sinh UPDATE + reset). Lỗi hay gặp: sinh UPDATE tất cả cột dù không dirty; quên reset dirty → flush lặp; không cập nhật snapshot → lần sau vẫn coi là dirty. Ở Hibernate thật, @DynamicUpdate bật thì câu SQL chỉ gồm cột dirty, nhưng dirty checking vẫn so toàn bộ property.`,
+  }],
+  check:[{q:'@DynamicUpdate sinh UPDATE với những cột nào?',options:['Tất cả cột','Chỉ các cột đã đổi','Chỉ cột @Version','Chỉ cột not-null'],answer:1,explain:'@DynamicUpdate làm Hibernate sinh UPDATE chỉ các cột dirty (đã đổi), câu SQL thay đổi theo tập cột. Mặc định (không @DynamicUpdate) sinh UPDATE tất cả cột để câu SQL cố định.'},{q:'Khi nào @DynamicUpdate thường không đáng dùng?',options:['Entity có 50 cột và thường đổi 1 cột','Entity nhỏ ít cột','Bảng có trigger','Tranh chấp cao'],answer:1,explain:'Entity nhỏ ít cột: chi phí build SQL động và mất cache câu SQL chuẩn bị sẵn không bù lại lợi ích. @DynamicUpdate hợp entity nhiều cột đổi ít.'},{q:'Dirty checking so sánh entity với cái gì?',options:['Database hiện tại','Snapshot lúc load vào context','Cache L2','Index'],answer:1,explain:'Hibernate lưu snapshot của entity lúc load vào persistence context; flush so entity hiện tại với snapshot theo từng property. Nếu không có snapshot (entity new) thì coi là insert.'}],
+  related:['jpa-008','jpa-017'],
+  tags:['dirty checking','@DynamicUpdate','snapshot','flush']
+},
+{
+  id:'lesson-jpa-020',track:'jpa',order:20,title:'Optimistic locking: bulk update và retry có giới hạn với backoff',level:'senior',minutes:30,
+  goals:['Biết bulk JPQL UPDATE không tự tăng @Version và cách xử lý','Mô phỏng retry có giới hạn với backoff khi xung đột','Hiểu idempotency và áp dụng lại ý định thay vì ghi lại giá trị cũ','Biết khi nào trả 409 thay vì retry'],
+  body:`### Hiểu nhanh: bulk update và retry
+Bulk JPQL {{UPDATE}} đi thẳng xuống DB, bỏ qua persistence context và dirty checking, nên {{@Version}} **không** tự tăng. Phải viết {{SET version = version + 1}} hoặc dùng {{update versioned}} (HQL riêng của Hibernate). Retry sau xung đột phải có giới hạn (ví dụ 3 lần) và backoff nhỏ; nếu dữ liệu nghiệp vụ đã đổi (giá mới) thì trả 409 để người dùng xem lại thay vì retry mù.
+
+### Vì sao bulk update làm hỏng optimistic locking
+Optimistic locking của JPA dựa trên một quy ước: **mọi lần ghi đều tăng version**. Khi bạn sửa entity đã load rồi flush, Hibernate sinh câu lệnh dạng:
+
+~~~sql
+UPDATE account SET balance = 150, version = 8
+WHERE id = 1 AND version = 7;   -- 0 dòng bị ảnh hưởng => OptimisticLockException
+~~~
+
+Bulk JPQL thì khác: Hibernate dịch thẳng sang SQL, không đi qua entity, không biết cột version là gì (trừ khi bạn nói). Hậu quả thực tế:
+- Transaction A load account version 7, đang giữ trong memory.
+- Job đêm chạy {{UPDATE Account a SET a.balance = a.balance * 1.01}}: balance đổi, version **vẫn là 7**.
+- A flush với {{WHERE version = 7}}: khớp, ghi đè mất tiền lãi vừa cộng. Không có exception nào báo cho bạn.
+
+Cách sửa:
+
+~~~java
+// Tự tăng version trong JPQL chuẩn
+em.createQuery("""
+    UPDATE Account a
+    SET a.balance = a.balance * :rate, a.version = a.version + 1
+    WHERE a.status = :status""")
+  .setParameter("rate", new BigDecimal("1.01"))
+  .setParameter("status", Status.ACTIVE)
+  .executeUpdate();
+// Hibernate: "update versioned Account a set ..." tự tăng version
+// Sau bulk update: em.clear() để persistence context không giữ entity cũ
+~~~
+
+Lưu ý thêm: bulk update **không** đồng bộ persistence context hiện tại. Entity đã load trước đó vẫn mang giá trị cũ, nên hãy chạy bulk ở transaction riêng hoặc gọi {{em.clear()}} ngay sau. Với Spring Data, dùng {{@Modifying(clearAutomatically = true)}}.
+
+### Cơ chế retry đúng
+1. Mỗi lần thử mở **transaction mới**, đọc lại entity với version mới nhất. Retry bên trong cùng transaction là vô ích, vì persistence context vẫn giữ bản cũ và transaction đã bị đánh dấu rollback-only.
+2. Áp dụng lại **ý định** (ví dụ cộng delta 50), không ghi lại giá trị đã tính từ lần đọc trước.
+3. Commit với version mới; nếu lại xung đột, tăng số lần thử và chờ backoff.
+4. Sau N lần fail: trả 409 hoặc ném exception cho caller quyết định.
+
+Retry phải nằm **ngoài** biên transaction. Trong Spring, nếu {{@Retryable}} và {{@Transactional}} đặt trên cùng method thì thứ tự proxy quyết định retry có mở transaction mới không. Cách an toàn: một bean ngoài làm retry, gọi sang bean có {{@Transactional}}.
+
+### Backoff và giới hạn: vì sao cần
+| Cấu hình | Hệ quả |
+|---|---|
+| Retry vô hạn, không backoff | Nhiều request cùng tranh một hàng, cùng thất bại rồi cùng thử lại ngay: livelock, CPU và DB tăng vọt |
+| 3 lần, backoff 10–50 ms + jitter | Đủ cho xung đột ngắn (2 người bấm cùng lúc); các request tự lệch nhau |
+| Xung đột kéo dài (hàng "nóng") | Retry không cứu được; cần đổi thiết kế: hàng đợi, pessimistic lock, tách bộ đếm |
+
+Jitter (cộng ngẫu nhiên vài ms) giúp các request không đồng loạt thử lại cùng thời điểm.
+
+### Idempotency
+Operation phải idempotent theo ý định: áp dụng lại nhiều lần vẫn cho kết quả đúng. "Cộng 50 vào số dư hiện tại" đúng khi đọc lại state mỗi lần thử; "đặt balance = 200" (giá trị tính từ lần đọc cũ) sẽ ghi đè thay đổi của người khác. Nếu operation gọi ra ngoài (gửi email, gọi payment gateway), đừng đặt trong vòng retry: dùng idempotency key hoặc outbox.
+
+### Khi nào trả 409 thay vì retry
+- Người dùng đã nhìn thấy dữ liệu cũ và ra quyết định dựa trên nó (sửa form sản phẩm, duyệt giá): retry âm thầm là sai, phải trả 409 để họ xem bản mới.
+- Hệ thống tự tính (cộng điểm, trừ tồn kho theo delta): retry an toàn.
+
+> Pitfall production: bắt {{OptimisticLockException}} bên trong method {{@Transactional}} rồi "thử lại" ngay trong đó. Exception thường nổ lúc commit (sau khi method đã return), nên khối catch không bao giờ chạy; nếu có chạy thì transaction đã rollback-only.
+
+### Liên hệ phỏng vấn
+"Bulk update có tăng version không? Retry thế nào?" Trả lời: không tự tăng, phải {{SET version = version + 1}} hoặc {{update versioned}}, và clear persistence context. Retry bằng transaction mới, áp dụng lại ý định, giới hạn 3 lần với backoff + jitter, đặt retry ngoài biên {{@Transactional}}. Dữ liệu người dùng đã xem bị đổi thì trả 409. Hàng nóng xung đột liên tục là dấu hiệu cần đổi thiết kế, không phải tăng số lần retry.`,
+  exercises:[{title:'Retry có giới hạn và backoff',prompt:`Cài {{RetryService}} gọi operation {{op}} (Runnable ném {{ConflictException}} khi xung đột). Thử tối đa {{maxAttempts}} lần; mỗi lần fail tăng backoff (delayMs += 10). Nếu thành công trả true; nếu hết lần ném {{IllegalStateException}}. Ghi lại số lần thử vào {{attempts}}.`,
+  starter:`class ConflictException extends RuntimeException {}
+class RetryService {
+    int maxAttempts=3;
+    int attempts=0;
+    int delayMs=0;
+    boolean run(Runnable op){throw new UnsupportedOperationException("TODO");}
+}`,
+  tests:`public class Main {
+    static int passed=0,total=0;
+    static void check(String name,boolean ok,String detail){total++;if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+detail);}
+    public static void main(String[] args){
+        RetryService s=new RetryService();
+        s.maxAttempts=3;
+        int[] calls={0};
+        boolean ok=s.run(()->{calls[0]++;if(calls[0]<2)throw new ConflictException();});
+        check("succeeds on second attempt",ok && s.attempts==2 && calls[0]==2,"ok="+ok+", attempts="+s.attempts);
+        check("backoff grows",s.delayMs==10,"delayMs="+s.delayMs);
+        RetryService s2=new RetryService();
+        s2.maxAttempts=2;
+        int[] calls2={0};
+        boolean thrown=false;
+        try{s2.run(()->{calls2[0]++;throw new ConflictException();});}catch(IllegalStateException e){thrown=true;}
+        check("gives up after max",thrown && s2.attempts==2 && calls2[0]==2,"thrown="+thrown+", attempts="+s2.attempts);
+        RetryService s3=new RetryService();
+        s3.maxAttempts=1;
+        boolean ok3=s3.run(()->{});
+        check("single attempt success",ok3 && s3.attempts==1,"ok="+ok3+", attempts="+s3.attempts);
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+  reference:`class ConflictException extends RuntimeException {}
+class RetryService {
+    int maxAttempts=3;
+    int attempts=0;
+    int delayMs=0;
+    boolean run(Runnable op){
+        for(int i=0;i<maxAttempts;i++){
+            attempts++;
+            try{op.run();return true;}
+            catch(ConflictException e){delayMs+=10;if(i==maxAttempts-1)throw new IllegalStateException("conflict after "+maxAttempts+" attempts");}
+        }
+        return false;
+    }
+}`,
+  hints:['Moi lan thu tang attempts; thanh cong return true.','Khi fail, delayMs += 10; neu la lan cuoi thi throw IllegalStateException.'],
+  explain:`Bài tập mô phỏng retry loop với backoff. Lỗi hay gặp: retry vô hạn; không tăng backoff; ném exception sai loại; đếm attempts sai. Ở ứng dụng thật, mỗi lần thử là transaction mới, backoff có thể exponential với jitter, và sau N lần fail trả 409.`,
+  }],
+  check:[{q:'Bulk JPQL UPDATE có tự tăng @Version không?',options:['Có, Hibernate tự tăng','Không, bypass dirty checking; phải SET version = version + 1','Tùy database','Chỉ khi có @Modifying'],answer:1,explain:'Bulk JPQL UPDATE đi thẳng DB, không đi qua persistence context nên @Version không tự tăng. Phải viết SET version = version + 1 hoặc dùng HQL VERSIONED.'},{q:'Khi nào nên trả 409 thay vì retry?',options:['Xung đột do tải cao tạm thời','Dữ liệu nghiệp vụ đã đổi (giá mới) cần người dùng xem lại','Lần thử đầu tiên fail','Khi dùng pessimistic lock'],answer:1,explain:'Retry chỉ hợp xung đột tạm thời do tranh chấp. Nếu dữ liệu nghiệp vụ đã thay đổi (ví dụ giá mới), retry mù sẽ ghi đè ý định người dùng → nên trả 409 để họ xem lại và quyết định.'},{q:'Idempotency trong retry nghĩa là gì?',options:['Retry vô hạn','Áp dụng lại ý định cho kết quả đúng dù chạy nhiều lần','Không retry','Dùng cùng transaction'],answer:1,explain:'Operation idempotent: áp dụng lại ý định (cộng delta) cho kết quả đúng dù chạy nhiều lần. Ghi lại giá trị cũ (đặt balance=200) không idempotent và sai nghiệp vụ.'}],
+  related:['jpa-024','jpa-011'],
+  tags:['optimistic locking','bulk update','retry','backoff','409']
 }
 );
+

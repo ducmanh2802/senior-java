@@ -2507,5 +2507,385 @@ Tôi tách hai loại token: access token ngắn hạn 10 phút giữ trong bi�
   tags: ['security', 'jwt', 'refresh-token', 'csrf', 'xss', 'single-flight'],
   follow: ['rotation và reuse detection hoạt động thế nào', 'SameSite Lax khác Strict ra sao', 'guard ở client vì sao không phải bảo mật']
 },
+{
+  id: 'frontend-034',
+  topic: 'frontend',
+  level: 'mid',
+  q: 'React là gì, và đối với dev Java, component, props, state, useEffect hiểu đơn giản như thế nào? So sánh nhanh với Vue mà file đã có, và nêu lỗi hay gặp khi dùng useEffect.',
+  a: `**Tóm tắt:** React là thư viện JavaScript xây dựng giao diện người dùng bằng component; mỗi component là một hàm JavaScript trả về JSX (cú pháp trộn HTML và JavaScript), chạy trên trình duyệt và tự vẽ lại DOM khi dữ liệu thay đổi. Props là dữ liệu cha truyền xuống con, state là dữ liệu component tự quản, useEffect chạy tác vụ bên ngoài (gọi API, đặt timer) sau khi render.
+
+### Component, props và state
+Component là hàm nhận một đối tượng props duy nhất và trả về JSX. Tương tự @Component trong Spring tạo bean xử lý request, React component tạo phần tử giao diện. Props chỉ đọc, component con không được sửa props (giống tham số Java final).
+State tạo bằng useState: component nhớ giá trị giữa các lần render; khi gọi setState, React đánh dấu component cần render lại. Tương tự data() trong Vue hoặc trường state của một model Spring MVC.
+
+useEffect(callback, deps) chạy sau khi React vẽ DOM lên trình duyệt:
+- deps là []: chạy một lần sau lần render đầu (giống onMounted của Vue, hoặc @PostConstruct trong Spring).
+- deps là [loai]: chạy lại khi biến loai đổi.
+- Hàm trả về từ useEffect là cleanup: dùng để hủy timer, ngắt kết nối, hủy AbortController (giống onUnmounted của Vue, hoặc @PreDestroy).
+
+### Vòng đời render, từng bước
+1. React gọi hàm component, nhận JSX.
+2. React so sánh JSX mới với cây trước (reconciliation), tính toán phần DOM thực sự cần đổi (virtual DOM).
+3. Trình duyệt vẽ lại các phần tử đã đổi.
+4. State đổi hoặc useEffect cập nhật state → quay lại bước 1 cho các component liên quan.
+
+### So sánh React với Vue 3
+| Điểm | React | Vue 3 |
+|---|---|---|
+| Khai báo giao diện | JSX trong JavaScript | Template HTML hoặc JSX |
+| Theo dõi dữ liệu | Chạy lại hàm component khi setState | Proxy theo dõi, vẽ lại phần đổi |
+| State cục bộ | useState | ref / reactive |
+| Side effect sau render | useEffect | onMounted / watch |
+| Truyền dữ liệu cha-con | Props xuống, hàm xuống con để gọi | Props + emit |
+
+### Ví dụ code
+~~~text
+import { useState, useEffect } from 'react';
+
+function DanhSachDonHang({ loai }) {               // props: loai (loại: tổng/hiển thị)
+  const [donHangs, setDonHangs] = useState([]);     // state: danh sách đơn hàng
+  const [daTai, setDaTai] = useState(false);
+
+  useEffect(function () {
+    fetch('/api/don-hang?loai=' + loai)             // gọi API sau khi render
+      .then(function (res) { return res.json(); })
+      .then(function (ds) {
+        setDonHangs(ds);
+        setDaTai(true);
+      });
+  }, [loai]);                                         // chỉ chạy lại khi loai đổi
+
+  return (
+    <div>
+      {daTai ? <div>Có {donHangs.length} đơn</div> : <div>Đang tải...</div>}
+    </div>
+  );
+}
+~~~
+
+### Lỗi hay gặp
+- Quên dependency array: useEffect chạy lại mỗi lần render, nếu cập nhật state ở trong → render lặp vô hạn, trang treo.
+- Thiếu biến trong dependency array: callback sử dụng giá trị cũ (stale closure), vì đổi loại không gọi lại API.
+- Gọi setState trực tiếp trong khối thực thi component (ngoài sự kiện/useEffect) → lỗi 'Too many re-renders'.
+- Quên cleanup (timer, sự kiện, AbortController) -> callback chạy trên component đã bị xóa, rò rỉ bộ nhớ.
+
+### Ví dụ đời thực
+Trang đăng ký bảo hiểm online có 3 bước. Bước 2 hiển thị danh sách gói bảo hiểm. Dev viết useEffect không có dependency array: mỗi lần người dùng gõ tên, component render lại, useEffect gọi API lấy gói, setState, render lại... sau 5 lần gõ đã gọi API 5 lần, trang bị giật. Sửa bằng thêm [loai] và chỉ gọi khi cần. Đo trên trình duyệt: trước khi sửa, 12 API call trong 1 giây nhập liệu; sau khi sửa, 1 call.
+
+### Trả lời mẫu khi phỏng vấn
+React là thư viện xây dựng giao diện bằng component, mỗi component là hàm JavaScript trả về JSX. Props là dữ liệu cha truyền xuống con, chỉ đọc; state là dữ liệu component tự quản bằng useState, khi đổi render lại component. useEffect chạy tác vụ bên ngoài sau khi render, dependency array kiểm soát khi chạy lại, cleanup hủy timer hoặc kết nối. Khác Vue: React chạy lại hàm component mỗi khi state đổi, Vue dùng Proxy theo dõi dữ liệu và chỉ vẽ lại phần cần thiết. Lỗi hay gặp là quên dependency array gây render lặp, và thiếu biến trong array dẫn đến sử dụng giá trị cũ. Tôi luôn viết useEffect với dependency array rõ ràng và trả về hàm cleanup khi gọi API.
+
+> Senior tip: State của một component React mất khi component bị xóa khỏi DOM. Nếu dữ liệu cần tồn tại khi người dùng nhấn nút quay lại trình duyệt hoặc chuyển tab, lưu vào sessionStorage (bản nháp) hoặc state chung (Zustand/Redux), không được bảo giữ state cơ bản của component.
+`,
+  tags: ['react', 'javascript', 'frontend', 'jd-2026-12'],
+  follow: ['useState', 'useEffect dependency array', 'virtual DOM'],
+},
+{
+  id: 'frontend-035',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Bạn thiết kế form đăng ký bảo hiểm online nhiều bước trong React như thế nào: quản lý state, validation client và server (Bean Validation), lưu nháp, chống submit hai lần, hiển thị lỗi từ API?',
+  a: `**Tóm tắt:** Form nhiều bước chia dữ liệu thành các bước (thông tin cá nhân, nội dung bảo hiểm, thanh toán). State tập trung ở component cha hoặc store ngân hàng (Zustand/Context) gồm bước hiện tại, dữ liệu form, lỗi, trạng thái đang gửi. Validation client phản hồi ngay, validation server (Spring Bean Validation) là định đoạt cuối cùng. Lưu nháp vào sessionStorage để không mất khi F5. Dùng cờ submitting + idempotency-key để chống submit hai lần. Hiển thị lỗi server theo từng trường.
+
+### Các bước thiết kế
+1. State tập trung: đối tượng form có các trường theo từng bước, plus bước hiện tại, errors, submitting.
+2. Validation client: mỗi bước có hàm kiểm tra (họ tên không trống, CMND 9-12 chữ số, ngày sinh hợp lệ...), ẩn nút Tiếp theo nếu chưa hợp lệ.
+3. Gọi server: axios POST /api/dang-ky-bao-hiểm, Spring Boot dùng @Valid với Bean Validation (@NotBlank, @Size, @Pattern, @Past), nếu sai trả HTTP 400 kèm map lỗi từng trường.
+4. Hiển thị lỗi: nhận body lỗi, gán errors[tênTrường], hiển thị dưới ô nhập, focus ô đầu tiên bị lỗi.
+5. Lưu nháp: sau mỗi lần thay đổi, ghi form vào sessionStorage; vào lại trang, khôi phục.
+6. Chống submit hai lần: cờ submitting đặt true ngay đồng bộ khi bấm, idempotency-key UUID gửi kèm header, server lưu phản hồi trong Redis 24 giờ.
+
+### Ví dụ code client (React)
+~~~text
+import { useState, useEffect } from 'react';
+
+function FormDangKy() {
+  const [step, setStep] = useState(1);                  // bước hiện tại
+  const [form, setForm] = useState({ hoTen: '', cmnd: '', goiBaoHiem: '' });
+  const [errors, setErrors] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [serverError, setServerError] = useState(null);
+
+  // khôi phục nháp khi vào trang
+  useEffect(function () {
+    var luu = sessionStorage.getItem('form-dang-ky');
+    if (luu) setForm(JSON.parse(luu));
+  }, []);
+
+  useEffect(function () {
+    sessionStorage.setItem('form-dang-ky', JSON.stringify(form));
+  }, [form]);
+
+  function kiểmTra() {
+    var loi = {};
+    if (!form.hoTen || form.hoTen.trim().length < 2) loi.hoTen = 'Họ tên ít nhất 2 ký tự';
+    if (/^\\d{9,12}$/.test(form.cmnd) === false) loi.cmnd = 'CMND phải 9-12 chữ số';
+    setErrors(loi);
+    return Object.keys(loi).length === 0;
+  }
+
+  async function gui() {
+    if (!kiemTra() || submitting) return;
+    setSubmitting(true);
+    try {
+      var key = form.idempotencyKey || crypto.randomUUID();
+      setForm(function (cu) { return Object.assign({}, cu, { idempotencyKey: key }); });
+      await axios.post('/api/dang-ky-bao-hiem', form, {
+        headers: { 'Idempotency-Key': key }
+      });
+      setStep(step + 1);
+    } catch (e) {
+      if (e.response && e.response.status === 400) setServerError(e.response.data); // {hoTen: '...', cmnd: '...'}
+      else setServerError({ _: 'Hệ thống lỗi, vui lòng thử lại' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+}
+~~~
+
+### Ví dụ code server (Spring Boot)
+~~~java
+public class DangKyDto {
+  @NotBlank(message = "Họ tên không được để trống")
+  @Size(min = 2, max = 100)
+  private String hoTen;
+
+  @Pattern(regexp = "\\d{9,12}", message = "CMND phải 9-12 chữ số")
+  private String cmnd;
+}
+
+@RestController
+@RequestMapping("/api/dang-ky-bao-hiem")
+public class DangKyController {
+  @PostMapping
+  public ResponseEntity<?> dangKy(@Valid @RequestBody DangKyDto dto,
+                                  BindingResult result) {
+    if (result.hasErrors()) {
+      var loi = result.getFieldErrors().stream().collect(
+        Collectors.toMap(fe -> fe.getField(), fe -> fe.getDefaultMessage(), (a, b) -> a));
+      return ResponseEntity.badRequest().body(loi);
+    }
+    return ResponseEntity.status(201).build();
+  }
+}
+~~~
+
+@Valid chạy Bean Validation trước khi controller chạy (giống AOP). BindingResult chứa lỗi từng trường.
+
+### Lỗi hay gặp
+- Chỉ validation client: attacker gọi API trực tiếp bằng Postman/curl, dữ liệu rác vào CSDL.
+- Quên @Valid ở controller: Bean Validation không chạy.
+- Trả lời chung chung 'Có lỗi xảy ra': người dùng không biết sửa trường nào.
+- Lưu nháp dữ liệu nhạy cảm (CMND, số thẻ) vào sessionStorage: vi phạm bảo mật tài chính, chỉ lưu dữ liệu không nhạy cảm.
+- Không khóa nút submit: người dùng bấm nhầm hai lần tạo hai đơn bảo hiểm.
+- Xoá form khi lỗi server: người dùng phải nhập lại 10 trường.
+
+### Ví dụ đời thực
+Hệ thống đăng ký bảo hiểm online, 1500 đăng ký/ngày. Ban đầu chỉ validation client, 4% đơn thiếu CMND do công cụ gọi API trực tiếp. Thêm @Valid server và trả lời từng trường, tỉ lệ sai giảm xuống 0.3%. Thêm idempotency-key: đơn trùng từ 3% xuống 0. Lưu nháp sessionStorage: sau một tháng, số lần khách hàng bỏ form do mất dữ liệu khi F5 giảm 60 lần.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi chia form đăng ký bảo hiểm thành các bước và giữ state tập trung (step, form, errors, submitting). Validation client kiểm tra từng trường ngay khi nhập và ẩn nút Tiếp theo nếu sai, nhưng tôi không bao giờ tin cậy client: Spring Boot dùng @Valid Bean Validation (@NotBlank, @Size, @Pattern) với BindingResult, sai trả HTTP 400 kèm map lỗi từng trường, React hiển thị dưới ô tương ứng và focus ô đầu tiên. Dữ liệu nháp ghi vào sessionStorage sau mỗi lần thay đổi, không lưu thông tin nhạy cảm. Chống submit hai lần bằng cờ submitting đặt ngay khi bấm và idempotency-key gửi kèm header, server lưu phản hồi trong Redis 24 giờ để lần gửi lại cùng key trả về đơn cũ, không tạo trùng.
+
+> Senior tip: Chỉ lưu nháp dữ liệu không nhạy cảm vào sessionStorage (CMND, số thẻ không được lưu). Validation client chỉ phục vụ trải nghiệm người dùng, server mới là định đoạt cuối cùng.
+`,
+  tags: ['react', 'form', 'validation', 'spring-boot', 'jd-2026-12'],
+  follow: ['Bean Validation @Valid', 'sessionStorage lưu nháp', 'idempotency-key chống submit hai lần'],
+},
+{
+  id: 'frontend-036',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Gọi REST API từ React tới Spring Boot cần xử lý gì: trạng thái tải, lỗi, hủy yêu cầu, retry, CORS và chuẩn lỗi RFC 9457 ProblemDetail của Spring 6?',
+  a: `**Tóm tắt:** Mọi gọi API từ React cần ba trạng thái: loading, data, error. Dùng AbortController để hủy yêu cầu khi component unmount hoặc người dùng thay đổi, tránh cập nhật state cho yêu cầu cũ. Retry hạn chế số lần (2–3 lần) với khoảng cách tăng dần (exponential backoff), không retry POST không idempotent. CORS cấu hình ở Spring Boot (WebMvcConfigurer), trình duyệt kiểm tra trước khi gửi. Lỗi server tuân theo RFC 9457 ProblemDetail (type, title, status, detail, instance) của Spring 6, client hiển thị detail cho người dùng.
+
+### Ba trạng thái của mỗi gọi API
+loading = true khi bắt đầu, data = null. Xong thì loading = false, data = kết quả. Bị lỗi thì error = thông báo, data giữ giá trị cũ (không xóa data cũ khi đang tải lại).
+
+### Ví dụ code
+~~~text
+import { useState, useEffect } from 'react';
+
+function useDanhSachDonHang(loai) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(function () {
+    var ctrl = new AbortController();
+    setLoading(true);
+    setError(null);
+    fetch('/api/don-hang?loai=' + loai, { signal: ctrl.signal })
+      .then(function (res) {
+        if (!res.ok) throw new Error('Lỗi ' + res.status);
+        return res.json();
+      })
+      .then(function (ds) {
+        setData(ds);
+      })
+      .catch(function (e) {
+        if (e.name === 'AbortError') return; // bị hủy, không phải lỗi người dùng
+        setError(e.message);
+      })
+      .finally(function () {
+        setLoading(false);
+      });
+    return function () { ctrl.abort(); }; // cleanup khi unmount hoặc loai đổi
+  }, [loai]);
+
+  return { data, loading, error };
+}
+~~~
+
+### Hủy yêu cầu (AbortController)
+Khi người dùng đổi loại đơn hàng nhanh, yêu cầu cũ có thể về sau yêu cầu mới (race condition). Cleanup trả ctrl.abort() trong useEffect, và callback kiểm tra xem yêu cầu còn mới nhất không (dùng biến đếm hoặc cờ) trước khi setState.
+
+### Retry
+Lưu số lần thất bại. Nếu lỗi mạng hoặc 5xx, đợi 1s, 2s, 4s rồi thử lại tối đa 3 lần. Không retry POST tạo đơn hàng nếu không có idempotency-key, tránh tạo đơn trùng.
+
+### CORS
+Trang React chạy http://localhost:3000, Spring API http://localhost:8080 là hai origin khác nhau. Trình duyệt chặn phản hồi nếu server không gửi Access-Control-Allow-Origin. Yêu cầu phức tạp (có header Authorization) gửi OPTIONS preflight trước. Spring cấu hình:
+
+~~~java
+@Configuration
+public class CorsConfig implements WebMvcConfigurer {
+  public void addCorsMappings(CorsRegistry registry) {
+    registry.addMapping("/api/**")
+      .allowedOrigins("http://localhost:3000")
+      .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+      .allowedHeaders("*")
+      .allowCredentials(true)
+      .maxAge(3600);
+  }
+}
+~~~
+
+allowCredentials(true) không dùng chung với allowedOrigins("*") (trình duyệt sẽ chặn). CORS chỉ kiểm soát trình duyệt; curl/Postman vẫn gọi được, nên bảo mật thực sự là Spring Security (JWT + phân quyền).
+
+### RFC 9457 ProblemDetail (Spring 6)
+Spring 6 có ProblemDetail: đối tượng lỗi chuẩn có type (URI kiểu lỗi), title, status, detail, instance. ControllerAdvice bắt lỗi và trả ProblemDetail:
+
+~~~java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+  @ExceptionHandler(MethodArgumentNotValidException.class)
+  public ProblemDetail validationInvalid(MethodArgumentNotValidException ex) {
+    ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+    pd.setTitle("Dữ liệu không hợp lệ");
+    pd.setDetail("Vui lòng kiểm tra các trường dưới đây");
+    Map<String, String> errors = new HashMap<>();
+    ex.getBindingResult().getFieldErrors()
+      .forEach(f -> errors.put(f.getField(), f.getDefaultMessage()));
+    pd.setProperty("errors", errors);
+    return pd;
+  }
+}
+~~~
+
+Client nhận body gồm {{type}}, {{title}}, {{status}}, {{detail}} và {{errors}} (map tên trường sang thông báo, ví dụ {{hoTen}}), hiển thị detail và map lỗi từng trường, không hard-code chuỗi lỗi ở client.
+
+### Lỗi hay gặp
+- setState trong .then của yêu cầu đã bị hủy → cảnh báo 'Can\'t perform a React state update on an unmounted component'.
+- Không kiểm tra res.ok: HTTP 404/500 vẫn vào .then, client coi như thành công.
+- Retry POST không idempotent: tạo nhiều đơn hàng khi mạng giật.
+- Dùng '*' cho allowedOrigins("*") khi allowCredentials(true): Spring khởi động lỗi hoặc trình duyệt chặn.
+- Quên credentials: 'include' ở fetch/axios: cookie và Authorization không được gửi.
+- Hard-code thông báo lỗi client: khi server thay đổi message, client hiển thị sai.
+
+### Ví dụ đời thực
+Trang quản lý đơn bảo hiểm, 2000 lượt truy cập/giờ. Gọi API danh sách đơn mỗi 30 giây, người dùng chuyển tab nhanh. Trước đây không có AbortController, phản hồi của tab cũ ghi đè dữ liệu của tab mới, khách hàng xem sai đơn. Sau khi thêm AbortController và kiểm tra seq, sai dữ liệu về 0, và số request rác giảm 700 call/giờ.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi gọi API từ React bằng axios/fetch và luôn giữ ba trạng thái loading, data, error. Mỗi effect tạo AbortController, trả hàm cleanup abort khi component unmount hoặc tham số đổi, tránh cập nhật state cho yêu cầu cũ. Lỗi mạng hoặc 5xx tôi retry tối đa 3 lần với thời gian chờ tăng dần; POST tạo đơn không retry nếu không có idempotency-key. CORS cấu hình ở Spring Boot bằng WebMvcConfigurer, liệt kê domain frontend và allowCredentials(true) khi dùng cookie, không dùng '*'. Lỗi server theo RFC 9457 ProblemDetail (type, title, status, detail, instance), client hiển thị detail và map lỗi từng trường thay vì hard-code chuỗi. CORS chỉ điều khiển trình duyệt, bảo mật thực sự vẫn ở Spring Security.
+
+> Senior tip: Không bao giờ retry POST không idempotent tự động nếu không xác nhận server đã chưa xử lý; nếu không chắc, hiển thị 'Giao dịch đang xử lý, vui lòng kiểm tra lại sau phút' thay vì tạo đơn trùng.
+`,
+  tags: ['react', 'rest-api', 'spring-boot', 'cors', 'problemdetail', 'jd-2026-12'],
+  follow: ['AbortController', 'RFC 9457 ProblemDetail', 'CORS WebMvcConfigurer'],
+},
+{
+  id: 'frontend-037',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Xác thực trên SPA tài chính (ngân hàng/bảo hiểm) lưu token ở đâu: cookie HttpOnly hay localStorage? Giải thích CSRF, refresh token và thời gian hết hạn phiên theo quy định ngành tài chính.',
+  a: `**Tóm tắt:** JWT access token ngắn hạn (10–15 phút) lưu trong biến JavaScript hoặc cookie HttpOnly; refresh token dài hạn trong cookie HttpOnly, Secure, SameSite. Cookie HttpOnly JavaScript không đọc được nên XSS không trộm được token, nhưng trình duyệt tự động gửi cookie nên cần CSRF protection. Theo quy định ngân hàng/bảo hiểm, phiên chờ thao tác hết hạn 15–30 phút, phiên làm việc tối đa 4–8 giờ, sau đó bắt nhập lại mật khẩu.
+
+### Nơi lưu token
+| Nơi lưu | JavaScript đọc được | XSS trộm được | Trình duyệt gửi kèm yêu cầu | Ghi chú |
+| localStorage | Có | Có | Không | Không dùng cho token tài chính |
+| sessionStorage | Có | Có | Không | Mất khi đóng tab, vẫn bị XSS |
+| Biến JS (bộ nhớ trong) | Không | Không | Không | Mất khi F5 |
+| Cookie HttpOnly | Không | Không | Có | Cần SameSite + CSRF token |
+
+Kiến trúc khuyên dùng cho tài chính: access token 10–15 phút trong biến JS, refresh token trong cookie HttpOnly/Secure/SameSite=Strict, path=/api/auth. Khi access hết hạn, server trả 401, client gọi /api/auth/refresh kèm cookie refresh, server xoay token (phát refresh mới, đánh dấu cũ đã dùng). Nếu refresh bị dùng lại → thu hồi toàn bộ phiên, bắt đăng nhập lại.
+
+### CSRF
+Cookie được trình duyệt gửi vào mọi yêu cầu cùng domain, kể cả yêu cầu từ trang kẻ tấn công. Ba lớp phòng thủ: SameSite=Strict hoặc Lax; kiểm tra Origin/Referer ở server; CSRF token double-submit (server cấp token ngẫu nhiên, client gửi lại trong header, server so khớp). Với API JSON và CORS whitelist, SameSite + Origin thường đã đủ, vẫn nên có CSRF token cho các yêu cầu ghi (chuyển tiền, thanh toán bảo hiểm).
+
+### Thời gian hết hạn phiên theo quy định tài chính
+- Thời gian chờ không thao tác (idle timeout): 15–30 phút, sau đó bắt đăng nhập lại trước khi thực thi giao dịch nhạy cảm.
+- Thời gian phiên tối đa (absolute timeout): 4–8 giờ, bắt nhập lại mật khẩu dù vẫn đang thao tác.
+- Refresh token dài hạn (7–14 ngày) chỉ dùng để lấy access token mới, không tự gia hạn phiên làm việc vô thời hạn.
+- Logout phải gọi server thu hồi refresh token, xóa cookie, xóa state client. Chỉ xóa token ở client thì session ở server vẫn còn, attacker với session cookie cũ vẫn có thể gọi API nếu cookie chưa thu hồi.
+
+### Ví dụ code client: single-flight refresh
+~~~text
+let accessToken = null;
+let refreshing = null;
+
+async function refresh() {
+  const res = await fetch('/api/auth/refresh', {
+    method: 'POST', credentials: 'include' // cookie refresh gửi kèm tự động
+  });
+  if (!res.ok) { accessToken = null; throw new Error('Hết hạn'); }
+  accessToken = res.headers.get('X-Access-Token');
+}
+
+async function request(url, opts = {}) {
+  const send = () => fetch(url, {
+    ...opts, credentials: 'include',
+    headers: { ...(opts.headers || {}), ...(accessToken ? { 'Authorization': 'Bearer ' + accessToken } : {}) }
+  });
+  let res = await send();
+  if (res.status !== 401) return res;
+  if (!refreshing) refreshing = refresh().finally(function () { refreshing = null; });
+  await refreshing;
+  if (!accessToken) throw new Error('Hết hạn session');
+  return send(); // gửi lại đúng một lần
+}
+~~~
+
+### Ví dụ code server: cookie và xoay token
+~~~java
+@PostMapping("/auth/refresh")
+ResponseEntity<Void> refresh(@CookieValue("rt") String rt, HttpServletResponse res) {
+  Session s = tokenService.rotate(rt); // thu hồi rt cũ, cấp rt mới
+  ResponseCookie cookie = ResponseCookie.from("rt", s.refreshToken())
+    .httpOnly(true).secure(true).sameSite("Strict")
+    .path("/api/auth").maxAge(Duration.ofDays(14)).build();
+  res.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+  return ResponseEntity.ok().header("X-Access-Token", s.accessToken()).build();
+}
+~~~
+
+### Lỗi hay gặp
+- Lưu cả access và refresh trong localStorage: một lỗ hổng XSS là mất tài khoản, attacker dùng token 14 ngày.
+- Refresh không xoay token: token đã lộ dùng được đến hết hạn.
+- Nhiều tab cùng hết hạn: 5 tab cùng refresh, các token bị xoay lẫn nhau, người dùng bị đăng xuất lẻ tẻ.
+- Chỉ dựa vào guard ở client để chặn truy cập: guard client chỉ điều hướng, API vẫn phải kiểm tra token ở mọi endpoint.
+- Logout chỉ xóa token ở client mà không thu hồi ở server: session cookie cũ vẫn hiệu lực.
+- SameSite=None thiếu Secure: trình duyệt không gửi cookie hoặc gửi trong ngữ cảnh không an toàn.
+
+### Ví dụ đời thực
+Ứng dụng quản lý bảo hiểm, 11.000 nhân viên. Ban đầu lưu JWT trong localStorage. Thư viện render markdown có lỗ hổng XSS, attacker đọc localStorage, chiếm 4 tài khoản và dùng token trong 11 ngày. Chuyển sang access token biến JS (15 phút) + refresh cookie HttpOnly/Secure/SameSite=Strict, thêm xoay token: cùng lỗ hổng XSS không đọc được token, và cửa sổ lạm dụng giảm từ 11 ngày xuống 2 phút. Áp dụng idle timeout 20 phút và absolute timeout 8 giờ theo quy định bảo mật thông tin ngân hàng.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi tách hai loại token trên SPA tài chính: access token ngắn hạn 15 phút lưu trong biến JavaScript (XSS không đọc được vì không ghi vào localStorage), refresh token 14 ngày trong cookie HttpOnly, Secure, SameSite=Strict. Khi 401, client dùng single-flight: các yêu cầu chờ một lời gọi refresh duy nhất, xong mới phát lại. Server xoay refresh token mỗi lần và đánh dấu đã dùng; token cũ dùng lại hai lần thì thu hồi toàn bộ phiên. Theo quy định ngân hàng/bảo hiểm, phiên chờ hết hạn 20 phút và phiên tối đa 8 giờ, sau đó bắt nhập lại mật khẩu. Logout gọi server thu hồi refresh token và xóa cookie, không chỉ xóa ở client. CSRF phòng bằng SameSite, kiểm tra Origin và CSRF token double-submit cho các yêu cầu ghi.
+
+> Senior tip: Cookie HttpOnly chặn XSS đọc token nhưng mở cửa CSRF; nên luôn kết hợp SameSite, kiểm tra Origin và CSRF token cho yêu cầu ghi. Guard ở client chỉ dùng để điều hướng, mọi endpoint API vẫn kiểm tra token và phân quyền ở server.
+`,
+  tags: ['react', 'security', 'jwt', 'csrf', 'session', 'spring-boot', 'jd-2026-12'],
+  follow: ['cookie HttpOnly vs localStorage', 'refresh token xoay', 'CSRF double-submit'],
+},
 );
 

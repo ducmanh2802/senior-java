@@ -17146,35 +17146,61 @@ redis-cli --latency
   topic: 'db',
   level: 'senior',
   q: 'Redis mã hoá cấu trúc dữ liệu bên trong (encoding) như listpack, skiplist, hashtable khác nhau thế nào và ảnh hưởng memory ra sao?',
-  a: `**Tóm tắt:** Redis chọn encoding nội bộ tuỳ size: nhỏ → listpack (compact, tiết kiệm RAM), lớn → hashtable/skiplist (truy cập nhanh). Encoding quyết định memory và tốc độ.
+  a: `**Tóm tắt:** Mỗi kiểu dữ liệu Redis có hai dạng lưu nội bộ: dạng **compact** (listpack, intset) cho object nhỏ, tiết kiệm RAM nhưng thao tác O(n), và dạng **tổng quát** (hashtable, skiplist, quicklist) cho object lớn, truy cập nhanh nhưng tốn overhead con trỏ. Redis tự chuyển khi vượt ngưỡng cấu hình, và chỉ chuyển một chiều; giữ key nhỏ dưới ngưỡng có thể giảm RAM vài lần.
 
 ### Kiến thức cần biết trước
-- Listpack: mảng liên tục compact.
-- Hashtable: bảng băm O(1).
-- Skiplist: danh sách nhiều tầng ordered, range query O(log N).
+- **listpack** (thay ziplist từ Redis 7.0): một khối byte liên tục, các phần tử nằm sát nhau, mỗi phần tử chỉ tốn vài byte header. Không có con trỏ, không có object riêng cho từng phần tử. Tìm một field phải duyệt tuần tự: O(n).
+- **intset**: mảng số nguyên đã sắp xếp, dùng cho Set chỉ chứa số nguyên. Tìm bằng binary search.
+- **hashtable (dict)**: mảng bucket + entry riêng cho từng field, mỗi entry có con trỏ key, value, next. Truy cập O(1) nhưng mỗi field tốn thêm vài chục byte.
+- **skiplist**: danh sách liên kết nhiều tầng có thứ tự, cho range query O(log N). Sorted Set lớn dùng **skiplist + dict**: dict cho {{ZSCORE}} O(1), skiplist cho {{ZRANGE}}/{{ZRANK}}.
+- **quicklist**: List là danh sách liên kết các node, mỗi node là một listpack (mặc định tối đa 8 KB, cấu hình {{list-max-listpack-size -2}}).
 
 ### Cơ chế từng bước
-1. Key nhỏ (Hash < 128 field) → listpack.
-2. Vượt ngưỡng → convert hashtable (rehash).
-3. Sorted Set nhỏ → listpack; lớn → skiplist + dict.
-4. Conversion khi ghi, có thể spike latency.
+| Kiểu | Dạng compact | Ngưỡng chuyển (mặc định) | Dạng lớn |
+|---|---|---|---|
+| Hash | listpack | {{hash-max-listpack-entries 128}}, {{hash-max-listpack-value 64}} byte | hashtable |
+| Sorted Set | listpack | {{zset-max-listpack-entries 128}}, {{zset-max-listpack-value 64}} | skiplist + dict |
+| Set số nguyên | intset | {{set-max-intset-entries 512}} | hashtable |
+| Set nhỏ (7.2+) | listpack | {{set-max-listpack-entries 128}}, value 64 | hashtable |
+| List | quicklist các listpack | kích thước mỗi node | (luôn quicklist) |
+
+1. Key mới tạo nhỏ: Redis dùng dạng compact.
+2. Một lệnh ghi làm vượt **số phần tử** hoặc có **một value dài hơn** ngưỡng: Redis chuyển toàn bộ key sang dạng lớn ngay trong lệnh đó. Key càng lớn, lần chuyển càng tốn CPU (Redis đơn luồng, nên các lệnh khác phải chờ).
+3. Chuyển **một chiều**: xoá bớt phần tử không làm key quay về listpack. Muốn thu nhỏ lại phải ghi lại key (ví dụ DUMP/RESTORE hoặc tạo key mới).
+
+Vì sao listpack tiết kiệm: một Hash 5 field ở dạng hashtable có dict, bucket array, 5 entry, mỗi field/value là một chuỗi SDS riêng với header và chi phí allocator. Ở dạng listpack, tất cả nằm trong một khối byte. Chênh lệch thường vài lần với object nhỏ.
 
 ### Ví dụ đời thực
-1 triệu user profile Hash 5 field nhỏ: hashtable ~200MB; listpack ~80MB. Tiết kiệm 60%.
+Dịch vụ lưu 10 triệu user profile, mỗi profile là Hash 6 field ngắn. Một đợt release thêm field {{bio}} (có user viết 300 ký tự):
+- Triệu chứng: RAM Redis tăng từ 3.1 GB lên 7.4 GB trong 2 tuần, dù số key gần như không đổi; {{INFO memory}} cho thấy {{used_memory}} tăng đều theo số user cập nhật bio.
+- Điều tra: lấy mẫu {{OBJECT ENCODING}} trên vài nghìn key: key có bio dài là {{hashtable}}, key còn lại là {{listpack}}. Nguyên nhân: value 300 byte vượt {{hash-max-listpack-value 64}}.
+- Xử lý: tách bio sang key String riêng ({{user:bio:id}}) để Hash profile luôn dưới ngưỡng; rewrite các key đã bị chuyển (đọc rồi ghi lại vào key mới).
+- Kết quả: RAM về 3.4 GB. Không tăng ngưỡng lên 512 byte vì listpack lớn làm HGET chậm (O(n) trên khối lớn) và lần chuyển dạng tốn CPU hơn.
 
 ### Tự thử trên máy
 ~~~bash
-redis-cli HSET u:1 name a age 30
-redis-cli OBJECT ENCODING u:1
+redis-cli HSET u:1 name an age 30
+redis-cli OBJECT ENCODING u:1        # "listpack"
 redis-cli MEMORY USAGE u:1
+redis-cli HSET u:1 bio "$(printf 'x%.0s' {1..100})"
+redis-cli OBJECT ENCODING u:1        # "hashtable": value > 64 byte
+redis-cli MEMORY USAGE u:1           # tăng rõ rệt
 ~~~
 
-### Tóm lại 3 ý
-1. Encoding tự động chọn theo size.
-2. Nhỏ = listpack tiết kiệm RAM; lớn = hashtable/skiplist nhanh.
-3. Hiểu encoding để tuning ngưỡng.
+### Khi nào chỉnh ngưỡng
+- Tăng ngưỡng (ví dụ 256 entries): tiết kiệm RAM thêm cho key cỡ vừa, đổi lại thao tác trên key đó chậm hơn. Hợp với workload đọc nguyên key ({{HGETALL}}).
+- Giữ mặc định hoặc giảm: key bị đọc/ghi từng field rất nhiều lần mỗi giây.
+- Đo trước khi chỉnh: {{redis-cli --bigkeys}}, {{--memkeys}}, {{MEMORY USAGE}} trên mẫu đại diện.
 
-> Senior tip: Dùng OBJECT ENCODING và MEMORY USAGE để audit.`,
+### Pitfall production
+- Một value dài duy nhất kéo cả key sang hashtable: thường do field tự do (mô tả, JSON lồng) nhét vào Hash.
+- Trick "bucket hashing" (chia 1 triệu key nhỏ thành các Hash 100 field) tiết kiệm RAM thật, nhưng mất TTL theo từng phần tử (Redis 7.4 mới có {{HEXPIRE}} cho từng field).
+- Key khổng lồ chuyển dạng giữa giờ cao điểm gây spike latency; theo dõi bằng {{LATENCY}} và slowlog.
+
+### Trả lời mẫu khi phỏng vấn
+"Redis không lưu mọi kiểu dữ liệu theo một cách. Hash, Sorted Set và Set nhỏ được lưu dạng compact: listpack hoặc intset, là một khối byte liền nhau, rất tiết kiệm RAM nhưng tìm kiếm tuần tự. Khi key vượt ngưỡng, mặc định 128 phần tử hoặc một value dài hơn 64 byte, Redis chuyển sang hashtable, hoặc skiplist cộng dict với Sorted Set, để truy cập O(1) hay O(log N), đổi lại tốn thêm overhead con trỏ cho từng phần tử. Việc chuyển chỉ một chiều và xảy ra ngay trong lệnh ghi, nên key lớn có thể gây spike latency. Trên production tôi từng gặp RAM tăng gấp đôi chỉ vì thêm một field mô tả dài vào Hash profile: một value vượt 64 byte kéo cả key sang hashtable. Tôi kiểm tra bằng OBJECT ENCODING và MEMORY USAGE, tách field dài ra key riêng và ghi lại các key cũ, RAM về mức cũ. Tôi chỉ chỉnh ngưỡng khi đã đo, vì listpack lớn làm thao tác từng field chậm đi."
+
+> Senior tip: đưa {{OBJECT ENCODING}} của vài key mẫu vào checklist review khi thêm field mới vào Hash. Một field dài vô tình có thể làm RAM tăng gấp đôi mà không có lỗi nào báo.`,
   follow: ['intset là gì?', 'Tại sao Sorted Set dùng cả dict và skiplist?'],
   tags: ['Redis', 'encoding', 'listpack', 'skiplist']
 },
@@ -19612,5 +19638,214 @@ public boolean reserveSlot(String productId, String userId) {
     'Khi nào nên dùng Redis reservation pattern thay vì DB lock?'
   ],
   tags: ['code review', 'race condition', 'check-then-act', 'optimistic lock', 'pessimistic lock', 'atomic update', 'unique constraint', '@Version', 'flash sale']
+},
+{
+  id: 'jpa-097',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Bạn cần nhập 1 triệu đơn hàng từ file CSV vào PostgreSQL, mỗi đơn có productId của sản phẩm đã có sẵn. Làm sao cấu hình Hibernate 6 để insert chạy batch nhanh, và lỗi gì xảy ra nếu trong vòng lặp bạn gọi productRepo.findById(id) cho mỗi đơn, hoặc gán đối tượng Product đã tách (detached) vào đơn hàng kèm cascade persist?',
+  a: `**Tóm tắt:** Batch insert là chèn hàng loạt nhiều dòng bằng ít lần gọi database nhất có thể. Nhập 1 triệu đơn, hai sai lầm tiêu biểu là: trong vòng lặp gọi findById để lấy đối tượng sản phẩm thì sinh thêm một triệu câu SELECT (vấn đề N+1, mỗi lần đọc thêm một lượt yêu cầu-kết quả), hoặc gán đối tượng Product đã tách (detached) lên đơn hàng kèm cascade = PERSIST, lúc đó Hibernate cố insert lại sản phẩm từ đầu, gây trùng khóa chính hoặc ghi đè dữ liệu dùng chung. Cách làm đúng: dùng {{em.getReference()}} để nhận proxy chỉ có id (không truy vấn database), hoặc gán trực tiếp cột khóa ngoại productId; sinh id trước bằng {{SEQUENCE}} kèm {{pooled optimizer}} (allocationSize phải khớp INCREMENT BY của sequence trong database), bật {{hibernate.jdbc.batch_size}} và {{hibernate.order_inserts}}, sau đó persist theo chunk, gọi {{flush()}} rồi {{clear()}} mỗi 500–1000 dòng để persistence context (bộ nhớ đệm cấp 1 gắn với một transaction) không phình to. Nếu không cần callback vòng đời của entity, {{JdbcTemplate.batchUpdate}} nhanh hơn Hibernate persist nhiều lần.
+
+### Thuật ngữ liên quan
+- Batch insert: chèn nhiều dòng trong một lần gọi executeBatch thay vì một câu INSERT cho mỗi dòng.
+- Persistence context (L1): bộ nhớ đệm của Hibernate trong một transaction, theo dõi các entity đã load để tự ghi cập nhật khi flush.
+- Dirty checking: Hibernate so sánh entity đã load với ảnh chụp ban đầu để tự sinh câu UPDATE, không cần gọi save lại.
+- Đối tượng đã tách (detached): entity đã bị tách khỏi persistence context, ví dụ sau khi transaction kết thúc.
+- Cascade persist: khi lưu cha, Hibernate tự lưu các đối tượng liên kết được đánh dấu cascade = PERSIST.
+- Proxy {{em.getReference()}}: Hibernate trả về đối tượng giả chỉ chứa id, truy vấn database chỉ khi bạn đọc dữ liệu thực.
+- Pooled optimizer: Hibernate gọi sequence một lần để nhận một dải id, rồi cấp phát dần trong bộ nhớ, giảm lượt gọi database.
+
+### Sai lầm thường gặp: load master data trong vòng lặp
+~~~java
+// SAI: mỗi lần lặp lại gọi database thêm 1 lần
+for (CsvRow row : rows) {
+    Product product = productRepo.findById(row.getProductId()).orElseThrow(); // 1 triệu SELECT thêm
+    Order order = new Order();
+    order.setProduct(product);
+    order.setCode(row.getCode());
+    orderRepo.save(order);
+}
+// Kết quả: 1 triệu INSERT kèm 1 triệu SELECT, batch insert chẳng còn ý nghĩa
+~~~
+
+~~~java
+// ĐÚNG: proxy chỉ có id, không SELECT thêm; flush/clear theo chunk
+int chunk = 500;
+int i = 0;
+for (CsvRow row : rows) {
+    Order order = new Order();
+    order.setProduct(em.getReference(Product.class, row.getProductId())); // chỉ gán FK, không truy vấn
+    order.setCode(row.getCode());
+    em.persist(order);
+    if (++i % chunk == 0) {
+        em.flush();   // đẩy câu INSERT xuống database
+        em.clear();   // giải phóng persistence context, tránh phình bộ nhớ và dirty checking quét quá nhiều entity
+    }
+}
+em.flush();
+~~~
+
+### Gán khóa ngoại trực tiếp
+Nếu schema cho phép và bạn chắc chắn sản phẩm tồn tại, có thể gán trực tiếp giá trị khóa ngoại (ví dụ {{order.setProductId(row.getProductId())}}) thay vì load đối tượng, tránh hẳn lượt SELECT. Lúc này nếu productId không tồn tại, database báo lỗi ràng buộc khóa ngoại ngay khi insert, không phải lỗi Hibernate muộn màng.
+
+### Cascade persist là bẫy với dữ liệu dùng chung
+~~~java
+@OneToMany(cascade = CascadeType.PERSIST)
+private List<Order> orders; // trên Product
+~~~
+Nếu gán đối tượng Product đã tách vào đơn hàng và product có cascade = PERSIST ngược lại, Hibernate có thể cố insert lại sản phẩm, gây trùng khóa chính hoặc ghi đè dữ liệu dùng chung bởi nhiều đơn. Master data chỉ nên đọc, không cascade persist vào đơn hàng giao dịch.
+
+### Cấu hình Hibernate 6 cho batch insert
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 100
+          order_inserts: true
+~~~
+Với {{SEQUENCE}} và {{allocationSize = 100}} (sequence trong database phải có {{INCREMENT BY 100}}), Hibernate nhận một dải id một lần, gán cho 100 entity rồi gom 100 câu INSERT thành một executeBatch. IDENTITY làm tắt batch insert vì database mới sinh id sau khi insert, Hibernate không biết id trước đó.
+
+### Ví dụ đời thực
+Nhập 1 triệu đơn hàng từ CSV mỗi đêm. Bản làm sai: gọi findById cho mỗi đơn, persist cả triệu entity trong một transaction mà không clear. Kết quả: hơn một triệu câu SELECT thêm, heap tăng đến gần 1 GB, GC liên tục, job mất 45 phút. Bản sửa: dùng getReferenceById, SEQUENCE allocationSize 100, batch_size 100, order_inserts, flush/clear mỗi 500 dòng, chia transaction mỗi 50.000 dòng. Kết quả đo được: số câu INSERT giảm từ 1 triệu xuống khoảng 10.000 batch, heap ổn định dưới 512 MB, job còn khoảng 3 phút, latency API giao dịch không bị ảnh hưởng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với 1 triệu dòng, tôi không để Hibernate tự xử lý mù quáng. Tôi sinh id trước bằng SEQUENCE với pooled optimizer, để allocationSize khớp INCREMENT BY của sequence, bật batch_size và order_inserts, rồi persist theo chunk kèm flush và clear định kỳ để persistence context không phình. Với master data đã tồn tại, tôi dùng em.getReference() để gán khóa ngoại mà không bị thêm lượt SELECT mỗi lần, và không bao giờ cascade persist dữ liệu dùng chung vào đơn hàng giao dịch. Nếu không cần vòng đời entity, tôi dùng JdbcTemplate.batchUpdate, nhanh hơn Hibernate persist nhiều lần. Tôi cũng đo bằng Hibernate statistics: số câu thực sự bị gom vào executeBatch phải gần số dòng chia batch size."
+
+> Senior tip: khi import dữ liệu lớn, đừng để cả triệu dòng trong một transaction duy nhất; chia thành các transaction nhỏ (ví dụ 50.000 dòng) để tránh giữ khóa lâu và làm undo log của database tăng to. Sau khi import xong, chạy ANALYZE để optimizer có thống kê mới cho các truy vấn sau này.
+
+`,
+  follow: [
+    'Vì sao findById trong vòng lặp insert 1 triệu dòng là vấn đề N+1, và em.getReference() khắc phục ra sao?',
+    'allocationSize của Hibernate phải khớp INCREMENT BY của sequence, nếu khác thì hệ quả là gì?',
+    'Khi nào bạn chọn JdbcTemplate.batchUpdate thay vì Hibernate persist cho batch insert?'
+  ],
+  tags: ['batch insert', 'Hibernate 6', 'SEQUENCE', 'pooled optimizer', 'flush clear', 'em.getReference', 'JdbcTemplate']
+},
+{
+  id: 'jpa-098',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Màn hình danh sách đơn hàng có 200.000 dòng, entity Order có 60 cột nhưng mỗi hàng chỉ hiển thị 5 cột kèm tên khách hàng và số sản phẩm. Bạn chọn trả DTO hay entity, và dùng câu truy vấn nào để tránh N+1 khi tính toán từ các dòng hàng con?',
+  a: `**Tóm tắt:** Màn hình danh sách là trường hợp đọc nhiều, sửa ít, nên trả DTO projection (chỉ những cột cần hiển thị) thay vì toàn bộ entity. Trả entity thẳng ra API khiến Jackson duyệt toàn bộ quan hệ lazy (dễ gây N+1 hoặc {{LazyInitializationException}} khi tắt Open Session In View), lộ field nhạy cảm và truyền nhiều dữ liệu thừa. Để tính số sản phẩm và tổng tiền từ các dòng hàng con, dùng constructor expression với {{size(o.items)}} (sinh subquery đếm) hoặc left join các dòng hàng rồi {{group by}} với {{sum(i.price)}}. DTO không được Hibernate quản lý (read-only): không có dirty checking, không lazy-load được sau này, không dùng cho chức năng sửa – khi sửa đơn hàng thì load entity Order đầy đủ trong một transaction riêng. Phân trang bằng {{Page}} sẽ chạy thêm câu {{COUNT(*)}}, nên dùng {{Slice}} khi chỉ cần biết còn trang tiếp.
+
+### Thuật ngữ liên quan
+- DTO (Data Transfer Object): đối tượng chỉ đọc, chứa những dữ liệu cần hiển thị, không có logic nghiệp vụ.
+- Projection: việc chọn chỉ một vài cột từ database thay vì chọn toàn bộ dòng.
+- Constructor expression: cú pháp {{SELECT new Dto(...)...}} trong JPQL, database chỉ trả về cột được chọn và Hibernate gọi constructor của DTO.
+- Record: loại class Java ngắn gọn, không thể thay đổi dữ liệu sau khi tạo, thích hợp làm DTO.
+- N+1: truy vấn chính trả về N dòng, sau đó mỗi dòng lại sinh thêm một truy vấn con, tổng 1 + N câu truy vấn.
+- LazyInitializationException: lỗi truy cập quan hệ lazy sau khi persistence context đã đóng.
+- Open Session In View (OSIV): Spring giữ persistence context mở suốt yêu cầu HTTP, mặc định bật, nên khuyến nghị tắt.
+
+### Câu truy vấn DTO với tổng hợp từ collection con
+~~~java
+public record OrderRow(Long id, String code, String customerName, int itemCount, BigDecimal totalAmount, String status) {}
+
+@Query("select new com.acme.dto.OrderRow(" +
+       "o.id, o.code, c.name, size(o.items), sum(i.price), o.status) " +
+       "from Order o " +
+       "join o.customer c " +
+       "left join o.items i " +
+       "group by o.id, o.code, c.name, o.status")
+List<OrderRow> findList(Pageable pageable);
+~~~
+- {{size(o.items)}} sinh subquery đếm, không load toàn bộ collection, nhưng là subquery tương quan chạy cho từng dòng: với tập lớn hãy cân nhắc left join + group by và xem plan qua {{EXPLAIN ANALYZE}}.
+- Nhóm theo tất cả cột không nằm trong hàm tổng hợp theo yêu cầu SQL.
+- Kết quả trả về là đối tượng chỉ đọc, không thể sửa rồi lưu lại database.
+
+### Entity hay DTO cho màn hình danh sách
+| Tiêu chí | Trả entity | Trả DTO projection |
+|---|---|---|
+| Dữ liệu truyền qua mạng | Toàn bộ entity, kèm quan hệ | Chỉ cột cần hiển thị |
+| Lazy loading khi Jackson serialize | Dễ gây N+1 hoặc lỗi khi OSIV tắt | Không có quan hệ, an toàn |
+| Sửa dữ liệu | Có, entity được quản lý | Không, chỉ đọc |
+| Phù hợp | Chức năng sửa, nghiệp vụ trong service | Danh sách, báo cáo, chi tiết đọc |
+
+### Pitfall production
+- DTO bị thiếu field mới: khi domain thêm trạng thái, DTO phải được cập nhật, đây là cái giá của việc tách lớp.
+- Projection lồng collection (ví dụ danh sách sản phẩm trong mỗi đơn) có thể sinh thêm query hoặc nhân bản dòng, với quan hệ one-to-many nên tách thành query riêng.
+- {{Page}} chạy thêm {{COUNT(*)}}, trên bảng lớn câu đếm tốn bằng câu chính; dùng {{Slice}} hoặc keyset pagination cho danh sách cuộn vô hạn.
+
+### Ví dụ đời thực
+Màn hình danh sách đơn hàng 200.000 dòng, entity Order 60 cột. Bản làm sai: trả entity, Jackson duyệt order.items và order.customer để hiển thị. Kết quả: hơn 200.000 câu truy vấn, payload khoảng 200 KB mỗi trang, phản hồi 350 ms. Bản sửa: trả OrderRow qua constructor expression với join khách hàng và group by số sản phẩm, tổng tiền. Kết quả đo được: 1 câu truy vấn, payload 15 KB mỗi trang, phản hồi 60 ms. Khi người dùng bấm sửa một đơn, service load entity Order đầy đủ trong transaction, sửa rồi lưu – không cố sửa qua DTO.
+
+### Trả lời mẫu khi phỏng vấn
+"Màn hình danh sách đọc nhiều và sửa ít, nên tôi trả DTO projection chỉ có những cột cần hiển thị, dùng constructor expression hoặc record trong Spring Data JPA. Nếu cần tính từ collection con, ví dụ số sản phẩm và tổng tiền, tôi viết câu JPQL với left join và group by, hoặc size() nếu tập dữ liệu nhỏ và kiểm tra plan bằng EXPLAIN ANALYZE. DTO chỉ đọc: không có dirty checking, không lazy-load được, và không dùng để sửa – sửa thì load entity đầy đủ trong transaction riêng. Phân trang tôi dùng Slice khi không cần tổng số trang, để tránh câu COUNT(*) tốn kém. Thực tế, chuyển màn hình danh sách đơn hàng từ entity sang DTO giúp giảm từ 200.000 câu xuống 1 câu và phản hồi từ 350 ms xuống 60 ms."
+
+> Senior tip: projection DTO là công cụ đọc, không phải công cụ viết. Nguyên tắc là đọc bằng DTO tối thiểu, viết bằng entity đầy đủ trong transaction. Đừng cố gắng dùng một DTO vừa đọc vừa viết, vì DTO không được Hibernate theo dõi, sửa rồi gọi save sẽ không ghi gì xuống database.
+
+`,
+  follow: [
+    'size(o.items) so với left join + group by, chọn cái nào khi danh sách lớn?',
+    'Vì sao không nên trả entity Hibernate thẳng ra API, ngay cả khi thêm @JsonIgnore?',
+    'Phân trang màn hình danh sách lớn: Page hay Slice, và khi nào dùng keyset pagination?'
+  ],
+  tags: ['DTO projection', 'constructor expression', 'record', 'N+1', 'pagination', 'read-only']
+},
+{
+  id: 'jpa-099',
+  topic: 'jpa',
+  level: 'mid',
+  q: 'Hệ thống chạy trên nhiều instance (pod), bạn bật second-level cache của Hibernate cho bảng danh mục (Category). Vì sao instance A cập nhật danh mục thì instance B vẫn hiển thị dữ liệu cũ, và khi nào thì thực sự nên bật second-level cache?',
+  a: `**Tóm tắt:** Second-level cache (L2) là cache cấp SessionFactory, dùng chung các session trong cùng một instance. Khi chạy nhiều instance, mỗi instance có L2 riêng (Ehcache hoặc Caffeine qua JCache chạy cục bộ): instance A cập nhật danh mục thì cache của instance A bị xóa, nhưng instance B vẫn đọc cache cũ → dữ liệu cũ (stale). L2 cũng không biết về dữ liệu bị thay đổi bằng native query, JDBC, hoặc một service khác cùng ghi vào database, nên cache sẽ lỗi thời. Chỉ nên bật L2 cho dữ liệu đọc nhiều, thay đổi hiếm và không bị hệ thống khác ghi (ví dụ mã nguồn, đơn vị tiền tệ, cấu hình) dùng chiến lược READ_ONLY; dữ liệu thay đổi liên tục (số dư, trạng thái đơn hàng) thì không bật, hoặc dùng Spring Cache với TTL ngắn (1–5 phút), hoặc dùng distributed cache (Hazelcast, Infinispan) để invalidation lan qua các instance.
+
+### Thuật ngữ liên quan
+- Second-level cache (L2): cache của Hibernate ở cấp SessionFactory, tồn tại suốt vòng đời ứng dụng, chia sẻ giữa nhiều session trong cùng instance.
+- Persistence context (L1): cache cấp 1 trong một transaction, luôn bật, không chia sẻ.
+- READ_ONLY: chiến lược cache chỉ đọc, không bao giờ xóa cache khi dữ liệu thay đổi, phù hợp dữ liệu thực sự không đổi.
+- READ_WRITE: chiến lược cache dùng khóa khi cập nhật, có chi phí hơn READ_ONLY.
+- Distributed cache: cache dùng chung trên nhiều máy (Hazelcast, Infinispan), khi một máy cập nhật thì các máy khác biết và xóa cache cũ.
+- Stale data: dữ liệu cũ, không đồng bộ với database.
+- TTL (time-to-live): thời gian tối đa một mục được giữ trong cache trước khi tự hết hạn.
+
+### Cách Hibernate quản lý L2
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        cache:
+          use_second_level_cache: true
+          region:
+            factory_class: jcache
+        javax:
+          cache:
+            provider: org.ehcache.jsr107.EhcacheCachingProvider
+~~~
+
+~~~java
+@Entity
+@Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_ONLY)
+@Table(name = "category")
+public class Category { /* ... */ }
+~~~
+READ_ONLY nghĩa là Hibernate không bao giờ tự xóa mục cache khi entity thay đổi, nên chỉ dùng cho dữ liệu thực sự không đổi. Nếu dùng READ_WRITE trên nhiều instance với cache cục bộ, mỗi instance vẫn tự quản lý cache riêng, cập nhật trên instance này không xóa cache của instance kia.
+
+### Khi nào nên bật, khi nào không nên
+| Tình huống | Nên bật L2? | Giải thích |
+|---|---|---|
+| Bảng danh mục (mã nguồn, đơn vị, loại hàng) thay đổi ít | Có | Đọc nhiều, READ_ONLY, hit rate cao |
+| Dữ liệu thay đổi liên tục (số dư, trạng thái đơn) | Không | Cache lỗi thời nhanh, invalidation phức tạp |
+| Dữ liệu bị native query / JDBC / service khác cùng DB ghi | Không | L2 không biết, phục vụ dữ liệu cũ |
+| Chạy nhiều instance, cần cache dùng chung | Dùng distributed cache hoặc TTL ngắn | Cache cục bộ không invalidation chéo instance |
+
+### Ví dụ đời thực
+Bảng {{Category}} 1.200 bản ghi, thay đổi trung bình một lần mỗi tháng. Team bật L2 với chiến lược READ_ONLY: hit rate 99.9%, độ trễ p99 từ 12 ms ổn định ở 15 ms. Bảng {{Price}} thay đổi liên tục, một lần team bật L2 READ_WRITE: giá hiển thị trên instance B bị cũ khoảng 2 giờ sau khi instance A cập nhật, khoảng 0,5% đơn hàng được bán sai giá trong khoảng thời gian đó. Điều tra qua log cache thấy instance A ghi giá mới vào database nhưng instance B vẫn đọc mục cache cũ. Sửa: tắt L2 cho bảng Price, dùng Spring Cache @Cacheable với TTL 1 phút (hoặc distributed cache nếu cần instant consistency). Kết quả: không còn bán sai giá, và độ trễ chỉ tăng nhẹ vài mili giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Second-level cache là cache cấp SessionFactory, dùng chung giữa các session trong cùng một instance, phù hợp dữ liệu đọc nhiều và thay đổi hiếm. Khi chạy nhiều instance, mỗi instance có L2 riêng (Ehcache/Caffeine cục bộ), nên cập nhật trên instance này không xóa cache của instance kia → dữ liệu cũ. L2 cũng không biết về dữ liệu bị native query hay service khác ghi, nên không bật cho dữ liệu thay đổi liên tục hoặc bị hệ thống khác cùng ghi. Tôi chỉ bật L2 READ_ONLY cho bảng danh mục như mã nguồn, đơn vị tiền tệ; dữ liệu còn lại dùng Spring Cache TTL ngắn hoặc distributed cache nếu cần nhất quán ngay. Thứ tự tiên tôi tối ưu index và truy vấn trước, mới cân nhắc cache, vì cache sai cách tạo ra lỗi dữ liệu khó khôi phục hơn là chậm vài mili giây."
+
+> Senior tip: trước khi bật bất kỳ tầng cache nào, trả lời được ba câu: dữ liệu có thể bị hệ thống khác ghi không, dữ liệu cũ bao lâu là chấp nhận được, và khi có sự cố ai xóa cache bằng cách nào. Nếu không trả lời được câu thứ ba, hãy chưa bật cache.
+
+`,
+  follow: [
+    'Vì sao cache cục bộ trên nhiều instance dẫn đến dữ liệu cũ, và cách khắc phục là gì?',
+    'Second-level cache khác Spring Cache (@Cacheable) ở điểm nào, chọn cái nào cho trường hợp gì?',
+    'Chiến lược READ_ONLY và READ_WRITE khác nhau ra sao, và khi nào dùng cái nào?'
+  ],
+  tags: ['second-level cache', 'Ehcache', 'distributed cache', 'READ_ONLY', 'stale data', 'TTL']
 }
 );

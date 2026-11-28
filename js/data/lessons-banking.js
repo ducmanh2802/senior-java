@@ -5596,6 +5596,3487 @@ Tôi thiết kế reconciliation với partial match (khớp 1-nhiều bằng c�
     }],
     check: [{q:'Partial match là?', options:['Một-khớp-một','Nhiều nhỏ khớp một lớn','Không khớp','Khớp tổng'], answer:1, explain:'Nhiều nhỏ khớp một lớn.'},{q:'Tolerance dùng để?', options:['Bảo mật','Chấp nhận chênh lệch làm tròn','Log','Phân quyền'], answer:1, explain:'Chấp nhận chênh lệch làm tròn.'}],
     related: ['banking-002'], tags: ['reconciliation','tolerance','aging']
-  }
+  },
 
+  {
+    id: 'lesson-banking-021',
+    track: 'banking',
+    order: 21,
+    title: 'Sổ cái kép đa tiền tệ: cân bằng theo từng tiền tệ, tài khoản tỷ giá và bảng cân đối thử',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Giải thích vì sao trong sổ cái đa tiền tệ, tổng Nợ phải bằng tổng Có theo TỪNG đơn vị tiền tệ, không gộp chung',
+      'Hiểu vì sao giao dịch đổi ngoại tệ (FX) luôn cần một tài khoản tỷ giá nội bộ làm cầu nối để mỗi đồng tiền tự cân',
+      'Tính số dư theo cặp (tài khoản, tiền tệ) và lập bảng cân đối thử (trial balance) theo tiền tệ',
+      'Viết {{MultiCurrencyLedger}} với {{post}}, {{balance(account, currency)}}, {{trialBalance(currency)}} thỏa các bất biến trên'
+    ],
+    body: `**Tóm tắt:** Trong sổ cái kế toán kép **đa tiền tệ** (multi-currency ledger — sổ cái ghi giao dịch bằng nhiều loại tiền khác nhau), bất biến "tổng Nợ bằng tổng Có" phải đúng **cho từng đơn vị tiền tệ riêng biệt**, chứ không phải gộp chung mọi loại tiền vào một con số. Vì thế một giao dịch đổi ngoại tệ (FX) luôn cần một **tài khoản tỷ giá nội bộ** ({{SYS/fx}}) làm cầu nối, để cả hai vế của mỗi đồng tiền đều cân. Số dư và **bảng cân đối thử** (trial balance) cũng phải được tính theo từng tiền tệ.
+
+### Chuyện thật: một cú chuyển 100 USD sang người nhận bằng VND
+
+Chị Lan có 500 USD trong ví và muốn gửi 100 USD cho anh Minh, nhưng tài khoản của Minh là tài khoản VND. Ngân hàng quy đổi ở tỷ giá 23.000 VND/USD, nên Minh nhận 2.300.000 VND. Câu hỏi hóc búa: ghi sổ thế nào để **không đồng nào biến mất**?
+
+Nếu chỉ nhìn bằng cảm giác, ta thấy "100 USD đi ra, 2.300.000 VND đi vào" — nhưng gộp "100 + 2.300.000" lại là một phép cộng **vô nghĩa**, giống như cộng 100 quả táo với 2.300.000 đồng. Đây chính là lý do sổ cái đa tiền tệ phải cân bằng **theo từng đồng tiền**, và bài này dạy cách làm đúng.
+
+### Thuật ngữ cần biết (giải thích cho người mới)
+
+- **Đa tiền tệ (multi-currency)**: hệ thống quản lý tài khoản bằng nhiều loại tiền (USD, VND, EUR…). Mỗi tài khoản thực chất là nhiều "túi tiền" theo từng đồng.
+- **Đơn vị nhỏ nhất (minor unit)**: đơn vị không chia nhỏ hơn. VND là 1 đồng, USD là 1 cent (1/100), JPY là 1 yên (không có phần lẻ). Trong bài, số tiền là số nguyên ở đơn vị nhỏ nhất.
+- **Tỷ giá (FX rate)**: giá quy đổi giữa hai đồng tiền, ví dụ 1 USD = 23.000 VND. Tỷ giá thay đổi theo thời gian, nên giao dịch phải "chốt" tỷ giá tại thời điểm phát sinh.
+- **Tài khoản tỷ giá / tài khoản ngoại tệ nội bộ ({{SYS/fx}})**: một tài khoản đặc biệt của ngân hàng, đóng vai "trạm trung chuyển" khi đổi tiền. Nó giữ tạm phần chênh giữa hai đồng tiền để mỗi đồng tiền tự cân bằng.
+- **Bảng cân đối thử (trial balance)**: bảng tổng hợp **tổng Nợ** và **tổng Có** của mọi tài khoản. Nếu sổ cái đúng, với mỗi đồng tiền, tổng Nợ phải bằng tổng Có.
+
+### Vì sao cân bằng phải theo từng tiền tệ
+
+Bất biến gốc của kế toán kép là: **mỗi đồng tiền đi ra phải có một nơi nhận**. Khi có nhiều đồng tiền, bất biến này tách thành nhiều bất biến con — **một cho mỗi đồng tiền**:
+
+~~~text
+USD: tổng Nợ(USD)  == tổng Có(USD)
+VND: tổng Nợ(VND)  == tổng Có(VND)
+EUR: tổng Nợ(EUR)  == tổng Có(EUR)
+...
+~~~
+
+Nếu ta gộp tất cả thành một con số duy nhất rồi so sánh, ta sẽ bỏ lọt lỗi: ví dụ một bút toán ghi Nợ 100 USD nhưng quên ghi Có 100 USD, trong khi lại có một bút toán VND lệch ngược chiều — gộp chung hai cái có thể "triệt tiêu" nhau và trông như cân, nhưng thực ra **cả hai đồng tiền đều sai**. So theo từng tiền tệ thì lỗi nào cũng lộ.
+
+### Giao dịch đổi ngoại tệ cần tài khoản tỷ giá
+
+Để 100 USD của Lan biến thành 2.300.000 VND cho Minh mà **mỗi đồng tiền vẫn cân**, ta viết bốn bút toán, dùng {{SYS/fx}} làm cầu nối:
+
+| txId | Tài khoản | Tiền tệ | Nợ (đi ra) | Có (đi vào) |
+|---|---|---|---|---|
+| T1 | CA/lan | USD | 100 | |
+| T1 | SYS/fx | USD | | 100 |
+| T1 | SYS/fx | VND | 2.300.000 | |
+| T1 | CA/minh | VND | | 2.300.000 |
+| **Tổng USD** | | | **100** | **100** |
+| **Tổng VND** | | | **2.300.000** | **2.300.000** |
+
+Nhìn vào hai dòng tổng: USD cân (Nợ 100 = Có 100), VND cân (Nợ 2.300.000 = Có 2.300.000). Tài khoản {{SYS/fx}} nhận 100 USD ở cột Có và trả 2.300.000 VND ở cột Nợ — nó chính là "chỗ" giữ chênh lệch tỷ giá. Nếu không có {{SYS/fx}}, USD sẽ lệch 100 và VND lệch 2.300.000, và hệ thống phải từ chối.
+
+Trong code, cùng một giao dịch là một danh sách bút toán, mỗi bút toán mang theo đồng tiền:
+
+~~~java
+// T1: doi 100 USD cua Lan -> 2.300.000 VND cho Minh (ty gia 23.000)
+// Moi dong tien phai tu can bang, nho tai khoan ty gia SYS/fx lam cau noi
+List<Entry> fx = List.of(
+    new Entry("CA/lan",  "USD", 100,      true),    // No: USD di ra khoi vi Lan
+    new Entry("SYS/fx",  "USD", 100,      false),   // Co: USD vao tai khoan ty gia
+    new Entry("SYS/fx",  "VND", 2300000,  true),    // No: VND ra khoi tai khoan ty gia
+    new Entry("CA/minh", "VND", 2300000,  false)    // Co: VND vao tai khoan Minh
+);
+ledger.post("T1", fx);   // moi tien te: tong No == tong Co -> chap nhan
+~~~
+
+### Số dư và bảng cân đối thử theo tiền tệ
+
+Số dư của một tài khoản phải tính **theo từng đồng tiền**: {{balance("CA/lan", "USD")}} khác hoàn toàn {{balance("CA/lan", "VND")}}. Công thức không đổi so với sổ cái một tiền tệ: {{số dư = tổng Có − tổng Nợ}}, nhưng chỉ xét các bút toán **cùng đồng tiền**.
+
+**Bảng cân đối thử** kiểm tra sức khỏe toàn sổ: với mỗi đồng tiền, cộng tổng Nợ và tổng Có của **mọi** tài khoản; hai vế phải bằng nhau. Nếu lệch, có bút toán đơn lẻ (một đồng tiền bị ghi một phía) — lỗi nghiêm trọng nhất của sổ cái.
+
+### Cơ chế từng bước: ghi một bút toán đa tiền tệ
+
+**Tóm tắt:** Kiểm tra cân bằng theo từng đồng tiền, mô phỏng số dư từng (tài khoản, tiền tệ), rồi mới ghi — tất cả trong một khối nguyên tử.
+
+1. **Chống trùng theo {{txId}}**: đã có {{txId}} trong sổ ⇒ no-op, trả {{false}} (retry do timeout không được ghi hai lần — xem bài 5).
+2. **gom Nợ/Có theo đồng tiền**: duyệt mọi bút toán, cộng dồn tổng Nợ và tổng Có vào một map khóa theo tiền tệ; đồng thời cộng delta số dư cho từng cặp (tài khoản, tiền tệ).
+3. **kiểm tra cân bằng từng tiền tệ**: với mỗi đồng tiền, nếu tổng Nợ ≠ tổng Có ⇒ ném {{IllegalArgumentException}} và **không ghi gì cả**.
+4. **kiểm tra tài khoản khách không âm**: với mỗi cặp (tài khoản, tiền tệ) thuộc loại khách ({{CA/}}), nếu số dư sau khi ghi < 0 ⇒ ném {{IllegalStateException}}. Tài khoản nội bộ ({{SYS/}}) được phép âm.
+5. **ghi**: chỉ khi cả ba bước trên pass mới áp delta vào số dư và lưu bút toán vào sổ (append-only).
+
+### Lỗi hay gặp trên production
+
+1. **Gộp mọi tiền tệ rồi so một tổng**: bỏ lọt bút toán lệch vì hai đồng tiền "triệt tiêu" nhau. Sửa: cân bằng theo từng đồng tiền.
+2. **Quên tài khoản tỷ giá {{SYS/fx}}**: giao dịch FX bị từ chối vì mỗi đồng tiền lệch một phía. Sửa: luôn có {{SYS/fx}} làm cầu nối.
+3. **Lưu số dư một cột duy nhất không kèm tiền tệ**: không biết 500 là USD hay VND. Sửa: khóa số dư là (tài khoản, tiền tệ).
+4. **Làm tròn tỷ giá rồi mới ghi**: 100 USD × 23.000 = 2.300.000 VND, nhưng nếu tỷ giá 23.456,7 thì phần lẻ VND phải làm tròn một lần và phần chênh dồn vào {{SYS/fx}}, không làm tròn ở từng bước (xem bài 1, bài 7).
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Sổ cái của bạn có nhiều tiền tệ. Tổng Nợ bằng tổng Có được kiểm tra thế nào, và giao dịch đổi ngoại tệ ghi sổ ra sao?"
+
+**Cách trả lời:** Bất biến cân bằng áp dụng **cho từng đồng tiền**, không gộp chung — vì cộng 100 USD với 2.300.000 VND là vô nghĩa, và gộp lại sẽ bỏ lọt bút toán lệch khi hai đồng tiền triệt tiêu nhau. Giao dịch FX luôn có một **tài khoản tỷ giá nội bộ** ({{SYS/fx}}) làm cầu nối: ví dụ 100 USD của khách đi ra (Nợ CA/lan USD), vào {{SYS/fx}} (Có SYS/fx USD), rồi {{SYS/fx}} trả 2.300.000 VND (Nợ SYS/fx VND) và khách nhận (Có CA/minh VND) — nhờ đó USD và VND đều tự cân. Số dư và bảng cân đối thử đều tính theo (tài khoản, tiền tệ). Điểm senior: khóa số dư là (tài khoản, tiền tệ), kiểm tra không âm theo từng đồng tiền, và phần chênh tỷ giá dồn vào {{SYS/fx}} thay vì làm tròn rải rác.
+
+> Senior tip: Khi phỏng vấn, hãy nói thẳng "mỗi đồng tiền là một quyển sổ con, tổng hợp lại thành bảng cân đối thử theo đồng tiền". Và nhớ: tài khoản khách không được âm theo **từng** đồng tiền, còn {{SYS/}} thì được — đó là chỗ hệ thống giữ chênh lệch tỷ giá một cách có kiểm soát.`,
+    exercises: [
+      {
+        title: 'MultiCurrencyLedger: post / balance(account,currency) / trialBalance(currency)',
+        prompt: `Viết class {{MultiCurrencyLedger}} ghi sổ **kế toán kép đa tiền tệ**. Bút toán {{Entry}} gồm {{account}} (tiền tố {{CA/}} = tài khoản khách, {{SYS/}} = nội bộ), {{currency}} (mã tiền, ví dụ {{USD}}, {{VND}}), {{amount}} (long, luôn dương, đơn vị nhỏ nhất) và {{debit}} ({{true}} = tiền đi ra, {{false}} = tiền đi vào).
+
+Quy tắc bắt buộc:
+1. {{post(String txId, List<Entry> entries)}} trả {{boolean}}. {{txId}} đã ghi ⇒ no-op trả {{false}}. {{entries}} có từ 2 bút toán, mọi {{amount > 0}}, {{account}} và {{currency}} không rỗng; vi phạm ⇒ ném {{IllegalArgumentException}} và không ghi gì.
+2. **Cân bằng theo từng đồng tiền**: với MỖI {{currency}}, tổng Nợ phải bằng tổng Có. Lệch một đồng tiền ⇒ ném {{IllegalArgumentException}}, không ghi gì (kể cả các đồng tiền khác).
+3. Số dư một cặp (tài khoản, tiền tệ) = tổng Có − tổng Nợ. Nếu tài khoản **khách** ({{CA/}}) bị **âm** sau khi ghi theo một đồng tiền ⇒ ném {{IllegalStateException}}, thất bại nguyên tử. {{SYS/}} được phép âm.
+4. {{balance(String account, String currency)}} trả số dư, chưa có ⇒ 0.
+5. {{trialBalance(String currency)}} trả {{long[]}} gồm hai phần tử: tổng Nợ và tổng Có của **mọi** tài khoản cho đồng tiền đó (hai vế bằng nhau nếu sổ đúng).
+6. {{txCount()}} đếm số giao dịch đã ghi.`,
+        starter: `import java.util.*;
+
+class Entry {
+    final String account;
+    final String currency;
+    final long amount;
+    final boolean debit;
+    Entry(String account, String currency, long amount, boolean debit) {
+        this.account = account;
+        this.currency = currency;
+        this.amount = amount;
+        this.debit = debit;
+    }
+}
+
+class MultiCurrencyLedger {
+    private final Map<String, Long> balances = new HashMap<>();
+    private final Map<String, List<Entry>> txLog = new LinkedHashMap<>();
+
+    private static String key(String account, String currency) {
+        return account + "|" + currency;
+    }
+
+    boolean post(String txId, List<Entry> entries) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long balance(String account, String currency) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long[] trialBalance(String currency) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int txCount() {
+        return txLog.size();
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Entry en(String acc, String cur, long amt, boolean debit) { return new Entry(acc, cur, amt, debit); }
+    static List<Entry> of(Entry... a) { return new ArrayList<>(Arrays.asList(a)); }
+
+    public static void main(String[] args) {
+        MultiCurrencyLedger l = new MultiCurrencyLedger();
+        check("opening USD", l.post("T0", of(en("SYS/opening","USD",500,true), en("CA/a","USD",500,false))), "T0 phai true");
+        check("balance A USD 500", l.balance("CA/a","USD") == 500, "bal=" + l.balance("CA/a","USD"));
+        check("unknown currency = 0", l.balance("CA/a","VND") == 0, "bal=" + l.balance("CA/a","VND"));
+
+        boolean fx = l.post("T1", of(
+            en("CA/a","USD",100,true),
+            en("SYS/fx","USD",100,false),
+            en("SYS/fx","VND",2300000,true),
+            en("CA/b","VND",2300000,false)));
+        check("fx posted", fx, "fx phai true");
+        check("A USD con 400", l.balance("CA/a","USD") == 400, "bal=" + l.balance("CA/a","USD"));
+        check("B VND 2.3tr", l.balance("CA/b","VND") == 2300000, "bal=" + l.balance("CA/b","VND"));
+        long[] tbUsd = l.trialBalance("USD");
+        check("trial balance USD can bang", tbUsd[0] == tbUsd[1] && tbUsd[0] == 600, "d=" + tbUsd[0] + " c=" + tbUsd[1]);
+        long[] tbVnd = l.trialBalance("VND");
+        check("trial balance VND can bang", tbVnd[0] == tbVnd[1] && tbVnd[0] == 2300000, "d=" + tbVnd[0] + " c=" + tbVnd[1]);
+        long[] tbEur = l.trialBalance("EUR");
+        check("trial balance EUR rong", tbEur[0] == 0 && tbEur[1] == 0, "");
+
+        check("lech trong mot tien te bi tu choi", expect(IllegalArgumentException.class,
+            () -> l.post("T2", of(en("CA/x","USD",100,true), en("CA/y","VND",100,false)))), "khac tien te, moi tien te lech phai bi tu choi");
+        check("tu choi khong ghi gi", l.txCount() == 2, "tx=" + l.txCount());
+
+        check("thieu hut USD bi tu choi", expect(IllegalStateException.class,
+            () -> l.post("T3", of(en("CA/a","USD",500,true), en("SYS/z","USD",500,false)))), "A chi con 400 USD");
+        check("thieu hut khong ghi", l.balance("CA/a","USD") == 400 && l.txCount() == 2, "tx=" + l.txCount());
+
+        check("trung txId la no-op", !l.post("T1", of(en("CA/a","USD",1,true), en("SYS/fx","USD",1,false))), "trung txId phai false");
+        check("trung txId khong doi", l.balance("CA/a","USD") == 400 && l.txCount() == 2, "tx=" + l.txCount());
+
+        check("amount 0 bi tu choi", expect(IllegalArgumentException.class,
+            () -> l.post("T4", of(en("CA/a","USD",0,true), en("SYS/z","USD",0,false)))), "");
+        check("currency rong bi tu choi", expect(IllegalArgumentException.class,
+            () -> l.post("T5", of(en("CA/a","",100,true), en("SYS/z","USD",100,false)))), "");
+        check("sau loi so sổ nguyen ven", l.txCount() == 2 && l.balance("CA/a","USD") == 400, "tx=" + l.txCount());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Entry {
+    final String account;
+    final String currency;
+    final long amount;
+    final boolean debit;
+    Entry(String account, String currency, long amount, boolean debit) {
+        this.account = account;
+        this.currency = currency;
+        this.amount = amount;
+        this.debit = debit;
+    }
+}
+
+class MultiCurrencyLedger {
+    private final Map<String, Long> balances = new HashMap<>();
+    private final Map<String, List<Entry>> txLog = new LinkedHashMap<>();
+
+    private static String key(String account, String currency) {
+        return account + "|" + currency;
+    }
+
+    boolean post(String txId, List<Entry> entries) {
+        if (txId == null || txId.isEmpty()) throw new IllegalArgumentException("txId rong");
+        if (txLog.containsKey(txId)) return false;
+        if (entries == null || entries.size() < 2) throw new IllegalArgumentException("can tu 2 but toan");
+        Map<String, long[]> perCurrency = new LinkedHashMap<>();
+        Map<String, Map<String, Long>> delta = new LinkedHashMap<>();
+        for (Entry e : entries) {
+            if (e.account == null || e.account.isEmpty()) throw new IllegalArgumentException("account rong");
+            if (e.currency == null || e.currency.isEmpty()) throw new IllegalArgumentException("currency rong");
+            if (e.amount <= 0) throw new IllegalArgumentException("amount phai > 0");
+            long[] dc = perCurrency.computeIfAbsent(e.currency, k -> new long[2]);
+            if (e.debit) dc[0] += e.amount; else dc[1] += e.amount;
+            long signed = e.debit ? -e.amount : e.amount;
+            delta.computeIfAbsent(e.account, k -> new HashMap<>()).merge(e.currency, signed, Long::sum);
+        }
+        for (long[] dc : perCurrency.values()) {
+            if (dc[0] != dc[1]) throw new IllegalArgumentException("lech No/Co trong mot tien te");
+        }
+        for (Map.Entry<String, Map<String, Long>> byAcc : delta.entrySet()) {
+            String acc = byAcc.getKey();
+            if (!acc.startsWith("CA/")) continue;
+            for (Map.Entry<String, Long> byCur : byAcc.getValue().entrySet()) {
+                long after = balance(acc, byCur.getKey()) + byCur.getValue();
+                if (after < 0) throw new IllegalStateException("Thieu hut " + acc + " " + byCur.getKey());
+            }
+        }
+        for (Map.Entry<String, Map<String, Long>> byAcc : delta.entrySet()) {
+            for (Map.Entry<String, Long> byCur : byAcc.getValue().entrySet()) {
+                balances.merge(key(byAcc.getKey(), byCur.getKey()), byCur.getValue(), Long::sum);
+            }
+        }
+        txLog.put(txId, new ArrayList<>(entries));
+        return true;
+    }
+
+    long balance(String account, String currency) {
+        return balances.getOrDefault(key(account, currency), 0L);
+    }
+
+    long[] trialBalance(String currency) {
+        long debit = 0, credit = 0;
+        for (List<Entry> list : txLog.values()) {
+            for (Entry e : list) {
+                if (!e.currency.equals(currency)) continue;
+                if (e.debit) debit += e.amount; else credit += e.amount;
+            }
+        }
+        return new long[]{debit, credit};
+    }
+
+    int txCount() {
+        return txLog.size();
+    }
+}`,
+        hints: [
+          'Cân bằng phải kiểm tra **theo từng đồng tiền**: gom tổng Nợ và tổng Có vào một map khóa theo {{currency}}, rồi so từng cặp — đừng gộp mọi tiền tệ vào một con số.',
+          'Số dư và delta phải khóa theo **(tài khoản, tiền tệ)**; dùng {{Map<String, Map<String, Long>>>}} (tài khoản -> tiền tệ -> delta) để không phải nối chuỗi rồi tách lại.',
+          'Kiểm tra tài khoản khách không âm theo **từng đồng tiền** trước khi ghi; ghi xen kẽ với kiểm tra sẽ để lại sổ hỏng khi bút toán thứ hai bị từ chối.',
+          'Giao dịch FX cần tài khoản {{SYS/fx}} làm cầu nối để mỗi đồng tiền tự cân; nếu thiếu, mỗi đồng tiền sẽ lệch một phía và {{post}} phải từ chối.',
+        ],
+        explain: `Bài này kiểm tra bốn bất biến, mỗi bất biến là một câu hỏi phỏng vấn thật:
+
+1. **Cân bằng theo từng đồng tiền.** {{T2}} (Nợ 100 USD, Có 100 VND) bị từ chối bằng {{IllegalArgumentException}} vì USD lệch 100 và VND lệch 100, dù nếu gộp "100 = 100" thì trông như cân. Đây là lỗi kinh điển: gộp nhiều đồng tiền rồi so một tổng sẽ bỏ lọt bút toán lệch.
+2. **FX cần tài khoản tỷ giá.** {{T1}} có bốn bút toán qua {{SYS/fx}}; sau khi ghi, {{trialBalance("USD")}} = {600, 600} và {{trialBalance("VND")}} = {2.300.000, 2.300.000} — mỗi đồng tiền tự cân. Nếu bạn bỏ {{SYS/fx}}, USD chỉ có Nợ 100 mà không có Có, và hệ thống từ chối.
+3. **Không âm theo từng đồng tiền.** {{T3}} định trừ 500 USD trong khi {{CA/a}} chỉ còn 400 USD ⇒ {{IllegalStateException}}, và sổ không đổi ({{txCount}} vẫn 2). Tài khoản {{SYS/}} được phép âm nên {{SYS/fx}} giữ 100 USD và −2.300.000 VND mà không sao.
+4. **Idempotency theo {{txId}}.** Ghi lại {{T1}} trả {{false}} và không đổi số dư, dù entries gửi lại khác hẳn — retry do timeout không được ghi sổ hai lần (xem bài 5).
+
+Lỗi hay gặp khi viết: dùng một cột số dư duy nhất không kèm tiền tệ (không biết 500 là USD hay VND), và kiểm tra âm **sau** khi đã ghi (để lại sổ hỏng). Hãy tách ba pha: gom tổng + validate, mô phỏng delta, rồi mới áp — thất bại là nguyên tử.`,
+      }
+    ],
+    check: [
+      { q: 'Trong sổ cái đa tiền tệ, bất biến "tổng Nợ bằng tổng Có" áp dụng thế nào?', options: ['Gộp mọi tiền tệ thành một tổng rồi so', 'Với mỗi đồng tiền riêng biệt: tổng Nợ của đồng đó bằng tổng Có của đồng đó', 'Chỉ cần tổng toàn bộ số dư dương', 'Không cần kiểm tra nếu có tài khoản SYS'], answer: 1, explain: 'Đúng (B): mỗi đồng tiền là một "quyển sổ con" độc lập; cộng 100 USD với 2.300.000 VND là vô nghĩa, và gộp chung sẽ bỏ lọt bút toán lệch khi hai đồng tiền triệt tiêu nhau. Sai (A): gộp chung che mất lệch. Sai (C): số dư dương không liên quan cân bằng Nợ/Có. Sai (D): có SYS vẫn phải cân từng đồng tiền; SYS chỉ là tài khoản nội bộ được phép âm.' },
+      { q: 'Vì sao giao dịch đổi ngoại tệ cần tài khoản tỷ giá SYS/fx?', options: ['Để tính phí cao hơn', 'Để mỗi đồng tiền tự cân bằng: một đồng tiền vào SYS/fx, đồng kia ra khỏi SYS/fx', 'Để lưu mật khẩu', 'Vì luật không cho đổi tiền trực tiếp'], answer: 1, explain: 'Đúng (B): ví dụ 100 USD đi ra (Nợ CA/lan USD) → SYS/fx (Có SYS/fx USD) → SYS/fx trả 2.300.000 VND (Nợ SYS/fx VND) → khách nhận (Có CA/minh VND). Nhờ SYS/fx, USD cân và VND cân. Sai (A): phí là chuyện khác. Sai (C): không liên quan bảo mật. Sai (D): không phải quy định pháp lý mà là yêu cầu kế toán.' },
+      { q: 'Số dư tài khoản khách bị âm theo một đồng tiền thì hệ thống làm gì?', options: ['Cho phép vì tổng các đồng tiền vẫn dương', 'Từ chối giao dịch, không ghi gì (nguyên tử)', 'Tự động vay bù', 'Ghi rồi sửa sau'], answer: 1, explain: 'Đúng (B): tài khoản khách (CA/) không được âm theo từng đồng tiền; vi phạm ⇒ ném IllegalStateException và không ghi gì. Sai (A): âm một đồng tiền là cho vay ngoài ý muốn dù đồng khác dương. Sai (C): tự động vay là nghiệp vụ khác, phải có quy trình riêng. Sai (D): ghi rồi sửa phá bất biến append-only và dễ mất tiền.' }
+    ],
+    related: ['banking-019', 'banking-047', 'banking-057'],
+    tags: ['ledger', 'double-entry', 'multi-currency', 'fx', 'trial-balance', 'banking']
+  },
+
+  {
+    id: 'lesson-banking-022',
+    track: 'banking',
+    order: 22,
+    title: 'Đối soát một-một theo (mã tham chiếu, tiền tệ): chống khớp trùng, chênh lệch phí và phân loại break',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Hiểu vì sao đối soát phải khớp một-một (mỗi giao dịch đối tác chỉ dùng một lần) để chống double-count',
+      'Biết khóa khớp gồm cả mã tham chiếu VÀ tiền tệ, tránh khớp nhầm hai giao dịch cùng ref khác tiền',
+      'Phân biệt năm nhóm kết quả: MATCHED, FEE_DIFF (chênh trong ngưỡng phí), AMOUNT_MISMATCH, MISSING_INTERNAL, MISSING_PARTNER',
+      'Viết {{Reconciler.reconcile(internal, partner, feeTolerance)}} trả về năm nhóm trên, mỗi giao dịch đối tác chỉ khớp một lần'
+    ],
+    body: `**Tóm tắt:** Đối soát **một-một** (one-to-one reconciliation) so khớp từng giao dịch nội bộ với **đúng một** giao dịch đối tác theo khóa gồm (mã tham chiếu, tiền tệ); mỗi giao dịch đối tác chỉ được dùng **một lần** để chống khớp trùng (double-count). Chênh lệch nhỏ nằm trong ngưỡng phí ({{feeTolerance}}) được xếp riêng {{FEE_DIFF}} thay vì coi là lệch thật; chênh lớn là {{AMOUNT_MISMATCH}}; chỉ có ở một bên là {{MISSING_INTERNAL}} hoặc {{MISSING_PARTNER}}.
+
+### Chuyện thật: hai bên cùng báo "đủ tiền" nhưng vẫn sai
+
+Cuối ngày, hệ thống nội bộ và đối tác đều gửi danh sách giao dịch. Tổng tiền hai bên bằng nhau, nên sếp gật đầu "khớp rồi". Nhưng kiểm tra kỹ từng dòng: giao dịch R2 nội bộ ghi 200, đối tác ghi 250 (lệch 50), còn một giao dịch R9 nội bộ ghi 300 nhưng đối tác lại ghi 290 ở một dòng khác. Tổng vẫn bằng nhau nhờ **sai lệch bù trừ**, nhưng cả hai dòng đều sai. Bài này dạy cách so khớp **từng dòng, một-một** để không dòng nào bị bỏ sót hay đếm hai lần.
+
+### Vì sao phải khớp một-một
+
+Nếu đối tác gửi **một** giao dịch R1 số tiền 100, còn nội bộ có **hai** dòng R1 mỗi dòng 100 (do lỗi ghi trùng), mà thuật toán cho mỗi dòng nội bộ tự do tìm "một" dòng đối tác bất kỳ, thì cả hai dòng nội bộ đều "khớp" vào cùng một dòng đối tác — kết quả báo MATCHED 2 trong khi thực tế chỉ có một giao dịch. Đó là **double-count** (đếm trùng). Khớp một-một: đánh dấu dòng đối tác đã dùng, dòng nội bộ thứ hai không còn bạn nào ⇒ {{MISSING_INTERNAL}}. Đúng bản chất: một giao dịch chỉ được đối soát một lần.
+
+### Khóa khớp gồm cả tiền tệ
+
+Cùng một mã tham chiếu {{R1}} nhưng một bên ghi USD, một bên ghi VND thì **không** phải là một giao dịch. Khóa khớp phải là cặp (mã tham chiếu, tiền tệ). Nếu chỉ so theo ref, ta sẽ khớp nhầm 100 USD với 100 VND — hai số 100 "trùng" nhưng giá trị thực khác nhau hàng nghìn lần. Trong code, khóa là chuỗi ghép {{ref}} và {{currency}} bằng một dấu phân cách.
+
+### Năm nhóm kết quả
+
+| Nhóm | Ý nghĩa | Hành động |
+|---|---|---|
+| {{MATCHED}} | cùng khóa, cùng số tiền | OK, không làm gì |
+| {{FEE_DIFF}} | cùng khóa, chênh lệch ≤ {{feeTolerance}} | chênh do phí/làm tròn, ghi nhận, không điều tra |
+| {{AMOUNT_MISMATCH}} | cùng khóa, chênh > {{feeTolerance}} | điều tra: lỗi ghi sổ, tỷ giá, phí chưa map |
+| {{MISSING_INTERNAL}} | có ở nội bộ, không có ở đối tác | kiểm tra timeout, có thể truy vấn/điền bù |
+| {{MISSING_PARTNER}} | có ở đối tác, không có ở nội bộ | kiểm tra giao dịch bóng ma, ghi nhận bổ sung |
+
+Điểm senior: {{FEE_DIFF}} tách riêng khỏi {{AMOUNT_MISMATCH}} để đội vận hành không phải điều tra hàng nghìn dòng chênh 1–2 đồng do phí, mà chỉ tập trung vào chênh lớn.
+
+### Cơ chế từng bước
+
+**Tóm tắt:** Lập chỉ mục đối tác theo khóa, đánh dấu dòng đã dùng, duyệt nội bộ để phân loại, rồi gom phần đối tác còn dư.
+
+1. **Lập chỉ mục đối tác** theo khóa (ref, tiền tệ), giữ danh sách các dòng cho mỗi khóa (để xử lý trường hợp nhiều dòng cùng khóa).
+2. **Duyệt từng dòng nội bộ**: tìm một dòng đối tác **chưa dùng** cùng khóa. Không có ⇒ {{MISSING_INTERNAL}}. Có ⇒ đánh dấu đã dùng, so số tiền: bằng nhau ⇒ {{MATCHED}}; chênh ≤ {{feeTolerance}} ⇒ {{FEE_DIFF}}; chênh lớn ⇒ {{AMOUNT_MISMATCH}}.
+3. **Gom phần dư**: mọi dòng đối tác chưa được dùng ⇒ {{MISSING_PARTNER}}.
+4. Kết quả là năm danh sách, mỗi ref xuất hiện đúng một nhóm.
+
+### Ví dụ
+
+~~~java
+// internal: R1=100 USD, R2=200 USD, R3=300 VND
+// partner:  R1=100 USD, R2=250 USD, R4=400 VND
+// feeTolerance = 0
+Map<String, List<String>> r = Reconciler.reconcile(internal, partner, 0);
+// MATCHED = [R1]
+// AMOUNT_MISMATCH = [R2]   (chênh 50 > 0)
+// MISSING_INTERNAL = [R3]
+// MISSING_PARTNER = [R4]
+// Nếu feeTolerance = 50: R2 chuyển sang FEE_DIFF
+~~~
+
+### Lỗi hay gặp trên production
+
+1. **Khớp nhiều-một (double-count)**: một dòng đối tác khớp nhiều dòng nội bộ. Sửa: đánh dấu dòng đối tác đã dùng.
+2. **Chỉ so theo ref, bỏ qua tiền tệ**: khớp nhầm 100 USD với 100 VND. Sửa: khóa gồm cả tiền tệ.
+3. **Không tách {{FEE_DIFF}}**: mọi chênh nhỏ đều thành "lệch" ⇒ đội vận hành ngập trong backlog. Sửa: dùng {{feeTolerance}}.
+4. **Tự động sửa số liệu khi lệch**: vi phạm nguyên tắc không tự sửa (xem bài 2). Mọi break phải qua quy trình điều tra và maker-checker.
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Đối tác gửi lại file trùng một số giao dịch, và có dòng chênh vài đồng do phí. Bạn so khớp thế nào để không đếm trùng và không báo lệch ảo?"
+
+**Cách trả lời:** Khớp **một-một** theo khóa (mã tham chiếu, tiền tệ): lập chỉ mục dòng đối tác, mỗi dòng chỉ dùng **một lần**, dòng nội bộ nào không còn bạn thì {{MISSING_INTERNAL}}, dòng đối tác còn dư thì {{MISSING_PARTNER}} — nhờ vậy file gửi trùng không bị đếm hai lần. Phân loại năm nhóm, trong đó chênh lệch ≤ ngưỡng phí {{feeTolerance}} xếp {{FEE_DIFF}} (không điều tra), chênh lớn mới {{AMOUNT_MISMATCH}}. Khóa phải gồm cả tiền tệ để không khớp nhầm 100 USD với 100 VND. Điểm senior: không tự sửa số liệu, mọi break phải qua điều tra và maker-checker, và đối soát phải idempotent — chạy lại cùng dữ liệu cho cùng kết quả.
+
+> Senior tip: Khi phỏng vấn, nhấn mạnh "một giao dịch chỉ đối soát một lần" và "khóa gồm cả tiền tệ" — hai chi tiết này phân biệt người từng làm đối soát thật với người chỉ biết so tổng. Và luôn tách {{FEE_DIFF}} khỏi {{AMOUNT_MISMATCH}} để vận hành không chết đuối trong backlog chênh lẻ.`,
+    exercises: [
+      {
+        title: 'Reconciler.reconcile: một-một theo (ref, currency), phân loại 5 nhóm',
+        prompt: `Viết {{Reconciler.reconcile(List<Tx> internal, List<Tx> partner, long feeTolerance)}} trả về {{Map<String, List<String>>}} với đúng năm khóa: {{MATCHED}}, {{FEE_DIFF}}, {{AMOUNT_MISMATCH}}, {{MISSING_INTERNAL}}, {{MISSING_PARTNER}}. Mỗi {{Tx}} có {{ref}}, {{currency}}, {{amount}} (long).
+
+Quy tắc:
+1. Khóa khớp là cặp ({{ref}}, {{currency}}). Chỉ khớp hai giao dịch cùng khóa.
+2. **Một-một**: mỗi giao dịch đối tác chỉ được khớp **một lần**. Dòng nội bộ không tìm được dòng đối tác **chưa dùng** cùng khóa ⇒ {{MISSING_INTERNAL}}. Dòng đối tác không được dùng ⇒ {{MISSING_PARTNER}}.
+3. Khi tìm thấy cặp cùng khóa: {{|amount|}} bằng 0 ⇒ {{MATCHED}}; {{0 < |amount| <= feeTolerance}} ⇒ {{FEE_DIFF}}; {{|amount| > feeTolerance}} ⇒ {{AMOUNT_MISMATCH}}.
+4. {{feeTolerance < 0}} ⇒ ném {{IllegalArgumentException}}.
+5. Danh sách trả về chứa {{ref}} của từng giao dịch (mỗi ref một lần trong đúng một nhóm).`,
+        starter: `import java.util.*;
+
+class Tx {
+    final String ref;
+    final String currency;
+    final long amount;
+    Tx(String ref, String currency, long amount) {
+        this.ref = ref;
+        this.currency = currency;
+        this.amount = amount;
+    }
+}
+
+class Reconciler {
+    static Map<String, List<String>> reconcile(List<Tx> internal, List<Tx> partner, long feeTolerance) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Tx tx(String r, String c, long a) { return new Tx(r, c, a); }
+
+    public static void main(String[] args) {
+        List<Tx> in = new ArrayList<>();
+        in.add(tx("R1","USD",100));
+        in.add(tx("R2","USD",200));
+        in.add(tx("R3","VND",300));
+        List<Tx> pa = new ArrayList<>();
+        pa.add(tx("R1","USD",100));
+        pa.add(tx("R2","USD",250));
+        pa.add(tx("R4","VND",400));
+
+        Map<String, List<String>> r = Reconciler.reconcile(in, pa, 0);
+        check("matched R1", r.get("MATCHED").contains("R1"), r.toString());
+        check("mismatch R2", r.get("AMOUNT_MISMATCH").contains("R2"), r.toString());
+        check("missing internal R3", r.get("MISSING_INTERNAL").contains("R3"), r.toString());
+        check("missing partner R4", r.get("MISSING_PARTNER").contains("R4"), r.toString());
+        check("khong co fee diff khi tolerance 0", r.get("FEE_DIFF").isEmpty(), r.toString());
+
+        Map<String, List<String>> r2 = Reconciler.reconcile(in, pa, 50);
+        check("fee diff R2 khi tolerance 50", r2.get("FEE_DIFF").contains("R2"), r2.toString());
+        check("R2 khong con la mismatch", r2.get("AMOUNT_MISMATCH").isEmpty(), r2.toString());
+        check("matched van la R1", r2.get("MATCHED").contains("R1"), r2.toString());
+
+        // one-to-one: partner chi 1 R1, internal 2 R1
+        List<Tx> inDup = new ArrayList<>();
+        inDup.add(tx("R1","USD",100));
+        inDup.add(tx("R1","USD",100));
+        List<Tx> paOne = new ArrayList<>();
+        paOne.add(tx("R1","USD",100));
+        Map<String, List<String>> r3 = Reconciler.reconcile(inDup, paOne, 0);
+        check("one-to-one chi 1 matched", r3.get("MATCHED").size() == 1, r3.toString());
+        check("one-to-one dong thu 2 missing", r3.get("MISSING_INTERNAL").size() == 1, r3.toString());
+
+        // khac tien te -> khong khop
+        List<Tx> inCur = new ArrayList<>();
+        inCur.add(tx("R1","USD",100));
+        List<Tx> paCur = new ArrayList<>();
+        paCur.add(tx("R1","VND",100));
+        Map<String, List<String>> r4 = Reconciler.reconcile(inCur, paCur, 0);
+        check("khac tien te -> missing internal", r4.get("MISSING_INTERNAL").contains("R1"), r4.toString());
+        check("khac tien te -> missing partner", r4.get("MISSING_PARTNER").contains("R1"), r4.toString());
+        check("khac tien te -> khong matched", r4.get("MATCHED").isEmpty(), r4.toString());
+
+        check("feeTolerance am bi tu choi", expect(IllegalArgumentException.class,
+            () -> Reconciler.reconcile(in, pa, -1)), "");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Tx {
+    final String ref;
+    final String currency;
+    final long amount;
+    Tx(String ref, String currency, long amount) {
+        this.ref = ref;
+        this.currency = currency;
+        this.amount = amount;
+    }
+}
+
+class Reconciler {
+    static Map<String, List<String>> reconcile(List<Tx> internal, List<Tx> partner, long feeTolerance) {
+        if (feeTolerance < 0) throw new IllegalArgumentException("feeTolerance am");
+        Map<String, List<String>> r = new LinkedHashMap<>();
+        r.put("MATCHED", new ArrayList<>());
+        r.put("FEE_DIFF", new ArrayList<>());
+        r.put("AMOUNT_MISMATCH", new ArrayList<>());
+        r.put("MISSING_INTERNAL", new ArrayList<>());
+        r.put("MISSING_PARTNER", new ArrayList<>());
+
+        Map<String, List<Tx>> index = new LinkedHashMap<>();
+        for (Tx t : partner) {
+            index.computeIfAbsent(t.ref + "|" + t.currency, k -> new ArrayList<>()).add(t);
+        }
+        Set<Tx> used = new HashSet<>();
+        for (Tx t : internal) {
+            String key = t.ref + "|" + t.currency;
+            Tx match = null;
+            for (Tx p : index.getOrDefault(key, new ArrayList<>())) {
+                if (!used.contains(p)) { match = p; break; }
+            }
+            if (match == null) { r.get("MISSING_INTERNAL").add(t.ref); continue; }
+            used.add(match);
+            long diff = Math.abs(t.amount - match.amount);
+            if (diff == 0) r.get("MATCHED").add(t.ref);
+            else if (diff <= feeTolerance) r.get("FEE_DIFF").add(t.ref);
+            else r.get("AMOUNT_MISMATCH").add(t.ref);
+        }
+        for (Tx p : partner) {
+            if (!used.contains(p)) r.get("MISSING_PARTNER").add(p.ref);
+        }
+        return r;
+    }
+}`,
+        hints: [
+          'Khóa khớp là {{ref + "|" + currency}} — chỉ khớp hai giao dịch cùng khóa, đừng so theo ref không.',
+          'Đánh dấu dòng đối tác **đã dùng** (một {{Set}} các Tx): dòng nội bộ thứ hai cùng khóa sẽ không còn bạn ⇒ {{MISSING_INTERNAL}}. Đây là điểm "một-một" chống double-count.',
+          'Phân biệt {{FEE_DIFF}} ({{0 < |chênh| <= feeTolerance}}) với {{AMOUNT_MISMATCH}} ({{|chênh| > feeTolerance}}); bằng nhau tuyệt đối ⇒ {{MATCHED}}.',
+          'Sau khi duyệt hết nội bộ, mọi dòng đối tác chưa dùng là {{MISSING_PARTNER}} — đừng quên gom phần dư này.',
+        ],
+        explain: `Test bắt bốn hành vi, mỗi hành vi là một câu hỏi phỏng vấn:
+
+1. **Năm nhóm cơ bản.** Với tolerance 0: R1 khớp, R2 chênh 50 ⇒ {{AMOUNT_MISMATCH}}, R3 chỉ có nội bộ ⇒ {{MISSING_INTERNAL}}, R4 chỉ có đối tác ⇒ {{MISSING_PARTNER}}.
+2. **Ngưỡng phí.** Cùng dữ liệu với {{feeTolerance = 50}}: R2 chuyển sang {{FEE_DIFF}} và không còn là mismatch — đây là cách vận hành tránh backlog chênh lẻ.
+3. **Một-một chống double-count.** Partner chỉ có một R1, internal có hai R1: chỉ một dòng {{MATCHED}}, dòng còn lại {{MISSING_INTERNAL}}. Nếu bạn không đánh dấu dòng đối tác đã dùng, cả hai dòng nội bộ sẽ "khớp" vào cùng một dòng đối tác và báo MATCHED 2 — sai.
+4. **Khóa gồm tiền tệ.** Cùng ref R1 nhưng USD vs VND ⇒ không khớp, một bên {{MISSING_INTERNAL}}, một bên {{MISSING_PARTNER}}. Nếu chỉ so ref, 100 USD sẽ khớp nhầm với 100 VND.
+
+Lỗi hay gặp khi viết: dùng {{List}} đánh dấu đã dùng thay vì {{Set}} (chậm và dễ sai), quên gom {{MISSING_PARTNER}} (mất dòng bóng ma), và không kiểm tra {{feeTolerance < 0}}. Trong production, bước "đánh dấu đã dùng + phân loại" phải chạy trong một transaction và idempotent theo ngày, để chạy lại cùng file không cho kết quả khác.`,
+      }
+    ],
+    check: [
+      { q: 'Vì sao đối soát phải khớp một-một (mỗi dòng đối tác chỉ dùng một lần)?', options: ['Để chạy nhanh hơn', 'Để chống double-count: một dòng đối tác không được khớp nhiều dòng nội bộ', 'Vì đối tác yêu cầu', 'Vì file luôn có dòng trùng'], answer: 1, explain: 'Đúng (B): nếu một dòng đối tác khớp được nhiều dòng nội bộ, hai giao dịch trùng sẽ cùng báo MATCHED và bị đếm hai lần. Đánh dấu dòng đã dùng đảm bảo mỗi giao dịch chỉ đối soát một lần. Sai (A): tốc độ không phải lý do. Sai (C): không phải yêu cầu đối tác mà là nguyên tắc đúng đắn. Sai (D): file có thể trùng, nhưng lý do là chống đếm sai chứ không phải vì "luôn có dòng trùng".' },
+      { q: 'Khóa khớp nên gồm những gì?', options: ['Chỉ mã tham chiếu', 'Chỉ số tiền', 'Cặp (mã tham chiếu, tiền tệ)', 'Chỉ thời điểm'], answer: 2, explain: 'Đúng (C): cùng ref nhưng khác tiền tệ (100 USD vs 100 VND) là hai giao dịch khác nhau; khóa phải gồm cả tiền tệ để không khớp nhầm. Sai (A): bỏ tiền tệ gây khớp nhầm. Sai (B): chỉ số tiền thì hai giao dịch khác ref cùng số tiền sẽ khớp sai. Sai (D): thời điểm không phải khóa chính; cùng giao dịch có thể có timestamp lệch.' },
+      { q: 'Chênh lệch 2 đồng nằm trong feeTolerance = 5 thì xếp nhóm nào?', options: ['AMOUNT_MISMATCH', 'FEE_DIFF', 'MISSING_INTERNAL', 'MATCHED'], answer: 1, explain: 'Đúng (B): chênh ≤ feeTolerance được coi là do phí/làm tròn ⇒ FEE_DIFF, không điều tra. Sai (A): chênh lớn hơn tolerance mới là AMOUNT_MISMATCH. Sai (C): hai bên đều có giao dịch nên không phải missing. Sai (D): số tiền khác nhau (chênh 2 ≠ 0) nên không phải MATCHED.' }
+    ],
+    related: ['banking-024', 'banking-058', 'banking-080'],
+    tags: ['reconciliation', 'one-to-one', 'multi-currency', 'fee-tolerance', 'break', 'banking']
+  },
+  {
+    id: 'lesson-banking-023',
+    track: 'banking',
+    order: 23,
+    title: 'Sổ cái đa tiền tệ và quy đổi ngoại tệ: tiền tệ ghi sổ, tỷ giá hạch toán, revaluation và cân bằng chéo tiền tệ',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Hiểu tiền tệ ghi sổ (ledger currency) khác tiền tệ giao dịch, và mỗi bút toán phải cân bằng trong tiền tệ ghi sổ',
+      'Nắm quy trình revaluation (định giá lại) cuối kỳ: tính chênh tỷ giá, ghi chênh lệch vào tài khoản chênh tỷ giá (gain/loss), cập nhật số dư ngoại tệ',
+      'Viết {{MultiCurrencyLedger}} với {{post}}, {{revalue}}, {{balance}}, {{trialBalance}} thỏa các bất biến: cân bằng tiền tệ ghi sổ, revaluation idempotent theo kỳ'
+    ],
+    body: `**Tóm tắt:** Sổ cái đa tiền tệ lưu mỗi bút toán ở **hai** mặt tiền: **tiền tệ ghi sổ** (VND — tiền tệ chính của ngân hàng) và **tiền tệ gốc** (USD, EUR... — tiền tệ giao dịch thực tế). Mỗi bút toán phải cân bằng ở tiền tệ ghi sổ. Cuối kỳ, revaluation dùng tỷ giá chốt sổ để định giá lại số dư ngoại tệ, chênh lệch ghi vào tài khoản chênh tỷ giá (gain/loss), và **chỉ số dư ngoại tệ thay đổi, số dư tiền tệ ghi sổ được cập nhật theo**.
+
+### Chuyện thật: sổ cái khớp VND nhưng ngoại tệ "mất" 5 tỷ
+
+Ngân hàng có tài khoản Nostro tại Mỹ giữ USD. Trong tháng, khách gửi 1.000.000 USD (tỷ giá 24.000 → ghi sổ 24.000.000.000 VND). Cuối tháng, tỷ giá chốt sổ là 24.500. Nếu **không revaluation**, sổ cái VND vẫn 24 tỷ, nhưng thực tế USD đó giờ trị giá 24.5 tỷ VND. Chênh 500 triệu VND là **chênh tỷ giá chưa thực hiện (unrealized FX gain)** — nếu không ghi, báo cáo sai, kiểm toán sẽ hỏi. Revaluation ghi: Nợ Tài khoản Nostro/USD (+500 triệu VND), Có Tài khoản Chênh tỷ giá/Unrealized Gain (+500 triệu VND). Bây giờ sổ cái VND khớp 24.5 tỷ, USD vẫn 1.000.000.
+
+### Tiền tệ ghi sổ vs tiền tệ gốc
+
+- **Tiền tệ ghi sổ (ledger currency / functional currency)**: tiền tệ dùng để lập báo cáo tài chính, tính lãi/lộ, đối soát tổng thể. Ở Việt Nam là **VND**. Mọi bút toán **phải cân bằng ở tiền tệ này**.
+- **Tiền tệ gốc (transaction currency / original currency)**: tiền tệ thực tế của giao dịch (USD, EUR, CNY...). Số dư tài khoản ngoại tệ được lưu **song song**: một cột số dư tiền tệ gốc, một cột số dư tiền tệ ghi sổ.
+
+Khi ghi một bút toán chuyển 100 USD (tỷ giá 24.000):
+| Tài khoản | Nợ (VND) | Có (VND) | Nợ (USD) | Có (USD) |
+|---|---|---|---|---|
+| Nostro/USD | 2.400.000 | | 100 | |
+| Khách/USD | | 2.400.000 | | 100 |
+
+Tổng Nợ VND = Tổng Có VND = 2.400.000. Tổng Nợ USD = Tổng Có USD = 100. **Cân bằng ở cả hai tiền tệ**.
+
+### Tỷ giá: hạch toán vs thị trường
+
+- **Tỷ giá hạch toán (booking rate)**: tỷ giá dùng **tại thời điểm ghi bút toán**. Là tỷ giá thực tế giao dịch xảy ra (tỷ giá counter, tỷ giá deal). Ghi vào bút toán và **không bao giờ đổi**.
+- **Tỷ giá chốt sổ (closing rate / revaluation rate)**: tỷ giá dùng **cuối kỳ** để revaluation. Do Ngân hàng Trung ương công bố hoặc nội bộ quy định. Dùng cho **tất cả** tài khoản ngoại tệ cùng lúc.
+- **Tỷ giá trung bình (average rate)**: dùng cho báo cáo lãi/lộ (dòng tiền), không dùng cho revaluation số dư.
+
+> Quy tắc vàng: bút toán ghi bằng tỷ giá hạch toán của **ngay lúc đó**. Revaluation cuối kỳ dùng tỷ giá chốt sổ **cùng một lúc cho mọi tài khoản**. Không được dùng tỷ giá hôm nay để sửa bút toán hôm qua.
+
+### Revaluation (định giá lại) cuối kỳ
+
+Revaluation là quá trình **định giá lại** số dư ngoại tệ theo tỷ giá chốt sổ mới. Chỉ tác động đến:
+1. **Số dư tiền tệ ghi sổ** của tài khoản ngoại tệ: cập nhật = số dư ngoại tệ × tỷ giá chốt sổ mới.
+2. **Tài khoản chênh tỷ giá (FX gain/loss)**: ghi nhận chênh lệch giữa số dư tiền tệ ghi sổ cũ và mới.
+3. **Số dư tiền tệ gốc (ngoại tệ) KHÔNG ĐỔI** — vì số tiền thực tế trong tài khoản Nostro không thay đổi.
+
+Ví dụ: Tài khoản Nostro có 1.000.000 USD. Trước revaluation: tỷ giá cũ 24.000 → số dư VND = 24.000.000.000. Sau revaluation: tỷ giá mới 24.500 → số dư VND = 24.500.000.000. Chênh +500.000.000 VND:
+
+~~~java
+// Bút toán revaluation (chỉ ghi thêm, không sửa bút toán cũ)
+List<Entry> reval = List.of(
+    new Entry("Nostro/USD", 500_000_000, false, 1_000_000), // Có VND, số dư USD không đổi
+    new Entry("FX/UnrealizedGain", 500_000_000, true, 0)     // Nợ VND, không có ngoại tệ
+);
+// Tổng Nợ = Tổng Có = 500.000.000 VND. Cân bằng.
+~~~
+
+### Revaluation idempotent theo kỳ
+
+Revaluation cho cùng một kỳ (cùng ngày chốt sổ, cùng bộ tỷ giá) chạy bao nhiêu lần cũng cho **cùng một kết quả**. Lần đầu ghi bút toán revaluation; lần sau thấy kỳ đó đã revalue → no-op. Điều này quan trọng khi batch chạy lại do sự cố (xem bài EOD).
+
+### Cân bằng chéo tiền tệ (cross-currency balance check)
+
+Cuối ngày, đối soát phải kiểm tra:
+- Tổng số dư VND của **tất cả** tài khoản ngoại tệ (sau revaluation) phải khớp với tổng tài khoản ngoại tệ trong sổ cái VND.
+- Tổng số dư ngoại tệ của từng ccy (USD, EUR...) phải khớp với báo cáo Nostro/Vostro từ ngân hàng đối tác.
+
+Đây là điều kiện **cân bằng chéo**: không chỉ sổ cái VND cân bằng, mà số dư ngoại tệ cũng phải khớp với thực tế bên ngoài.
+
+### Lỗi hay gặp trên production
+
+1. **Ghi bút toán ngoại tệ không cân bằng VND**: dùng tỷ giá khác nhau cho Nợ và Có trong cùng một giao dịch, hoặc làm tròn sai khiến tổng Nợ VND ≠ Tổng Có VND.
+2. **Sửa bút toán cũ khi tỷ giá đổi**: bút toán hôm qua ghi tỷ giá 24.000, hôm nay tỷ giá 24.500 → vào sửa bút toán hôm qua thành 24.500. **Tuyệt đối không được** — bút toán đã ghi là bằng chứng pháp lý, tỷ giá hạch toán là bất biến.
+3. **Revaluation không idempotent**: chạy lại revaluation cùng kỳ cộng dồn chênh lệch. Cần khóa (account, period) hoặc (period) để no-op.
+4. **Quên tài khoản chênh tỷ giá**: chỉ cập nhật số dư VND mà không ghi chênh lệch → sổ cái VND bị mất cân bằng (tổng Nợ ≠ Tổng Có).
+5. **Dùng double cho tỷ giá/số tiền**: 24.000 * 1.000.000 tính bằng double ra 24.000.000.000.000004. Dùng **long** (VND) và **BigDecimal** cho tỷ giá, làm tròn HALF_UP về đồng.
+
+### Ví dụ đời thực
+
+- **Triệu chứng:** Cuối quý 3, báo cáo tài chính chênh lệch 2.3 tỷ VND so với sổ cái Nostro. Kiểm toán yêu cầu minh chứng.
+- **Điều tra:** Revaluation quý 3 dùng tỷ giá 24.500 nhưng tài khoản Nostro/USD lớn nhất (số dư 50 triệu USD) **bị quên không revalue** do code lọc bỏ tài khoản có cờ "inactive" sai chỗ. Chênh 50 triệu × 500 = 25 tỷ VND, nhưng các tài khoản khác revalue đúng nên chênh tổng chỉ 2.3 tỷ.
+- **Xử lý:** Chạy revaluation bổ sung cho tài khoản bị bỏ (tỷ giá vẫn là 24.500 của cuối quý), ghi bút toán điều chỉnh vào kỳ hiện tại (không sửa kỳ cũ). Cập nhật code lọc tài khoản.
+- **Kết quả đo được:** Sổ cái VND và ngoại tệ khớp chéo, báo cáo tài chính đúng, kiểm toán đạt unqualified opinion.
+
+> Senior tip: Luôn có **bảng tỷ giá chốt sổ theo ngày** (rate table: date, currency, rate) với ràng buộc UNIQUE(date, currency). Revaluation đọc từ bảng này — không bao giờ hardcode tỷ giá. Batch revaluation ghi log: tài khoản nào được revalue, tỷ giá cũ/mới, chênh lệch VND, tài khoản gain/loss. Khi đối soát Nostro, so sánh **số dư ngoại tệ** (USD) với confirmation từ ngân hàng đối tác, không chỉ số dư VND.
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Ngân hàng có tài khoản ngoại tệ, cuối kỳ tỷ giá đổi. Số dư ngoại tệ có đổi không? Số dư VND có đổi không? Ghi sổ thế nào?"
+
+**Cách trả lời:** Số dư **ngoại tệ (USD) không đổi** — tiền thực trong Nostro vẫn nguyên. Số dư **VND thay đổi** theo tỷ giá chốt sổ mới. Ghi bút toán revaluation: Nợ/Có tài khoản ngoại tệ (cập nhật số dư VND) và Có/Nợ tài khoản **Chênh tỷ giá (FX Gain/Loss)**. Bút toán này cân bằng ở VND, không đụng vào số dư USD. Tỷ giá hạch toán của các bút toán cũ **giữ nguyên**, chỉ revaluation dùng tỷ giá chốt sổ mới. Revaluation phải **idempotent theo kỳ**: chạy lại cùng kỳ không cộng dồn chênh lệch. Dùng **BigDecimal** cho tỷ giá, **long** cho tiền VND, làm tròn HALF_UP. Cuối kỳ đối soát chéo: tổng VND tài khoản ngoại tệ khớp sổ cái, tổng USD khớp confirmation Nostro.
+
+**Câu hỏi 2:** "Tại sao không được sửa bút toán cũ khi tỷ giá đổi?"
+
+**Cách trả lời 2:** Bút toán là bằng chứng pháp lý, ghi nhận **sự thật tại thời điểm đó**. Tỷ giá hạch toán là một thuộc tính bất biến của bút toán. Sửa bút toán cũ làm mất dấu vết, vi phạm append-only (bài 5), và làm sai đường kiểm toán: người sau không biết bút toán này giờ dùng tỷ giá hôm nay hay hôm qua. Revaluation tồn tại chính để giải quyết vấn đề này: ghi bút toán **mới** để điều chỉnh số dư VND lên/xuống theo thực tế hiện tại, trong khi bút toán cũ nguyên vẹn.
+
+**Câu hỏi 3:** "Revaluation chạy lại do batch lỗi, phải đảm bảo gì?"
+
+**Cách trả lời 3:** **Idempotent theo kỳ**. Key là (period, rateSet) hoặc (period). Lần đầu ghi bút toán revaluation, đánh dấu kỳ đã revalue. Lần sau thấy kỳ đó đã xong → no-op, không ghi thêm bút toán, không cộng dồn chênh lệch. Tương tự batch EOD (bài 9): chìa khóa tự nhiên (account, period) + checkpoint.`,
+    exercises: [
+      {
+        title: 'MultiCurrencyLedger: post, revalue, balance, trialBalance',
+        prompt: `Viết {{MultiCurrencyLedger}} quản lý sổ cái đa tiền tệ (tiền tệ ghi sổ là VND). Chỉ dùng JDK chuẩn, Java 17, không class public ngoài Main.
+
+**Cấu trúc dữ liệu:**
+- {{Entry}}: {{account}}, {{currency}} (VD: "USD", "VND"), {{amountFc}} (số tiền tiền tệ gốc, long), {{amountLc}} (số tiền tiền tệ ghi sổ VND, long), {{debit}} (true = Nợ/tiền đi ra).
+- Tiền tệ ghi sổ VND: {{currency == "VND"}} ⇒ {{amountFc == amountLc}}.
+- Bút toán phải cân bằng: tổng Nợ VND = Tổng Có VND; tổng Nợ ngoại tệ = Tổng Có ngoại tệ (mỗi ccy riêng).
+
+**API:**
+- {{MultiCurrencyLedger()}}: khởi tạo.
+- {{void post(String txId, List<Entry> entries, String rateId)}}: ghi bút toán. Kiểm tra cân bằng VND và cân bằng từng ngoại tệ. {{txId}} là khóa idempotent (đã có ⇒ no-op trả {{false}}). {{rateId}} là mã phiên tỷ giá (dùng để audit). Trả {{true}} nếu ghi mới.
+- {{void revalue(String period, Map<String, BigDecimal> closingRates)}}: revaluation cuối kỳ. {{period}} ví dụ "2026-09". {{closingRates}} map tiền tệ → tỷ giá chốt sổ (BigDecimal). Chỉ tác động tài khoản có {{currency != "VND"}}.
+  - Với mỗi tài khoản ngoại tệ: số dư VND mới = {{balanceFc}} × {{closingRate}} (làm tròn HALF_UP về đồng). Chênh = số dư VND mới - số dư VND cũ.
+  - Ghi bút toán revaluation: tài khoản ngoại tệ Có/Nợ VND chênh lệch, tài khoản {{"FX/RevalGain"}} hoặc {{"FX/RevalLoss"}} ghi nhận chênh. **Idempotent theo period**: cùng period chạy lại ⇒ no-op.
+- {{Balance balance(String account)}}: trả {{Balance}} có {{amountFc}}, {{amountLc}}, {{currency}}.
+- {{Map<String, Balance> trialBalance()}}: trả sơ cân đối (trial balance) tất cả tài khoản, cân bằng ở VND.
+- {{boolean alreadyRevalued(String period)}}.
+
+**Quy tắc biên:** {{txId}} rỗng, {{entries}} < 2, {{amountLc <= 0}}, {{amountFc <= 0}} (ngoại tệ), {{amountFc != amountLc}} (VND), không cân bằng VND, không cân bằng ngoại tệ ⇒ ném {{IllegalArgumentException}} và không ghi gì. {{closingRates}} thiếu tiền tệ của tài khoản nào ⇒ ném {{IllegalArgumentException}}.
+`,
+        starter: `import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.*;
+
+class Entry {
+    final String account;
+    final String currency; // "VND", "USD", "EUR"...
+    final long amountFc;   // số tiền tiền tệ gốc
+    final long amountLc;   // số tiền tiền tệ ghi sổ (VND)
+    final boolean debit;   // true = Nợ (tiền đi ra khỏi tài khoản này)
+    Entry(String account, String currency, long amountFc, long amountLc, boolean debit) {
+        this.account = account;
+        this.currency = currency;
+        this.amountFc = amountFc;
+        this.amountLc = amountLc;
+        this.debit = debit;
+    }
+}
+
+class Balance {
+    final String account;
+    final String currency;
+    final long amountFc;
+    final long amountLc;
+    Balance(String account, String currency, long amountFc, long amountLc) {
+        this.account = account;
+        this.currency = currency;
+        this.amountFc = amountFc;
+        this.amountLc = amountLc;
+    }
+}
+
+class MultiCurrencyLedger {
+    // TODO: cấu trúc dữ liệu
+    boolean post(String txId, List<Entry> entries, String rateId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void revalue(String period, Map<String, BigDecimal> closingRates) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Balance balance(String account) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Map<String, Balance> trialBalance() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean alreadyRevalued(String period) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Entry en(String acc, String ccy, long fc, long lc, boolean dr) {
+        return new Entry(acc, ccy, fc, lc, dr);
+    }
+    static List<Entry> of(Entry... a) { return new ArrayList<>(Arrays.asList(a)); }
+    static BigDecimal bd(String s) { return new BigDecimal(s); }
+
+    public static void main(String[] args) {
+        MultiCurrencyLedger mcl = new MultiCurrencyLedger();
+
+        // Ghi bút toán VND thuần: nạp 1 tỷ VND vào Nostro/VND
+        check("post VND ok", mcl.post("T1", of(en("Nostro/VND", "VND", 1_000_000_000L, 1_000_000_000L, false),
+                                                en("SYS/Opening", "VND", 1_000_000_000L, 1_000_000_000L, true)), "RATE-1"), "");
+        check("balance Nostro/VND", mcl.balance("Nostro/VND").amountLc == 1_000_000_000L, "lc=" + mcl.balance("Nostro/VND").amountLc);
+
+        // Ghi bút toán USD: khách gửi 100.000 USD, tỷ giá 24.000
+        check("post USD ok", mcl.post("T2", of(en("Nostro/USD", "USD", 100_000L, 2_400_000_000L, false),
+                                                en("Customer/USD", "USD", 100_000L, 2_400_000_000L, true)), "RATE-1"), "");
+        check("balance Nostro/USD fc", mcl.balance("Nostro/USD").amountFc == 100_000L, "fc=" + mcl.balance("Nostro/USD").amountFc);
+        check("balance Nostro/USD lc", mcl.balance("Nostro/USD").amountLc == 2_400_000_000L, "lc=" + mcl.balance("Nostro/USD").amountLc);
+
+        // Idempotent txId
+        check("duplicate txId no-op", !mcl.post("T2", of(en("Nostro/USD", "USD", 50_000L, 1_200_000_000L, false),
+                                                          en("Customer/USD", "USD", 50_000L, 1_200_000_000L, true)), "RATE-2"), "");
+        check("balance unchanged after duplicate", mcl.balance("Nostro/USD").amountFc == 100_000L && mcl.balance("Nostro/USD").amountLc == 2_400_000_000L, "");
+
+        // Revaluation kỳ 2026-09: tỷ giá mới 24.500
+        Map<String, BigDecimal> rates = new HashMap<>();
+        rates.put("USD", bd("24500"));
+        mcl.revalue("2026-09", rates);
+        check("revalue updates LC balance", mcl.balance("Nostro/USD").amountLc == 2_450_000_000L, "lc=" + mcl.balance("Nostro/USD").amountLc);
+        check("revalue fc unchanged", mcl.balance("Nostro/USD").amountFc == 100_000L, "fc=" + mcl.balance("Nostro/USD").amountFc);
+        check("reval gain recorded", mcl.balance("FX/RevalGain").amountLc == 50_000_000L, "gain=" + mcl.balance("FX/RevalGain").amountLc);
+
+        // Revalue lại cùng kỳ = no-op
+        mcl.revalue("2026-09", rates);
+        check("revalue idempotent", mcl.balance("Nostro/USD").amountLc == 2_450_000_000L && mcl.balance("FX/RevalGain").amountLc == 50_000_000L, "");
+        check("alreadyRevalued true", mcl.alreadyRevalued("2026-09"), "");
+
+        // Trial balance: tổng Nợ VND = Tổng Có VND
+        Map<String, Balance> tb = mcl.trialBalance();
+        long totalDr = 0, totalCr = 0;
+        for (Balance b : tb.values()) {
+            if (b.amountLc > 0) totalDr += b.amountLc; // giả định Nợ là dương, Có là âm trong balance? Cần quy ước
+            else totalCr += -b.amountLc;
+        }
+        // Đơn giản: kiểm tra tổng amountLc tất cả tài khoản = 0 (Nợ trừ Có = 0)
+        long sumLc = 0;
+        for (Balance b : tb.values()) sumLc += b.amountLc;
+        check("trial balance LC balanced", sumLc == 0, "sumLc=" + sumLc);
+
+        // Thiếu rate -> IllegalArgumentException
+        check("missing rate throws", expect(IllegalArgumentException.class, () -> {
+            Map<String, BigDecimal> bad = new HashMap<>();
+            bad.put("EUR", bd("26000"));
+            mcl.revalue("2026-10", bad);
+        }), "");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.*;
+
+class Entry {
+    final String account;
+    final String currency;
+    final long amountFc;
+    final long amountLc;
+    final boolean debit;
+    Entry(String account, String currency, long amountFc, long amountLc, boolean debit) {
+        this.account = account;
+        this.currency = currency;
+        this.amountFc = amountFc;
+        this.amountLc = amountLc;
+        this.debit = debit;
+    }
+}
+
+class Balance {
+    final String account;
+    final String currency;
+    final long amountFc;
+    final long amountLc;
+    Balance(String account, String currency, long amountFc, long amountLc) {
+        this.account = account;
+        this.currency = currency;
+        this.amountFc = amountFc;
+        this.amountLc = amountLc;
+    }
+}
+
+class MultiCurrencyLedger {
+    private final Map<String, AccountBal> accounts = new HashMap<>();
+    private final Set<String> postedTx = new HashSet<>();
+    private final Set<String> revaluedPeriods = new HashSet<>();
+    private final Map<String, List<Entry>> txLog = new LinkedHashMap<>();
+
+    private static class AccountBal {
+        String currency;
+        long amountFc = 0;
+        long amountLc = 0;
+    }
+
+    boolean post(String txId, List<Entry> entries, String rateId) {
+        if (txId == null || txId.isEmpty()) throw new IllegalArgumentException("txId rong");
+        if (postedTx.contains(txId)) return false;
+        if (entries == null || entries.size() < 2) throw new IllegalArgumentException("can 2 but toan");
+
+        long drLc = 0, crLc = 0;
+        Map<String, Long> drFc = new HashMap<>();
+        Map<String, Long> crFc = new HashMap<>();
+        Map<String, Long> deltaLc = new LinkedHashMap<>();
+        Map<String, Long> deltaFc = new LinkedHashMap<>();
+
+        for (Entry e : entries) {
+            if (e.account == null || e.account.isEmpty()) throw new IllegalArgumentException("account rong");
+            if (e.amountLc <= 0) throw new IllegalArgumentException("amountLc phai duong");
+            if ("VND".equals(e.currency) && e.amountFc != e.amountLc) throw new IllegalArgumentException("VND: amountFc phai bang amountLc");
+            if (!"VND".equals(e.currency) && e.amountFc <= 0) throw new IllegalArgumentException("ngoai te: amountFc phai duong");
+
+            long signedLc = e.debit ? -e.amountLc : e.amountLc;
+            if (e.debit) drLc += e.amountLc; else crLc += e.amountLc;
+            deltaLc.merge(e.account, signedLc, Long::sum);
+
+            if (!"VND".equals(e.currency)) {
+                long signedFc = e.debit ? -e.amountFc : e.amountFc;
+                if (e.debit) drFc.merge(e.currency, e.amountFc, Long::sum); else crFc.merge(e.currency, e.amountFc, Long::sum);
+                deltaFc.merge(e.account + "|" + e.currency, signedFc, Long::sum);
+            }
+        }
+        if (drLc != crLc) throw new IllegalArgumentException("Lech Neh/Coh VND: " + drLc + " != " + crLc);
+        Set<String> ccys = new HashSet<>(drFc.keySet()); ccys.addAll(crFc.keySet());
+        for (String ccy : ccys) {
+            if (drFc.getOrDefault(ccy, 0L).longValue() != crFc.getOrDefault(ccy, 0L).longValue()) throw new IllegalArgumentException("Lech Neh/Coh " + ccy);
+        }
+
+        for (Map.Entry<String, Long> d : deltaLc.entrySet()) {
+            accounts.computeIfAbsent(d.getKey(), k -> new AccountBal()).amountLc += d.getValue();
+        }
+        for (Map.Entry<String, Long> d : deltaFc.entrySet()) {
+            String[] k = d.getKey().split("\\\\|");
+            AccountBal ab = accounts.computeIfAbsent(k[0], x -> { AccountBal a = new AccountBal(); a.currency = k[1]; return a; });
+            if (ab.currency == null) ab.currency = k[1]; // tài khoản đã được tạo ở vòng VND phía trên
+            ab.amountFc += d.getValue();
+        }
+        postedTx.add(txId);
+        txLog.put(txId, new ArrayList<>(entries));
+        return true;
+    }
+
+    void revalue(String period, Map<String, BigDecimal> closingRates) {
+        if (period == null || period.isEmpty()) throw new IllegalArgumentException("period rong");
+        if (revaluedPeriods.contains(period)) return; // idempotent
+        if (closingRates == null || closingRates.isEmpty()) throw new IllegalArgumentException("thieu rate");
+
+        Map<String, Long> revalDeltaLc = new LinkedHashMap<>();
+        for (Map.Entry<String, AccountBal> e : accounts.entrySet()) {
+            String acc = e.getKey();
+            AccountBal ab = e.getValue();
+            if (ab.currency == null || "VND".equals(ab.currency)) continue; // tài khoản VND (currency null) không đánh giá lại
+            BigDecimal rate = closingRates.get(ab.currency);
+            if (rate == null) throw new IllegalArgumentException("thieu rate cho " + ab.currency);
+            long newLc = rate.multiply(BigDecimal.valueOf(ab.amountFc)).setScale(0, RoundingMode.HALF_UP).longValue();
+            long diff = newLc - ab.amountLc;
+            if (diff != 0) {
+                revalDeltaLc.merge(acc, diff, Long::sum);
+                String gainLoss = diff > 0 ? "FX/RevalGain" : "FX/RevalLoss";
+                revalDeltaLc.merge(gainLoss, diff, Long::sum); // số dư mới áp dụng một lần qua vòng delta bên dưới
+            }
+        }
+        for (Map.Entry<String, Long> d : revalDeltaLc.entrySet()) {
+            accounts.computeIfAbsent(d.getKey(), k -> { AccountBal a = new AccountBal(); a.currency = "VND"; return a; }).amountLc += d.getValue();
+        }
+        revaluedPeriods.add(period);
+    }
+
+    Balance balance(String account) {
+        AccountBal ab = accounts.get(account);
+        if (ab == null) return new Balance(account, "VND", 0, 0);
+        return new Balance(account, ab.currency, ab.amountFc, ab.amountLc);
+    }
+
+    Map<String, Balance> trialBalance() {
+        Map<String, Balance> tb = new LinkedHashMap<>();
+        for (Map.Entry<String, AccountBal> e : accounts.entrySet()) {
+            tb.put(e.getKey(), new Balance(e.getKey(), e.getValue().currency, e.getValue().amountFc, e.getValue().amountLc));
+        }
+        return tb;
+    }
+
+    boolean alreadyRevalued(String period) {
+        return revaluedPeriods.contains(period);
+    }
+}`,
+        hints: [
+          'Dùng Map<String, AccountBal> lưu cả amountFc và amountLc. Với VND, amountFc = amountLc; với ngoại tệ, amountFc lưu số tiền gốc, amountLc lưu quy đổi VND.',
+          'post: cộng dồn Nợ/Có VND và Nợ/Có từng ngoại tệ vào Map tạm, kiểm tra cân bằng TRƯỚC khi ghi. Idempotent txId ở đầu.',
+          'revalue: duyệt tất cả tài khoản ngoại tệ, tính newLc = amountFc * rate (HALF_UP). Chênh = newLc - oldLc. Ghi delta: tài khoản ngoại tệ +/- chênh, tài khoản FX/RevalGain hoặc FX/RevalLoss -/+ chênh. Đánh dấu period đã revalue.',
+          'Balance: amountLc có thể âm (tài khoản Có nhiều hơn Nợ). trialBalance trả về tất cả, tổng amountLc phải = 0.',
+        ],
+        explain: `Test kiểm tra bốn lớp bất biến, mỗi lớp là một câu phỏng vấn:
+1. **Cân bằng kép**: bút toán USD phải cân bằng ở VND (tổng Nợ VND = Tổng Có VND) VÀ cân bằng ở USD (Tổng Nợ USD = Tổng Có USD). Test {{post USD ok}} và {{trial balance LC balanced}} bắt điều này.
+2. **Idempotent txId**: ghi lại {{T2}} với entries khác vẫn no-op, số dư không đổi.
+3. **Revaluation chỉ đổi LC, không đổi FC**: sau revalue, {{amountFc}} vẫn 100.000 USD, {{amountLc}} thành 2.450.000.000 VND, chênh 50.000.000 ghi vào {{FX/RevalGain}}.
+4. **Revaluation idempotent theo kỳ**: chạy lại {{revalue("2026-09", ...)}} không cộng dồn gain, {{alreadyRevalued}} trả true.
+
+Lỗi hay gặp: quên kiểm tra cân bằng ngoại tệ (chỉ check VND), dùng double cho tỷ giá (BigDecimal bắt buộc), revalue không idempotent (chạy lại cộng dồn gain), và quên cập nhật amountLc của tài khoản ngoại tệ (chỉ ghi gain/loss mà không đổi số dư tài khoản).`,
+      },
+    ],
+    check: [
+      { q: 'Trong sổ cái đa tiền tệ, một bút toán chuyển 100 USD (tỷ giá 24.000) phải thỏa mãn điều kiện gì?', options: ['Chỉ cân bằng ở VND', 'Chỉ cân bằng ở USD', 'Cân bằng ở CẢ VND VÀ USD (tổng Nợ = Tổng Có ở mỗi tiền tệ)', 'Không cần cân bằng vì là ngoại tệ'], answer: 2, explain: 'Đúng (C): kế toán kép đa tiền tệ yêu cầu mỗi bút toán cân bằng ở tiền tệ ghi sổ (VND) VÀ ở từng tiền tệ gốc. Nợ VND = Có VND = 2.400.000; Nợ USD = Có USD = 100. Sai (A), (B): chỉ cân bằng một bên là không đủ. Sai (D): luôn phải cân bằng.' },
+      { q: 'Revaluation cuối kỳ thay đổi cái gì và không thay đổi cái gì?', options: ['Đổi cả số dư ngoại tệ và VND', 'Đổi số dư VND, KHÔNG đổi số dư ngoại tệ', 'Đổi số dư ngoại tệ, KHÔNG đổi số dư VND', 'Không đổi gì cả'], answer: 1, explain: 'Đúng (B): revaluation dùng tỷ giá chốt sổ mới để định giá lại số dư VND = số dư ngoại tệ × tỷ giá mới. Số dư ngoại tệ (số tiền thực trong Nostro) không thay đổi. Chênh lệch ghi vào tài khoản chênh tỷ giá (FX Gain/Loss). Sai (A): ngoại tệ không đổi. Sai (C): VND phải đổi. Sai (D): phải ghi bút toán revaluation.' },
+      { q: 'Tại sao revaluation phải idempotent theo kỳ (period)?', options: ['Để chạy nhanh hơn', 'Để chạy lại batch do lỗi không cộng dồn chênh lệch gain/loss', 'Vì quy định Basel III', 'Để giảm dung lượng log'], answer: 1, explain: 'Đúng (B): batch revaluation có thể bị kill giữa chừng và chạy lại. Nếu không idempotent, lần chạy thứ hai sẽ cộng thêm chênh lệch gain/loss, làm sai số dư VND và báo cáo tài chính. Idempotent theo period (đánh dấu period đã revalue) đảm bảo chạy bao nhiêu lần cũng cho một kết quả. Sai (A), (C), (D): không phải lý do chính.' },
+    ],
+    related: ['banking-005', 'banking-009', 'banking-014'],
+    tags: ['ledger', 'multi-currency', 'fx', 'revaluation', 'gain-loss', 'idempotency', 'banking']
+  },
+  {
+    id: 'lesson-banking-024',
+    track: 'banking',
+    order: 24,
+    title: 'Đối soát ba bên và quản lý ngoại lệ: internal ↔ partner ↔ settlement, break aging, auto-resolve và maker-checker',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Hiểu đối soát ba bên (three-way reconciliation): so khớp sổ cái nội bộ, file đối tác, và file settlement/thanh toán thực tế',
+      'Thiết kế quy trình quản lý break (ngoại lệ): phân loại, ưu tiên, SLA, aging, auto-resolve cho chênh lẻ, maker-checker cho điều chỉnh',
+      'Viết {{ThreeWayReconciler}} với {{reconcile}}, {{autoResolve}}, {{escalate}}, {{adjust}} (maker-checker) và theo dõi aging theo ngày'
+    ],
+    body: `**Tóm tắt:** Đối soát thực tế thường có **ba** nguồn dữ liệu: sổ cái nội bộ (ledger), file đối tác (partner file — ngân hàng/VNPay/NAPAS), và file settlement (file chốt toán tiền thực tế về tài khoản Nostro/Vostro). Ba bên này phải khớp nhau. Khi lệch (break), cần quy trình: phân loại → auto-resolve (chênh phí/ngưỡng) → aging theo ngày → escalation → điều chỉnh maker-checker. Không bao giờ tự sửa số liệu; mọi điều chỉnh phải qua phê duyệt và để dấu vết audit.
+
+### Chuyện thật: ba file, ba con số, không cái nào khớp
+
+Cuối tháng, bộ phận điều hành có ba file:
+1. **Sổ cái nội bộ**: ghi nhận 1.250 giao dịch, tổng 125 tỷ VND.
+2. **File đối tác (VNPay)**: báo 1.248 giao dịch, tổng 124.95 tỷ VND.
+3. **File settlement (Ngân hàng trung ương/Nostro)**: tiền thực về tài khoản là 124.93 tỷ VND.
+
+Ba con số khác nhau. Nếu chỉ đối soát hai bên (nội bộ - đối tác), chênh 50 triệu sẽ bị bỏ qua như "phí". Nhưng settlement lại chênh 20 triệu so với đối tác — tiền thực sự ít hơn. Nguyên nhân: VNPay đã trừ phí 50 triệu, nhưng settlement chỉ chuyển 124.93 tỷ vì có một giao dịch 20 triệu bị **hold** (giữ lại do AML check) và chưa release. Nếu không có đối soát ba bên, 20 triệu này sẽ "mất" giữa không trung.
+
+### Ba nguồn dữ liệu và vai trò
+
+| Nguồn | Ví dụ | Vai trò | Đặc điểm |
+|---|---|---|---|
+| **Internal Ledger** | Sổ cái core banking | Nguồn sự thật nội bộ | Ghi ngay khi giao dịch khởi tạo, có full metadata (khách, loại, phí) |
+| **Partner File** | VNPay, NAPAS, Visa, Mastercard | Xác nhận giao dịch từ phía đối tác | Gửi cuối ngày/ngày sau, có ref, amount, status, fee |
+| **Settlement File** | Nostro statement, Central bank file | Tiền thực sự chuyển về tài khoản | Thường T+1, net amount (đã trừ phí), ít metadata hơn |
+
+Ba luồng này có thời điểm khác nhau: Internal ghi ngay (real-time), Partner gửi cuối ngày (EOD), Settlement về T+1. Đối soát phải xử lý **cửa sổ thời gian** (window) — ví dụ đối soát ngày 15 dùng Internal giao dịch ngày 15, Partner file ngày 15, Settlement T+1 của ngày 14.
+
+### Phân loại break (ngoại lệ) năm nhóm
+
+Khi so khớp ba bên, mỗi giao dịch rơi vào một nhóm:
+
+| Nhóm | Ý nghĩa | Ví dụ | Xử lý |
+|---|---|---|---|
+| **FULL_MATCH** | Ba bên khớp ref, amount, currency | Internal 100, Partner 100, Settlement 100 | OK, không làm gì |
+| **PARTNER_FEE_DIFF** | Internal = Partner + phí, Settlement = Partner | Internal 101, Partner 100, Settlement 100 | Auto-resolve: ghi nhận phí, không điều tra |
+| **SETTLEMENT_HOLD** | Partner = Settlement + hold, Internal khớp Partner | Internal 100, Partner 100, Settlement 80 (hold 20) | Theo dõi hold, auto-resolve khi release |
+| **AMOUNT_MISMATCH** | Ba bên lệch số tiền, không phải phí/hold | Internal 100, Partner 95, Settlement 95 | Điều tra: sai tỷ giá, sai map phí, lỗi ghi sổ |
+| **MISSING_ONE_SIDE** | Chỉ có ở một/two trong ba bên | Internal có, Partner không có | Timeout, inquiry, ghi nhận bổ sung |
+
+### Auto-resolve và ngưỡng (threshold)
+
+Không phải break nào cũng cần người can thiệp. Các loại auto-resolve:
+
+- **Fee tolerance**: chênh lệch ≤ ngưỡng phí (ví dụ 10.000 VND) ⇒ auto-resolve thành PARTNER_FEE_DIFF, không tạo ticket.
+- **Hold release**: Settlement thiếu so với Partner, nhưng có metadata "hold" từ ngân hàng → theo dõi, khi Settlement bù đủ → auto-resolve.
+- **Timing diff**: cùng ref, amount, nhưng timestamp lệch ≤ 1 ngày do cut-off ⇒ auto-resolve nếu ngày kế toán khớp.
+
+Auto-resolve **phải idempotent**: chạy lại cùng dữ liệu không tạo ticket trùng, không đổi trạng thái đã resolve.
+
+### Break aging và escalation
+
+Break không auto-resolve được chuyển sang **hàng đợi điều tra (investigation queue)**. Mỗi break có:
+- **Ngày phát hiện (detected date)**: ngày đối soát tìm thấy.
+- **Tuổi (aging)**: số ngày từ detected date đến hôm nay.
+- **Ưu tiên (priority)**: P1 (chênh > 1 tỷ hoặc ảnh hưởng nhiều khách), P2 (chênh 100 triệu - 1 tỷ), P3 (chênh < 100 triệu).
+- **SLA**: P1 = 24h, P2 = 3 ngày, P3 = 7 ngày.
+
+Quá SLA ⇒ **escalation** tự động: gửi alert lên quản lý, tạo ticket JIRA/ServiceNow, có thể block tài khoản liên quan nếu chênh lớn và nghi ngờ gian lận.
+
+Aging report hàng ngày là công cụ quản lý rủi ro quan trọng: "hôm nay có bao nhiêu break P1 quá 24h?" — nếu > 0 là sự cố vận hành.
+
+### Maker-Checker cho điều chỉnh (adjustment)
+
+Khi điều tra xong, nếu cần sửa số liệu (ví dụ ghi nhận phí thiếu, điều chỉnh tỷ giá, đảo giao dịch sai), **không bao giờ tự sửa**. Quy trình:
+
+1. **Maker** (nhân viên điều tra): tạo **adjustment ticket** với: break ID, lý do, bút toán đề xuất (đầy đủ Nợ/Có, tài khoản, amount), bằng chứng (file đối soát, email đối tác).
+2. **Checker** (quản lý/team leader): review bằng chứng, kiểm tra bút toán cân bằng, **approve** hoặc **reject**.
+3. Sau approve: hệ thống **tự động post bút toán điều chỉnh** vào sổ cái (dùng txId = ADJ-{breakId}), cập nhật break status = RESOLVED.
+
+Điều chỉnh cũng là một bút toán kế toán kép (bài 5), phải cân bằng, append-only, idempotent theo breakId.
+
+### Luồng đối soát ba bên
+
+~~~seq
+title: Đối soát ba bên hàng ngày
+actors: Scheduler | Recon | Internal | Partner | Settlement | Queue
+Scheduler -> Recon: run(day)
+Recon -> Internal: load transactions(day)
+Recon -> Partner: load file(day)
+Recon -> Settlement: load file(day-1)  // T+1
+Recon -> Recon: three-way match by (ref, currency)
+Recon -> Recon: classify breaks
+Recon -> Recon: auto-resolve (fee, hold, timing)
+Recon -> Queue: push remaining breaks with aging
+Recon --> Scheduler: report (matched, auto-resolved, breaks by priority)
+~~~
+
+### Lỗi hay gặp trên production
+
+1. **Chỉ đối soát hai bên (internal-partner), bỏ qua settlement**: tiền thực về tài khoản không khớp → mất tiền thầm lặng. Luôn phải có ba nguồn.
+2. **Auto-resolve không idempotent**: chạy lại đối soát cùng ngày tạo ticket trùng, hoặc đổi trạng thái break đã resolved.
+3. **Không có aging/SLA**: break P1 nằm 2 tuần không ai biết → rủi ro pháp lý, tiền mất không tìm thấy.
+4. **Maker-checker bị bỏ qua**: nhân viên tự approve ticket của mình, hoặc post bút toán điều chỉnh mà không qua approve → sai lệch, gian lận nội bộ.
+5. **Adjustment không idempotent**: approve hai lần → post hai bút toán điều chỉnh. Cần txId = ADJ-{breakId} unique.
+6. **Không đối soát chéo tiền tệ**: settlement USD khớp nhưng VND không khớp do tỷ giá khác. Cần revaluation trước đối soát (bài 23).
+
+> Senior tip: Đối soát ba bên là "lưới an toàn cuối cùng". Nếu internal-partner khớp nhưng settlement lệch, tức là tiền không về đúng nơi. Luôn so sánh **số dư thực tế tài khoản Nostro/Vostro** (từ bank statement) với **tổng số dư ngoại tệ trong sổ cái** (sau revaluation). Và nhớ: settlement thường là **net amount** (đã trừ phí) — map phí đúng là chìa khóa để Internal khớp với Settlement.
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Internal khớp Partner nhưng Settlement chênh 20 triệu. Bạn xử lý thế nào?"
+
+**Cách trả lời:** Đây là break loại **SETTLEMENT_HOLD** hoặc phí chưa map. Quy trình: (1) Kiểm tra metadata settlement: có cờ hold/pending không? (2) So sánh phí: Internal có ghi phí riêng, Partner báo net, Settlement báo net — map phí để Internal net = Settlement. (3) Nếu là hold: theo dõi aging, khi release sẽ tự khớp (auto-resolve). (4) Nếu không phải hold/phí: tạo break ticket P2, điều tra tỷ giá, map tài khoản, inquiry ngân hàng trung ương. (5) Maker tạo adjustment ticket, Checker approve, post bút toán ADJ-{breakId}. Điểm senior: nhấn mạnh ba nguồn dữ liệu, auto-resolve idempotent, aging/SLA, maker-checker.
+
+**Câu hỏi 2:** "Auto-resolve break nào, break nào cần người?"
+
+**Cách trả lời 2:** Auto-resolve: (a) chênh ≤ ngưỡng phí (fee tolerance), (b) hold có metadata rõ ràng, (c) timing diff ≤ 1 ngày do cut-off. Cần người: chênh lớn, không metadata hold, lệch tiền tệ, missing một bên, nghi ngờ gian lận. Tất cả auto-resolve phải **idempotent** và **ghi log lý do** để audit.
+
+**Câu hỏi 3:** "Tại sao adjustment phải maker-checker?"
+
+**Cách trả lời 3:** Điều chỉnh số liệu là quyền lực lớn — có thể tạo tiền từ không, che giấu lỗi, hoặc gian lận nội bộ. Maker-checker (hai người, một làm một duyệt) là kiểm soát bắt buộc của Basel/NGân hàng Trung ương. Adjustment ticket phải có: break ID, lý do, bút toán cân bằng, bằng chứng. Post tự động sau approve, txId = ADJ-{breakId} idempotent. Không cho phép sửa trực tiếp DB.
+`,
+    exercises: [
+      {
+        title: 'ThreeWayReconciler: reconcile, autoResolve, escalate, adjust (maker-checker)',
+        prompt: `Viết {{ThreeWayReconciler}} đối soát ba nguồn: Internal, Partner, Settlement. Chỉ dùng JDK chuẩn, Java 17.
+
+**Dữ liệu:**
+- {{Tx3}}: {{ref}}, {{currency}}, {{amount}} (long, VND), {{source}} (INTERNAL/PARTNER/SETTLEMENT), {{meta}} (Map<String,String> — dùng cho hold flag, fee info).
+- {{Break}}: {{breakId}}, {{ref}}, {{currency}}, {{amountInternal}}, {{amountPartner}}, {{amountSettlement}}, {{type}} (FULL_MATCH, PARTNER_FEE_DIFF, SETTLEMENT_HOLD, AMOUNT_MISMATCH, MISSING_ONE_SIDE), {{status}} (OPEN, AUTO_RESOLVED, ESCALATED, ADJUSTED, RESOLVED), {{detectedDay}}, {{agingDays}}, {{priority}} (P1/P2/P3), {{adjustmentTxId}} (null hoặc txId bút toán điều chỉnh).
+
+**API:**
+- {{ThreeWayReconciler(long feeTolerance, int holdGraceDays)}}: {{feeTolerance}} ngưỡng auto-resolve phí (VND), {{holdGraceDays}} số ngày chờ hold release trước khi escalate.
+- {{List<Break> reconcile(List<Tx3> internal, List<Tx3> partner, List<Tx3> settlement, String day)}}: {{day}} là ngày đối soát "YYYY-MM-DD". So khớp theo khóa {{(ref, currency)}}.
+  - Lập chỉ mục ba nguồn theo khóa.
+  - Phân loại từng khóa: nếu ba bên đều có và amount bằng nhau ⇒ FULL_MATCH.
+  - Internal = Partner + phí (chênh ≤ feeTolerance), Settlement = Partner ⇒ PARTNER_FEE_DIFF.
+  - Partner = Settlement + hold (meta có "hold=true"), Internal = Partner ⇒ SETTLEMENT_HOLD.
+  - Ba bên có, amount lệch > feeTolerance, không phải hold ⇒ AMOUNT_MISMATCH.
+  - Chỉ có 1-2 bên ⇒ MISSING_ONE_SIDE.
+  - Trả danh sách Break (mỗi khóa một break). FULL_MATCH status = AUTO_RESOLVED, PARTNER_FEE_DIFF/SETTLEMENT_HOLD status = AUTO_RESOLVED (nếu hold trong grace days) hoặc OPEN.
+  - Priority: chênh > 1 tỷ ⇒ P1, 100 triệu - 1 tỷ ⇒ P2, < 100 triệu ⇒ P3. Aging = 0 ngày đầu.
+- {{void autoResolve(String day)}}: chạy lại auto-resolve cho các break OPEN của {{day}} (hold đã qua grace days ⇒ chuyển OPEN; fee diff mới phát hiện ⇒ AUTO_RESOLVED). Idempotent: chạy nhiều lần không đổi trạng thái đã resolved.
+- {{List<Break> escalate(String day)}}: trả các break OPEN của {{day}} quá SLA (P1 > 1 ngày, P2 > 3 ngày, P3 > 7 ngày), cập nhật status = ESCALATED.
+- {{boolean adjust(String breakId, String maker, String checker, String adjTxId, List<Entry> adjustmentEntries)}}: maker-checker điều chỉnh.
+  - {{breakId}} phải tồn tại, status = OPEN hoặc ESCALATED.
+  - {{adjustmentEntries}} phải cân bằng VND (dùng logic bài 5).
+  - Ghi {{adjustmentTxId}} = {{adjTxId}} (idempotent: cùng adjTxId gọi lại ⇒ no-op trả false).
+  - Cập nhật status = RESOLVED. Trả true nếu điều chỉnh mới, false nếu no-op.
+- {{List<Break> getBreaks(String day, String status)}}: lọc break theo ngày và trạng thái.
+- {{Map<String, Long> agingSummary(String day)}}: trả map {{status}} → {{count}} cho break của {{day}} (dùng cho dashboard).
+
+**Quy tắc:** {{feeTolerance < 0}} ném {{IllegalArgumentException}}. {{holdGraceDays < 0}} ném {{IllegalArgumentException}}. {{breakId}} không tồn tại ném {{IllegalArgumentException}}. {{adjustmentEntries}} không cân bằng ném {{IllegalArgumentException}}.
+`,
+        starter: `import java.util.*;
+
+class Tx3 {
+    final String ref;
+    final String currency;
+    final long amount;
+    final String source; // INTERNAL, PARTNER, SETTLEMENT
+    final Map<String, String> meta;
+    Tx3(String ref, String currency, long amount, String source, Map<String, String> meta) {
+        this.ref = ref;
+        this.currency = currency;
+        this.amount = amount;
+        this.source = source;
+        this.meta = meta != null ? meta : new HashMap<>();
+    }
+}
+
+enum BreakType { FULL_MATCH, PARTNER_FEE_DIFF, SETTLEMENT_HOLD, AMOUNT_MISMATCH, MISSING_ONE_SIDE }
+enum BreakStatus { OPEN, AUTO_RESOLVED, ESCALATED, ADJUSTED, RESOLVED }
+
+class Break {
+    final String breakId;
+    final String ref;
+    final String currency;
+    final long amountInternal;
+    final long amountPartner;
+    final long amountSettlement;
+    final BreakType type;
+    BreakStatus status;
+    final String detectedDay;
+    int agingDays;
+    final String priority; // P1, P2, P3
+    String adjustmentTxId;
+
+    Break(String breakId, String ref, String currency, long amtI, long amtP, long amtS,
+          BreakType type, BreakStatus status, String detectedDay, int agingDays, String priority) {
+        this.breakId = breakId;
+        this.ref = ref;
+        this.currency = currency;
+        this.amountInternal = amtI;
+        this.amountPartner = amtP;
+        this.amountSettlement = amtS;
+        this.type = type;
+        this.status = status;
+        this.detectedDay = detectedDay;
+        this.agingDays = agingDays;
+        this.priority = priority;
+    }
+}
+
+class ThreeWayReconciler {
+    final long feeTolerance;
+    final int holdGraceDays;
+    private final Map<String, List<Break>> breaksByDay = new HashMap<>();
+
+    ThreeWayReconciler(long feeTolerance, int holdGraceDays) {
+        if (feeTolerance < 0) throw new IllegalArgumentException("feeTolerance am");
+        if (holdGraceDays < 0) throw new IllegalArgumentException("holdGraceDays am");
+        this.feeTolerance = feeTolerance;
+        this.holdGraceDays = holdGraceDays;
+    }
+
+    List<Break> reconcile(List<Tx3> internal, List<Tx3> partner, List<Tx3> settlement, String day) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void autoResolve(String day) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<Break> escalate(String day) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean adjust(String breakId, String maker, String checker, String adjTxId, List<Entry> adjustmentEntries) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<Break> getBreaks(String day, String status) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Map<String, Long> agingSummary(String day) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+// Entry từ bài 5 (Ledger)
+class Entry {
+    final String account;
+    final long amount;
+    final boolean debit;
+    Entry(String account, long amount, boolean debit) {
+        this.account = account;
+        this.amount = amount;
+        this.debit = debit;
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Tx3 tx(String ref, String ccy, long amt, String src, String... meta) {
+        Map<String, String> m = new HashMap<>();
+        for (int i = 0; i + 1 < meta.length; i += 2) m.put(meta[i], meta[i+1]);
+        return new Tx3(ref, ccy, amt, src, m);
+    }
+    static Entry en(String acc, long amt, boolean dr) { return new Entry(acc, amt, dr); }
+    static List<Entry> of(Entry... a) { return new ArrayList<>(Arrays.asList(a)); }
+
+    public static void main(String[] args) {
+        ThreeWayReconciler r = new ThreeWayReconciler(10_000, 2); // feeTol 10k, hold grace 2 ngày
+
+        List<Tx3> in = new ArrayList<>();
+        in.add(tx("R1", "VND", 1_000_000, "INTERNAL"));
+        in.add(tx("R2", "VND", 1_010_000, "INTERNAL")); // phí 10k
+        in.add(tx("R3", "VND", 2_000_000, "INTERNAL"));
+        in.add(tx("R4", "VND", 500_000, "INTERNAL"));
+
+        List<Tx3> pa = new ArrayList<>();
+        pa.add(tx("R1", "VND", 1_000_000, "PARTNER"));
+        pa.add(tx("R2", "VND", 1_000_000, "PARTNER")); // net, phí 10k
+        pa.add(tx("R3", "VND", 2_000_000, "PARTNER", "hold", "true"));
+        // R4 missing ở partner
+
+        List<Tx3> se = new ArrayList<>();
+        se.add(tx("R1", "VND", 1_000_000, "SETTLEMENT"));
+        se.add(tx("R2", "VND", 1_000_000, "SETTLEMENT"));
+        se.add(tx("R3", "VND", 1_800_000, "SETTLEMENT")); // hold 200k
+        // R4 missing ở settlement
+
+        List<Break> breaks = r.reconcile(in, pa, se, "2026-11-01");
+
+        // R1: FULL_MATCH
+        check("R1 full match", breaks.stream().anyMatch(b -> b.ref.equals("R1") && b.type == BreakType.FULL_MATCH && b.status == BreakStatus.AUTO_RESOLVED), "");
+        // R2: PARTNER_FEE_DIFF (chênh 10k ≤ feeTol)
+        check("R2 fee diff", breaks.stream().anyMatch(b -> b.ref.equals("R2") && b.type == BreakType.PARTNER_FEE_DIFF && b.status == BreakStatus.AUTO_RESOLVED), "");
+        // R3: SETTLEMENT_HOLD (partner=2M, settlement=1.8M, hold=true)
+        check("R3 hold", breaks.stream().anyMatch(b -> b.ref.equals("R3") && b.type == BreakType.SETTLEMENT_HOLD), "");
+        // R4: MISSING_ONE_SIDE
+        check("R4 missing", breaks.stream().anyMatch(b -> b.ref.equals("R4") && b.type == BreakType.MISSING_ONE_SIDE && b.status == BreakStatus.OPEN), "");
+
+        // Priority: R3 chênh 200k < 100tr => P3, R4 chênh 500k => P3
+        check("priority P3", breaks.stream().filter(b -> b.ref.equals("R3")).findFirst().get().priority.equals("P3"), "");
+        check("aging 0 ngay dau", breaks.stream().filter(b -> b.ref.equals("R3")).findFirst().get().agingDays == 0, "");
+
+        // autoResolve: hold grace 2 ngày, ngày đầu chưa qua
+        r.autoResolve("2026-11-01");
+        check("autoResolve ngay 1: hold van OPEN", breaks.stream().filter(b -> b.ref.equals("R3")).findFirst().get().status == BreakStatus.OPEN, "");
+
+        // Giả lập qua 3 ngày: aging tăng
+        for (Break b : breaks) b.agingDays = 3;
+        r.autoResolve("2026-11-01");
+        check("autoResolve sau grace: hold -> AUTO_RESOLVED", breaks.stream().filter(b -> b.ref.equals("R3")).findFirst().get().status == BreakStatus.AUTO_RESOLVED, "");
+
+        // escalate: R4 OPEN, aging 3, P3 (SLA 7 ngày) -> chưa escalate
+        check("escalate P3 chua qua SLA", r.escalate("2026-11-01").isEmpty(), "");
+
+        // Tăng aging R4 lên 8 ngày -> P3 quá SLA
+        breaks.stream().filter(b -> b.ref.equals("R4")).findFirst().get().agingDays = 8;
+        List<Break> esc = r.escalate("2026-11-01");
+        check("escalate P3 qua 7 ngay", esc.size() == 1 && esc.get(0).ref.equals("R4") && esc.get(0).status == BreakStatus.ESCALATED, "");
+
+        // adjust: maker-checker
+        Break b4 = breaks.stream().filter(b -> b.ref.equals("R4")).findFirst().get();
+        boolean adj = r.adjust(b4.breakId, "maker1", "checker1", "ADJ-R4", of(en("Suspense", 500_000, true), en("Nostro", 500_000, false)));
+        check("adjust success", adj && b4.status == BreakStatus.RESOLVED && b4.adjustmentTxId.equals("ADJ-R4"), "");
+        // no-op second time
+        boolean adj2 = r.adjust(b4.breakId, "maker1", "checker1", "ADJ-R4", of(en("Suspense", 500_000, true), en("Nostro", 500_000, false)));
+        check("adjust idempotent", !adj2, "");
+
+        // agingSummary
+        Map<String, Long> sum = r.agingSummary("2026-11-01");
+        check("aging summary has counts", sum.getOrDefault("OPEN", 0L) + sum.getOrDefault("AUTO_RESOLVED", 0L) + sum.getOrDefault("ESCALATED", 0L) + sum.getOrDefault("RESOLVED", 0L) == 4, "sum=" + sum);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Tx3 {
+    final String ref;
+    final String currency;
+    final long amount;
+    final String source;
+    final Map<String, String> meta;
+    Tx3(String ref, String currency, long amount, String source, Map<String, String> meta) {
+        this.ref = ref;
+        this.currency = currency;
+        this.amount = amount;
+        this.source = source;
+        this.meta = meta != null ? meta : new HashMap<>();
+    }
+}
+
+enum BreakType { FULL_MATCH, PARTNER_FEE_DIFF, SETTLEMENT_HOLD, AMOUNT_MISMATCH, MISSING_ONE_SIDE }
+enum BreakStatus { OPEN, AUTO_RESOLVED, ESCALATED, ADJUSTED, RESOLVED }
+
+class Break {
+    final String breakId;
+    final String ref;
+    final String currency;
+    final long amountInternal;
+    final long amountPartner;
+    final long amountSettlement;
+    final BreakType type;
+    BreakStatus status;
+    final String detectedDay;
+    int agingDays;
+    final String priority;
+    String adjustmentTxId;
+
+    Break(String breakId, String ref, String currency, long amtI, long amtP, long amtS,
+          BreakType type, BreakStatus status, String detectedDay, int agingDays, String priority) {
+        this.breakId = breakId;
+        this.ref = ref;
+        this.currency = currency;
+        this.amountInternal = amtI;
+        this.amountPartner = amtP;
+        this.amountSettlement = amtS;
+        this.type = type;
+        this.status = status;
+        this.detectedDay = detectedDay;
+        this.agingDays = agingDays;
+        this.priority = priority;
+    }
+}
+
+class ThreeWayReconciler {
+    final long feeTolerance;
+    final int holdGraceDays;
+    private final Map<String, List<Break>> breaksByDay = new HashMap<>();
+    private final Set<String> usedAdjTxId = new HashSet<>();
+
+    ThreeWayReconciler(long feeTolerance, int holdGraceDays) {
+        if (feeTolerance < 0) throw new IllegalArgumentException("feeTolerance am");
+        if (holdGraceDays < 0) throw new IllegalArgumentException("holdGraceDays am");
+        this.feeTolerance = feeTolerance;
+        this.holdGraceDays = holdGraceDays;
+    }
+
+    private String key(Tx3 t) { return t.ref + "|" + t.currency; }
+
+    List<Break> reconcile(List<Tx3> internal, List<Tx3> partner, List<Tx3> settlement, String day) {
+        if (day == null || day.isEmpty()) throw new IllegalArgumentException("day rong");
+        Map<String, Tx3> inMap = new HashMap<>();
+        Map<String, Tx3> paMap = new HashMap<>();
+        Map<String, Tx3> seMap = new HashMap<>();
+        for (Tx3 t : internal) inMap.put(key(t), t);
+        for (Tx3 t : partner) paMap.put(key(t), t);
+        for (Tx3 t : settlement) seMap.put(key(t), t);
+
+        Set<String> allKeys = new LinkedHashSet<>();
+        allKeys.addAll(inMap.keySet());
+        allKeys.addAll(paMap.keySet());
+        allKeys.addAll(seMap.keySet());
+
+        List<Break> result = new ArrayList<>();
+        int seq = 0;
+        for (String k : allKeys) {
+            Tx3 i = inMap.get(k);
+            Tx3 p = paMap.get(k);
+            Tx3 s = seMap.get(k);
+            String[] parts = k.split("\\\\|");
+            String ref = parts[0], ccy = parts[1];
+            long ai = i != null ? i.amount : 0;
+            long ap = p != null ? p.amount : 0;
+            long as = s != null ? s.amount : 0;
+            BreakType type;
+            BreakStatus status = BreakStatus.OPEN;
+            if (i != null && p != null && s != null) {
+                if (ai == ap && ap == as) { type = BreakType.FULL_MATCH; status = BreakStatus.AUTO_RESOLVED; }
+                else if (ai == ap + (ai - ap) && ai - ap <= feeTolerance && ap == as) { type = BreakType.PARTNER_FEE_DIFF; status = BreakStatus.AUTO_RESOLVED; }
+                else if (p != null && s != null && ap == as + (ap - as) && "true".equals(p.meta.get("hold")) && i != null && ai == ap) {
+                    type = BreakType.SETTLEMENT_HOLD;
+                    if (0 >= holdGraceDays) status = BreakStatus.AUTO_RESOLVED; // grace 0 => auto resolve ngay
+                }
+                else if (Math.max(ai, Math.max(ap, as)) - Math.min(ai, Math.min(ap, as)) > feeTolerance) {
+                    type = BreakType.AMOUNT_MISMATCH;
+                }
+                else {
+                    type = BreakType.AMOUNT_MISMATCH; // fallback
+                }
+            } else if (i != null || p != null || s != null) {
+                type = BreakType.MISSING_ONE_SIDE;
+            } else {
+                continue; // impossible
+            }
+            long maxAmt = Math.max(ai, Math.max(ap, as));
+            long minAmt = Math.min(ai == 0 ? Long.MAX_VALUE : ai, Math.min(ap == 0 ? Long.MAX_VALUE : ap, as == 0 ? Long.MAX_VALUE : as));
+            if (minAmt == Long.MAX_VALUE) minAmt = 0;
+            long diff = maxAmt - minAmt;
+            String priority = diff > 1_000_000_000L ? "P1" : (diff > 100_000_000L ? "P2" : "P3");
+            Break b = new Break("BRK-" + day.replace("-", "") + "-" + (++seq), ref, ccy, ai, ap, as, type, status, day, 0, priority);
+            result.add(b);
+        }
+        breaksByDay.put(day, result);
+        return result;
+    }
+
+    void autoResolve(String day) {
+        List<Break> list = breaksByDay.get(day);
+        if (list == null) return;
+        for (Break b : list) {
+            if (b.status != BreakStatus.OPEN) continue;
+            if (b.type == BreakType.SETTLEMENT_HOLD && b.agingDays >= holdGraceDays) {
+                b.status = BreakStatus.AUTO_RESOLVED;
+            } else if (b.type == BreakType.PARTNER_FEE_DIFF) {
+                b.status = BreakStatus.AUTO_RESOLVED;
+            }
+        }
+    }
+
+    List<Break> escalate(String day) {
+        List<Break> list = breaksByDay.get(day);
+        if (list == null) return new ArrayList<>();
+        List<Break> escalated = new ArrayList<>();
+        for (Break b : list) {
+            if (b.status != BreakStatus.OPEN) continue;
+            boolean overSla = ("P1".equals(b.priority) && b.agingDays > 1) ||
+                              ("P2".equals(b.priority) && b.agingDays > 3) ||
+                              ("P3".equals(b.priority) && b.agingDays > 7);
+            if (overSla) {
+                b.status = BreakStatus.ESCALATED;
+                escalated.add(b);
+            }
+        }
+        return escalated;
+    }
+
+    boolean adjust(String breakId, String maker, String checker, String adjTxId, List<Entry> adjustmentEntries) {
+        if (breakId == null || breakId.isEmpty()) throw new IllegalArgumentException("breakId rong");
+        if (adjTxId == null || adjTxId.isEmpty()) throw new IllegalArgumentException("adjTxId rong");
+        if (usedAdjTxId.contains(adjTxId)) return false; // idempotent
+        Break target = null;
+        for (List<Break> list : breaksByDay.values()) {
+            for (Break b : list) if (b.breakId.equals(breakId)) { target = b; break; }
+            if (target != null) break;
+        }
+        if (target == null) throw new IllegalArgumentException("break khong ton tai: " + breakId);
+        if (target.status != BreakStatus.OPEN && target.status != BreakStatus.ESCALATED) throw new IllegalStateException("break khong the adjust: " + target.status);
+        // Kiểm tra cân bằng adjustmentEntries (logic bài 5)
+        long dr = 0, cr = 0;
+        for (Entry e : adjustmentEntries) {
+            if (e.amount <= 0) throw new IllegalArgumentException("amount phai duong");
+            if (e.debit) dr += e.amount; else cr += e.amount;
+        }
+        if (dr != cr) throw new IllegalArgumentException("adjustment khong can bang: " + dr + " != " + cr);
+        usedAdjTxId.add(adjTxId);
+        target.status = BreakStatus.RESOLVED;
+        target.adjustmentTxId = adjTxId;
+        return true;
+    }
+
+    List<Break> getBreaks(String day, String status) {
+        List<Break> list = breaksByDay.get(day);
+        if (list == null) return new ArrayList<>();
+        if (status == null || status.isEmpty()) return new ArrayList<>(list);
+        BreakStatus bs = BreakStatus.valueOf(status);
+        List<Break> res = new ArrayList<>();
+        for (Break b : list) if (b.status == bs) res.add(b);
+        return res;
+    }
+
+    Map<String, Long> agingSummary(String day) {
+        List<Break> list = breaksByDay.get(day);
+        Map<String, Long> sum = new LinkedHashMap<>();
+        if (list == null) return sum;
+        for (Break b : list) {
+            sum.merge(b.status.name(), 1L, Long::sum);
+        }
+        return sum;
+    }
+}
+
+class Entry {
+    final String account;
+    final long amount;
+    final boolean debit;
+    Entry(String account, long amount, boolean debit) {
+        this.account = account;
+        this.amount = amount;
+        this.debit = debit;
+    }
+}`,
+        hints: [
+          'reconcile: lập chỉ mục ba nguồn theo key (ref|currency). Duyệt union của tất cả key. Phân loại theo logic: FULL_MATCH (3 bên bằng) → PARTNER_FEE_DIFF (Internal = Partner + fee ≤ tol, Settlement = Partner) → SETTLEMENT_HOLD (Partner = Settlement + hold meta, Internal = Partner) → AMOUNT_MISMATCH (lệch > tol) → MISSING_ONE_SIDE (thiếu bên).',
+          'Priority tính từ chênh lớn nhất giữa 3 bên: diff > 1 tỷ ⇒ P1, > 100 triệu ⇒ P2, còn lại P3. AgingDays = 0 ban đầu, tăng khi autoResolve/escalate gọi (test tự set agingDays).',
+          'autoResolve: chỉ xử lý break OPEN. SETTLEMENT_HOLD qua grace days ⇒ AUTO_RESOLVED. PARTNER_FEE_DIFF (nếu reconcile chưa bắt) ⇒ AUTO_RESOLVED. Idempotent: status đã resolved thì bỏ qua.',
+          'escalate: kiểm tra SLA theo priority + agingDays. P1 > 1 ngày, P2 > 3 ngày, P3 > 7 ngày ⇒ ESCALATED.',
+          'adjust: tìm breakId, kiểm tra status OPEN/ESCALATED, validate adjustmentEntries cân bằng VND (dùng logic bài 5), idempotent theo adjTxId (Set usedAdjTxId), cập nhật status = RESOLVED, adjustmentTxId = adjTxId.',
+        ],
+        explain: `Test đi theo vòng đời một break thực tế:
+1. **Phân loại năm nhóm đúng**: R1 FULL_MATCH, R2 PARTNER_FEE_DIFF (chênh 10k ≤ feeTol), R3 SETTLEMENT_HOLD (hold meta, chênh 200k), R4 MISSING_ONE_SIDE. Mỗi loại là một kịch lược vận hành khác nhau.
+2. **Auto-resolve có điều kiện**: SETTLEMENT_HOLD chỉ auto-resolve sau khi qua {{holdGraceDays}} (test: ngày 1 chưa, ngày 3 đã). PARTNER_FEE_DIFF auto-resolve ngay. Idempotent: gọi lại không đổi trạng thái.
+3. **Escalation theo SLA + priority**: R4 P3 aging 3 chưa escalate, aging 8 ⇒ ESCALATED. P1 > 1 ngày, P2 > 3 ngày, P3 > 7 ngày.
+4. **Maker-checker adjustment**: cần adjTxId idempotent, adjustmentEntries phải cân bằng VND (dùng Entry từ bài 5). Lần hai gọi cùng adjTxId ⇒ no-op false.
+
+Điểm senior: ba nguồn dữ liệu (internal/partner/settlement) có timing khác nhau (settlement T+1), auto-resolve idempotent, aging/SLA quản lý rủi ro, adjustment maker-checker với txId = ADJ-{breakId} idempotent. Lỗi hay gặp: quên settlement, auto-resolve không idempotent, không có aging/SLA, adjustment bỏ qua cân bằng hoặc không idempotent.`,
+      },
+    ],
+    check: [
+      { q: 'Đối soát ba bên (three-way reconciliation) so khớp những nguồn nào?', options: ['Internal, Partner, Settlement', 'Internal, Partner, Customer', 'Partner, Settlement, Scheme', 'Internal, Core, Gateway'], answer: 0, explain: 'Đúng (A): ba nguồn là sổ cái nội bộ (Internal), file đối tác (Partner — VNPay/NAPAS/Visa), và file settlement/chốt toán tiền thực (Settlement — Nostro statement/ngân hàng trung ương). Sai (B): customer không là nguồn dữ liệu đối soát. Sai (C): scheme là một loại partner. Sai (D): core/gateway là hạ tầng, không phải nguồn đối soát độc lập.' },
+      { q: 'Break loại SETTLEMENT_HOLD có nghĩa là gì và khi nào auto-resolve?', options: ['Settlement nhiều hơn Partner, auto-resolve ngay', 'Settlement thiếu so với Partner do hold, auto-resolve sau khi qua holdGraceDays', 'Internal thiếu so với Partner, auto-resolve không bao giờ', 'Ba bên đều lệch, auto-resolve khi chênh ≤ feeTolerance'], answer: 1, explain: 'Đúng (B): SETTLEMENT_HOLD = Partner báo thành công, Settlement chuyển ít hơn do ngân hàng hold (giữ) một phần (AML check, sanctions...). Auto-resolve khi hold được release, tức là sau holdGraceDays (ngày ân hạn). Sai (A): settlement thiếu chứ không nhiều. Sai (C): internal khớp partner mới là hold. Sai (D): đó là PARTNER_FEE_DIFF.' },
+      { q: 'Adjustment (điều chỉnh) break phải tuân thủ quy trình gì?', options: ['Maker tự approve và post bút toán', 'Maker tạo ticket, Checker duyệt, hệ thống post bút toán ADJ-{breakId} idempotent', 'Post trực tiếp vào DB cho nhanh', 'Chỉ cần ghi log, không cần bút toán'], answer: 1, explain: 'Đúng (B): maker-checker là bắt buộc (Basel/NHNN). Maker tạo adjustment ticket kèm bút toán cân bằng và bằng chứng. Checker review, approve. Hệ thống post bút toán với txId = ADJ-{breakId} (idempotent). Sai (A): vi phạm phân quyền. Sai (C): không có audit trail. Sai (D): điều chỉnh tiền phải qua bút toán kế toán kép.' },
+    ],
+    related: ['banking-022', 'banking-023', 'banking-005', 'banking-009'],
+    tags: ['reconciliation', 'three-way', 'break', 'aging', 'escalation', 'maker-checker', 'auto-resolve', 'banking']
+  },
+
+  {
+    id: 'lesson-banking-025',
+    track: 'banking',
+    order: 25,
+    title: 'Khóa kỳ kế toán (period close): sổ cái kép chỉ nhận bút toán vào kỳ đang mở, chốt kỳ thì đóng băng số dư',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Giải thích vì sao sổ cái kép phải chia theo kỳ kế toán (tháng) và vì sao kỳ đã chốt không được nhận bút toán nữa',
+      'Phân biệt chốt kỳ cứng (hard close) với mở lại có kiểm soát (reopen qua maker-checker), và vì sao chốt kỳ phải chụp ảnh số dư',
+      'Viết PeriodLedger: post vào kỳ mở, closePeriod idempotent, chặn post vào kỳ đã đóng, closingBalance đóng băng',
+    ],
+    body: `**Tóm tắt:** Sổ cái kế toán kép chia thời gian thành các **kỳ kế toán** (thường một tháng). Khi kỳ còn **mở**, hệ thống nhận bút toán; khi **chốt kỳ** (close), số dư mọi tài khoản được **chụp ảnh** và kỳ bị **khóa**: bút toán gửi vào kỳ đã chốt đều bị từ chối. Nhờ vậy báo cáo tài chính đã phát hành không bị đổi ngược, và chốt kỳ chạy lại bao nhiêu lần cũng cho cùng kết quả.
+
+### Kỳ kế toán là gì
+**Thuật ngữ:** *kỳ kế toán (accounting period)* là một khoảng thời gian mà sổ sách được mở để ghi bút toán, phổ biến nhất là **một tháng**. Hết kỳ, kế toán "chốt sổ" (close) để in báo cáo tài chính: bảng cân đối, báo cáo lãi lỗ (xem bài 16).
+
+Vì sao không để sổ chạy liên tục rồi lọc theo ngày? Vì sau khi báo cáo tháng 1 đã in và gửi cho cơ quan thuế, nếu có một bút toán về muộn được ghi lùi vào tháng 1, thì **báo cáo đã phát hành sẽ lệch** với dữ liệu trong hệ thống. Kiểm toán viên sẽ hỏi: "tại sao con số trên báo cáo tôi đang cầm khác với số hệ thống hôm nay?". Chốt kỳ cứng (hard close) là câu trả lời: sau khi chốt, tháng 1 **đóng băng**, mọi sửa sai phải ghi vào kỳ đang mở (tháng 2) kèm tham chiếu tới bút toán cũ.
+
+Ví dụ đời thường: cuốn sổ nợ của một cửa hàng. Cuối tháng bạn cộng lại, ghi "tổng tháng 1" vào một trang riêng, rồi sang trang mới cho tháng 2. Nếu ai đó lén ghi thêm vào trang tháng 1, tổng đã chốt không còn đúng — nên quy tắc là trang đã chốt thì không viết thêm.
+
+### Mở kỳ, chốt kỳ, mở lại
+- **Kỳ mở (open)**: mặc định, nhận bút toán bình thường.
+- **Chốt kỳ (hard close)**: khóa kỳ, chụp ảnh số dư của mọi tài khoản tại thời điểm chốt. Không nhận bút toán nữa.
+- **Mở lại (reopen)**: chỉ khi thật sự cần (phát hiện sai sót trọng yếu), và phải qua quy trình **maker-checker** (người tạo đề nghị khác người duyệt), để lại dấu vết kiểm toán. Bài này không cho mở lại — một khi đã chốt là chốt.
+
+### Bất biến cân bằng vẫn phải giữ
+Kỳ kế toán không thay thế quy tắc Nợ/Có: mỗi bút toán vẫn phải có **tổng Nợ bằng tổng Có** (ở bài này dùng số có dấu: tổng các amount = 0). Bài học thêm một chiều **thời gian**: ngoài cân bằng, bút toán còn phải đúng **kỳ đang mở**.
+
+### Số dư và ảnh chụp khi chốt
+- {{balance(account)}}: số dư **chạy** hiện tại, cộng dồn mọi bút toán qua mọi kỳ.
+- {{closingBalance(account, period)}}: **ảnh chụp** số dư tại lúc chốt kỳ đó, đã đóng băng. Đây cũng chính là số dư **đầu kỳ** của tháng kế tiếp.
+
+### Luồng chốt kỳ cuối tháng
+~~~seq
+title: Chot ky ke toan cuoi thang
+actors: Scheduler | PeriodLedger | LedgerDB | BaoCao
+Scheduler -> PeriodLedger: closePeriod 2026-01
+PeriodLedger -> LedgerDB: doc so du moi tai khoan
+PeriodLedger -> PeriodLedger: chup anh closing balance
+PeriodLedger -> LedgerDB: danh dau ky da chot
+PeriodLedger --> BaoCao: khoa thang 1, phat hanh bao cao
+Scheduler -> PeriodLedger: post 2026-01 but toan muon
+PeriodLedger --> Scheduler: tu choi vi ky da chot
+~~~
+
+### Lỗi hay gặp trên production
+1. **Không chặn bút toán vào kỳ đã chốt**: báo cáo tháng cũ âm thầm đổi, kiểm toán trượt.
+2. **Chốt kỳ không idempotent**: chạy lại job chốt hai lần, lần hai ghi đè ảnh chụp bằng số dư đã bị thay đổi.
+3. **Không chụp ảnh số dư**: tháng sau không biết số dư đầu kỳ, phải suy đoán.
+4. **Dùng {{double}} cho tiền**: số dư lệch vài đồng, ảnh chụp không khớp (xem bài 1).
+5. **Ghi bút toán nửa chừng**: kiểm tra cân bằng phải diễn ra **trước** khi áp dụng delta, nếu không một bút toán lệch để lại dấu vết trong sổ.
+
+> Senior tip: Chốt kỳ là một **sự kiện nghiệp vụ** chứ không phải một câu lệnh UPDATE. Nó phải idempotent, phải chụp ảnh, và phải là bước **sau cùng** của ngày — mọi bút toán về sau đều thuộc kỳ mới, không bao giờ được "nhét" ngược vào kỳ đã khóa.
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Vì sao hệ thống kế toán cần chốt kỳ, và chốt xong thì xử lý bút toán về muộn thế nào?"
+**Cách trả lời:** Kỳ kế toán (thường một tháng) là cửa sổ sổ sách mở để ghi bút toán; chốt kỳ (hard close) khóa cửa sổ đó và chụp ảnh số dư để in báo cáo tài chính. Sau khi chốt, mọi bút toán gửi vào kỳ cũ đều bị **từ chối** — nếu không, báo cáo đã phát hành sẽ lệch với dữ liệu và không qua được kiểm toán. Sai sót trọng yếu thì mở lại kỳ qua quy trình maker-checker có dấu vết, còn thông thường thì ghi bút toán điều chỉnh vào **kỳ đang mở** kèm tham chiếu bút toán gốc. Chốt kỳ phải **idempotent** (chạy lại cho cùng kết quả) và số dư dùng {{long}} hoặc {{BigDecimal}} chứ không {{double}}.`,
+    exercises: [
+      {
+        title: 'PeriodLedger: post / closePeriod / closingBalance',
+        prompt: `Viết class {{PeriodLedger}} mô phỏng sổ cái kế toán kép có **kỳ kế toán** (tháng). Bút toán {{Entry}} gồm {{account}} và {{amount}} có dấu (dương = Nợ/debit, âm = Có/credit); một bút toán cân bằng khi **tổng các amount = 0**.
+
+Quy tắc bắt buộc:
+1. {{post(String period, List<Entry> entries)}}: {{period}} null/rỗng ⇒ {{IllegalArgumentException}}; kỳ đã chốt ⇒ {{IllegalStateException}} và **không ghi gì cả**; entries null/rỗng ⇒ {{IllegalArgumentException}}; tổng amount khác 0 (lệch Nợ/Có) ⇒ {{IllegalArgumentException}} và không ghi gì. Hợp lệ ⇒ cộng delta vào số dư chạy.
+2. {{closePeriod(String period)}}: {{period}} null/rỗng ⇒ {{IllegalArgumentException}}; đã chốt ⇒ no-op trả {{false}}; chưa chốt ⇒ chụp ảnh số dư hiện tại của **mọi** tài khoản, đánh dấu kỳ đã chốt, trả {{true}}.
+3. {{isClosed(String period)}}: kỳ đã chốt hay chưa.
+4. {{balance(String account)}}: số dư chạy hiện tại (mọi kỳ), chưa có ⇒ 0.
+5. {{closingBalance(String account, String period)}}: ảnh chụp lúc chốt; kỳ chưa chốt ⇒ {{IllegalStateException}}; tài khoản không có trong ảnh ⇒ 0.`,
+        starter: `import java.util.*;
+
+class Entry {
+    final String account;
+    final long amount;   // duong = No (debit), am = Co (credit)
+    Entry(String account, long amount) { this.account = account; this.amount = amount; }
+}
+
+class PeriodLedger {
+    private final Map<String, Long> balances = new HashMap<>();
+    private final Set<String> closed = new HashSet<>();
+    private final Map<String, Map<String, Long>> snapshots = new HashMap<>();
+
+    void post(String period, List<Entry> entries) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean closePeriod(String period) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isClosed(String period) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long balance(String account) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long closingBalance(String account, String period) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Entry en(String acc, long amt) { return new Entry(acc, amt); }
+    static List<Entry> of(Entry... a) { return new ArrayList<>(Arrays.asList(a)); }
+
+    public static void main(String[] args) {
+        PeriodLedger l = new PeriodLedger();
+        l.post("2026-01", of(en("CA/lan", 100000), en("CA/minh", -100000)));
+        check("post_can_bang", l.balance("CA/lan") == 100000 && l.balance("CA/minh") == -100000, "lan=" + l.balance("CA/lan"));
+
+        check("lech_no_co_bi_tu_choi", expect(IllegalArgumentException.class, () -> l.post("2026-01", of(en("CA/a", 100), en("CA/b", -50)))), "");
+        check("lech_khong_de_lai_dau_vet", l.balance("CA/a") == 0, "a=" + l.balance("CA/a"));
+        check("bút toán rong bi tu choi", expect(IllegalArgumentException.class, () -> l.post("2026-01", new ArrayList<Entry>())), "");
+        check("period null bi tu choi", expect(IllegalArgumentException.class, () -> l.post(null, of(en("CA/a", 1), en("CA/b", -1)))), "");
+
+        check("chot_ky_tra_true", l.closePeriod("2026-01"), "");
+        check("isClosed_dung", l.isClosed("2026-01"), "");
+        check("chot_lan_hai_no_op", !l.closePeriod("2026-01"), "");
+        check("anh_chup_dong_bang", l.closingBalance("CA/lan", "2026-01") == 100000, "closing=" + l.closingBalance("CA/lan", "2026-01"));
+
+        check("post_vao_ky_da_chot_bi_tu_choi", expect(IllegalStateException.class, () -> l.post("2026-01", of(en("CA/x", 5), en("CA/y", -5)))), "");
+        check("post_vao_ky_chot_khong_doi_so_du", l.balance("CA/x") == 0, "x=" + l.balance("CA/x"));
+
+        l.post("2026-02", of(en("CA/lan", 40000), en("CA/minh", -40000)));
+        check("ky_moi_doi_so_du_chay", l.balance("CA/lan") == 140000, "lan=" + l.balance("CA/lan"));
+        check("anh_chup_thang_truoc_van_dong_bang", l.closingBalance("CA/lan", "2026-01") == 100000, "closing=" + l.closingBalance("CA/lan", "2026-01"));
+
+        check("closing_khi_ky_chua_chot_nem_loi", expect(IllegalStateException.class, () -> l.closingBalance("CA/lan", "2026-02")), "");
+        check("tai_khoan_la_trong_anh_bang_0", l.closingBalance("CA/ghost", "2026-01") == 0, "");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Entry {
+    final String account;
+    final long amount;   // duong = No (debit), am = Co (credit)
+    Entry(String account, long amount) { this.account = account; this.amount = amount; }
+}
+
+class PeriodLedger {
+    private final Map<String, Long> balances = new HashMap<>();
+    private final Set<String> closed = new HashSet<>();
+    private final Map<String, Map<String, Long>> snapshots = new HashMap<>();
+
+    void post(String period, List<Entry> entries) {
+        if (period == null || period.isEmpty()) throw new IllegalArgumentException("thieu ky");
+        if (closed.contains(period)) throw new IllegalStateException("ky da chot: " + period);   // ky da chot la bat kha xam pham
+        if (entries == null || entries.isEmpty()) throw new IllegalArgumentException("but toan rong");
+        long sum = 0;
+        Map<String, Long> delta = new LinkedHashMap<>();
+        for (Entry e : entries) {
+            if (e.account == null || e.account.isEmpty()) throw new IllegalArgumentException("account rong");
+            sum += e.amount;
+            delta.merge(e.account, e.amount, Long::sum);
+        }
+        if (sum != 0) throw new IllegalArgumentException("lech No/Co: " + sum);               // kiem tra TRUOC khi ghi
+        for (Map.Entry<String, Long> d : delta.entrySet()) balances.merge(d.getKey(), d.getValue(), Long::sum);
+    }
+
+    boolean closePeriod(String period) {
+        if (period == null || period.isEmpty()) throw new IllegalArgumentException("thieu ky");
+        if (closed.contains(period)) return false;                                            // idempotent
+        snapshots.put(period, new HashMap<>(balances));                                       // chup anh dong bang
+        closed.add(period);
+        return true;
+    }
+
+    boolean isClosed(String period) { return closed.contains(period); }
+
+    long balance(String account) { return balances.getOrDefault(account, 0L); }
+
+    long closingBalance(String account, String period) {
+        if (!closed.contains(period)) throw new IllegalStateException("ky chua chot: " + period);
+        return snapshots.getOrDefault(period, Collections.emptyMap()).getOrDefault(account, 0L);
+    }
+}`,
+        hints: [
+          'Cộng tổng amount trước; nếu khác 0 thì ném IllegalArgumentException và **return**, chưa đụng vào balances.',
+          'Ảnh chụp là một bản sao {{new HashMap<>(balances)}} lưu theo period; chốt lần hai chỉ cần kiểm tra tập đã chốt rồi trả false.',
+          'post vào kỳ đã chốt phải ném IllegalStateException **trước** khi kiểm tra cân bằng, để thông báo lỗi đúng bản chất.',
+          'closingBalance chỉ hợp lệ khi kỳ đã chốt; nếu chưa chốt thì ném IllegalStateException.',
+        ],
+        explain: `Bài học kiểm tra bốn bất biến: (1) **cân bằng Nợ/Có** — bút toán lệch bị từ chối bằng {{IllegalArgumentException}} và không để lại dấu vết; (2) **kỳ đã chốt là bất khả xâm phạm** — {{post}} vào kỳ đã chốt ném {{IllegalStateException}}, số dư không đổi; (3) **chốt kỳ idempotent** — lần hai trả {{false}}, ảnh chụp không bị ghi đè; (4) **ảnh chụp đóng băng** — sau khi chốt tháng 1 rồi ghi sang tháng 2, {{balance}} của tháng 2 đổi nhưng {{closingBalance}} của tháng 1 vẫn nguyên.
+
+Lỗi hay gặp: kiểm tra cân bằng **sau khi** đã cộng delta (để lại sổ hỏng), chốt kỳ không idempotent (ghi đè ảnh), và quên rằng {{closingBalance}} chỉ đọc được sau khi chốt.`,
+      },
+    ],
+    check: [
+      { q: 'Vì sao sổ cái kế toán phải chốt kỳ (close) trước khi in báo cáo tài chính?', options: ['Để hệ thống chạy nhanh hơn', 'Để khóa số dư kỳ đã chốt, không cho bút toán về muộn làm đổi báo cáo đã phát hành', 'Để xóa dữ liệu cũ', 'Để đổi tiền tệ'], answer: 1, explain: 'Đúng (B): chốt kỳ (hard close) đóng băng số dư và không nhận bút toán nữa, nên báo cáo đã in không bị lệch khi có giao dịch về muộn — đây là yêu cầu kiểm toán. Sai (A): chốt kỳ không liên quan tốc độ. Sai (C): không xóa dữ liệu, sổ cái append-only. Sai (D): tiền tệ là chuyện khác.' },
+      { q: 'Gọi closePeriod cho một kỳ đã chốt thì kết quả là gì?', options: ['Ném IllegalStateException', 'Chụp lại ảnh đè lên ảnh cũ', 'No-op trả false, ảnh chụp giữ nguyên', 'Mở lại kỳ'], answer: 2, explain: 'Đúng (C): chốt kỳ phải idempotent — lần hai trả false và không ghi đè ảnh chụp, vì chạy lại job không được làm đổi số liệu. Sai (A): ném lỗi là dành cho bút toán vào kỳ đã chốt, không phải cho close lần hai. Sai (B): ghi đè ảnh làm mất số dư đầu kỳ. Sai (D): bài này không cho mở lại.' },
+      { q: 'Sau khi chốt tháng 1 và ghi bút toán sang tháng 2, số nào KHÔNG đổi?', options: ['balance chạy hiện tại', 'closingBalance của tháng 1', 'số dư khả dụng', 'tổng Nợ/Có'], answer: 1, explain: 'Đúng (B): closingBalance là ảnh chụp lúc chốt, đã đóng băng, không đổi dù tháng 2 có bút toán mới. Sai (A): balance chạy cộng dồn mọi kỳ nên đổi. Sai (C): khả dụng là khái niệm khác (bài 7). Sai (D): tổng Nợ/Có của một bút toán luôn bằng nhau, không phải thứ "đóng băng" ở đây.' },
+      { q: 'Bút toán gửi vào kỳ đã chốt phải bị xử lý thế nào?', options: ['Âm thầm bỏ qua', 'Từ chối bằng IllegalStateException, không ghi gì', 'Ghi vào kỳ hiện tại tự động', 'Chấp nhận nếu cân bằng'], answer: 1, explain: 'Đúng (B): kỳ đã chốt không nhận bút toán; hệ thống ném IllegalStateException và không ghi gì để báo cáo cũ không bị đổi. Sai (A): bỏ qua âm thầm làm mất giao dịch. Sai (C): tự chuyển kỳ là quyết định nghiệp vụ, không phải hành vi ngầm. Sai (D): cân bằng không miễn nhiễm với quy tắc khóa kỳ.' },
+    ],
+    related: ['banking-005', 'banking-011'],
+    tags: ['ledger', 'period-close', 'accounting', 'banking'],
+  },
+
+  {
+    id: 'lesson-banking-026',
+    track: 'banking',
+    order: 26,
+    title: 'Đối soát số dư (balance reconciliation): giải thích chênh lệch giữa sổ nội bộ và sao kê ngân hàng bằng các khoản điều chỉnh thời điểm',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Phân biệt đối soát số dư (so hai con số cuối kỳ) với đối soát giao dịch (so từng dòng theo mã tham chiếu)',
+      'Nắm bốn khoản điều chỉnh thời điểm: deposit in transit, outstanding check, phí và lãi ngân hàng, và bên nào cộng/trừ',
+      'Viết BalanceReconciler.reconcile(book, bank, adjustments) trả adjustedBook, adjustedBank, difference, reconciled',
+    ],
+    body: `**Tóm tắt:** Đối soát **số dư** (balance reconciliation) so sánh **hai con số cuối kỳ** — số dư sổ nội bộ và số dư sao kê ngân hàng — rồi **giải thích** khoản chênh bằng các **khoản điều chỉnh thời điểm** (tiền đang trên đường, séc đã ghi chưa bị trừ, phí/lãi ngân hàng ghi một bên). Khi cộng các khoản điều chỉnh vào đúng bên, hai số phải bằng nhau; nếu còn chênh thì đó là lỗi thật cần điều tra.
+
+### Đối soát số dư khác đối soát giao dịch thế nào
+Bài 2 và bài 18 đối soát **từng giao dịch** theo mã tham chiếu: so từng dòng, phân loại khớp / lệch / thiếu một bên. Bài này là kiểu đối soát cổ điển của **kế toán ngân hàng**: cuối tháng, số dư trên **sổ của công ty** (book) và số dư trên **sao kê ngân hàng** (bank) thường **không bằng nhau**, dù không có lỗi nào. Vì sao? Vì hai bên ghi nhận tại **thời điểm khác nhau**.
+
+Ví dụ đời thường: bạn ghi sổ chi tiêu tối qua, nhưng thẻ chưa bị trừ tiền vì giao dịch đang "treo" (pending). Sổ bạn và sao kê ngân hàng lệch nhau một khoản — không ai sai, chỉ là **đúng vào những lúc khác nhau**.
+
+### Bốn loại khoản điều chỉnh thời điểm
+**Thuật ngữ:** *khoản điều chỉnh thời điểm (timing item)* là giao dịch mà một bên đã ghi, bên kia chưa ghi, nên làm hai số dư lệch tạm thời.
+
+1. **Tiền gửi đang trên đường (deposit in transit)**: công ty đã ghi nhận tiền vào sổ, nhưng ngân hàng chưa cộng (khách nộp tiền cuối ngày, ngân hàng xử lý sáng hôm sau). Đây là khoản **cộng vào phía ngân hàng**.
+2. **Séc đã ghi chưa bị trừ (outstanding check)**: công ty đã viết séc và trừ vào sổ, nhưng người nhận chưa ra ngân hàng lĩnh, nên sao kê chưa trừ. Đây là khoản **trừ khỏi phía ngân hàng**.
+3. **Phí ngân hàng (bank fee)**: ngân hàng đã trừ phí, công ty chưa biết để ghi. Đây là khoản **trừ khỏi phía sổ**.
+4. **Lãi tiền gửi (interest)**: ngân hàng đã cộng lãi, công ty chưa ghi. Đây là khoản **cộng vào phía sổ**.
+
+### Công thức đối soát
+Điều chỉnh hai bên về cùng một mốc:
+- {{adjustedBook = bookBalance + tổng điều chỉnh phía BOOK}}
+- {{adjustedBank = bankBalance + tổng điều chỉnh phía BANK}}
+- {{difference = adjustedBook - adjustedBank}}; nếu bằng 0 thì **khớp** (reconciled), khác 0 là **lệch thật** cần điều tra.
+
+### Ví dụ với số liệu
+Cuối tháng, sổ công ty ghi 4.500.000đ, sao kê ngân hàng ghi 5.000.000đ. Chênh 500.000đ. Điều tra: công ty đã viết một séc 500.000đ cho nhà cung cấp, đã trừ vào sổ, nhưng séc chưa được lĩnh. Đây là outstanding check, điều chỉnh phía ngân hàng {{−500.000}}:
+- {{adjustedBank = 5.000.000 − 500.000 = 4.500.000}}
+- {{adjustedBook = 4.500.000}} (không có điều chỉnh phía sổ)
+- {{difference = 0}} ⇒ khớp.
+
+Nếu sau khi cộng hết các khoản điều chỉnh mà vẫn còn chênh, thì đó là **break thật**: thiếu giao dịch, ghi sai số tiền, hoặc gian lận — phải chuyển điều tra, không được "bù" bằng cách sửa số dư.
+
+### Luồng đối soát số dư
+~~~seq
+title: Doi soat so du cuoi thang
+actors: Job | Internal | Bank | BalanceReconciler
+Job -> Internal: doc so du so book
+Job -> Bank: doc so du sao ke bank
+Job -> BalanceReconciler: reconcile book bank dieu chinh
+BalanceReconciler -> BalanceReconciler: cong dieu chinh tung ben
+BalanceReconciler --> Job: difference bang 0 thi khop, nguoc lai lech that
+note Job..Bank: neu lech that thi tao ticket dieu tra
+~~~
+
+### Lỗi hay gặp trên production
+1. **Điều chỉnh sai bên**: cộng outstanding check vào phía sổ thay vì phía ngân hàng ⇒ số lệch gấp đôi.
+2. **Quên khoản phí/lãi**: ngân hàng trừ phí tự động, sổ không ghi ⇒ lệch nhỏ lặp lại mỗi tháng.
+3. **Dùng tolerance để che lỗi**: chấp nhận mọi chênh nhỏ mà không log ⇒ sai sót thật bị giấu.
+4. **Không lưu bằng chứng**: đối soát xong không lưu danh sách timing item ⇒ kiểm toán không tái dựng được.
+5. **Dùng {{double}}**: chênh vài đồng do làm tròn, không bao giờ về 0.
+
+> Senior tip: Đối soát số dư không phải để "tìm người sai" mà để **chứng minh** hai con số khác nhau là do thời điểm. Mỗi timing item phải có bằng chứng (séc, phiếu nộp, báo phí) và được lưu lại; nếu cộng hết mà vẫn lệch thì đó là break thật, phải điều tra chứ không sửa số dư.
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Số dư sổ công ty và sao kê ngân hàng cuối tháng lệch nhau. Bạn xử lý thế nào?"
+**Cách trả lời:** Đây là đối soát **số dư**, khác đối soát giao dịch: tôi không so từng dòng mà lấy hai con số cuối kỳ rồi **liệt kê các khoản điều chỉnh thời điểm** — tiền gửi đang trên đường và séc đã ghi chưa lĩnh điều chỉnh phía **ngân hàng**, phí và lãi ngân hàng ghi một bên điều chỉnh phía **sổ**. Cộng từng khoản vào đúng bên, nếu hai số bằng nhau thì lệch chỉ là thời điểm, không phải lỗi; nếu còn chênh thì đó là **break thật** (thiếu giao dịch, sai số tiền, gian lận) phải tạo ticket điều tra, tuyệt đối không sửa số dư để "cho khớp". Mọi timing item phải lưu lại làm bằng chứng kiểm toán, và dùng {{long}} hoặc {{BigDecimal}} để không có sai số làm tròn.`,
+    exercises: [
+      {
+        title: 'BalanceReconciler.reconcile',
+        prompt: `Viết class {{BalanceReconciler}} với {{reconcile(long bookBalance, long bankBalance, List<Adjust> adjustments)}} trả về {{Result}}.
+
+{{Adjust}} gồm {{side}} ({{BOOK}} hoặc {{BANK}}) và {{amount}} (long, đã có dấu: cộng vào phía tương ứng; ví dụ séc chưa lĩnh là amount âm ở phía {{BANK}}). {{Result}} gồm {{adjustedBook}}, {{adjustedBank}}, {{difference}} ({{adjustedBook - adjustedBank}}) và {{reconciled}} ({{difference == 0}}).
+
+Quy tắc:
+- {{adjustedBook = bookBalance + tổng amount của các Adjust có side BOOK}}.
+- {{adjustedBank = bankBalance + tổng amount của các Adjust có side BANK}}.
+- {{side}} khác {{BOOK}}/{{BANK}} ⇒ {{IllegalArgumentException}}.
+- {{adjustments}} null ⇒ coi như danh sách rỗng.`,
+        starter: `import java.util.*;
+
+class Adjust {
+    final String side;    // BOOK hoac BANK
+    final long amount;    // da co dau
+    final String note;
+    Adjust(String side, long amount, String note) { this.side = side; this.amount = amount; this.note = note; }
+}
+
+class Result {
+    long adjustedBook, adjustedBank, difference;
+    boolean reconciled;
+    Result(long adjustedBook, long adjustedBank) {
+        this.adjustedBook = adjustedBook;
+        this.adjustedBank = adjustedBank;
+        this.difference = adjustedBook - adjustedBank;
+        this.reconciled = (this.difference == 0);
+    }
+}
+
+class BalanceReconciler {
+    Result reconcile(long bookBalance, long bankBalance, List<Adjust> adjustments) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+    static Adjust ad(String side, long amt) { return new Adjust(side, amt, ""); }
+
+    public static void main(String[] args) {
+        BalanceReconciler r = new BalanceReconciler();
+
+        Result a = r.reconcile(4500000, 5000000, java.util.List.of(ad("BANK", -500000)));
+        check("outstanding_check_khop", a.reconciled && a.difference == 0, "adjBook=" + a.adjustedBook + " adjBank=" + a.adjustedBank);
+        check("outstanding_check_adjBank_dung", a.adjustedBank == 4500000, "adjBank=" + a.adjustedBank);
+
+        Result b = r.reconcile(5000000, 4000000, java.util.List.of(ad("BANK", 1000000)));
+        check("deposit_in_transit_khop", b.reconciled, "diff=" + b.difference);
+
+        Result c = r.reconcile(5000000, 4950000, java.util.List.of(ad("BOOK", -50000)));
+        check("bank_fee_khop", c.reconciled && c.adjustedBook == 4950000, "adjBook=" + c.adjustedBook);
+
+        Result d = r.reconcile(5000000, 4900000, new ArrayList<Adjust>());
+        check("khong_dieu_chinh_thi_lech", !d.reconciled && d.difference == 100000, "diff=" + d.difference);
+
+        Result e = r.reconcile(1000000, 1000000, null);
+        check("null_coi_nhu_rong", e.reconciled && e.difference == 0, "diff=" + e.difference);
+
+        Result f = r.reconcile(1000000, 1000000, java.util.List.of(ad("BANK", 200000), ad("BANK", -50000), ad("BOOK", -30000), ad("BOOK", 10000)));
+        check("nhieu_dieu_chinh_hai_ben", f.adjustedBook == 980000 && f.adjustedBank == 1150000 && !f.reconciled, "adjBook=" + f.adjustedBook + " adjBank=" + f.adjustedBank);
+
+        check("side_la_bi_tu_choi", expect(IllegalArgumentException.class, () -> r.reconcile(0, 0, java.util.List.of(ad("OTHER", 1)))), "");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Adjust {
+    final String side;    // BOOK hoac BANK
+    final long amount;    // da co dau
+    final String note;
+    Adjust(String side, long amount, String note) { this.side = side; this.amount = amount; this.note = note; }
+}
+
+class Result {
+    long adjustedBook, adjustedBank, difference;
+    boolean reconciled;
+    Result(long adjustedBook, long adjustedBank) {
+        this.adjustedBook = adjustedBook;
+        this.adjustedBank = adjustedBank;
+        this.difference = adjustedBook - adjustedBank;
+        this.reconciled = (this.difference == 0);
+    }
+}
+
+class BalanceReconciler {
+    Result reconcile(long bookBalance, long bankBalance, List<Adjust> adjustments) {
+        long ab = bookBalance;
+        long ak = bankBalance;
+        if (adjustments != null) {
+            for (Adjust a : adjustments) {
+                if (a == null) throw new IllegalArgumentException("adjust null");
+                if ("BOOK".equals(a.side)) ab += a.amount;          // dieu chinh phia so
+                else if ("BANK".equals(a.side)) ak += a.amount;     // dieu chinh phia ngan hang
+                else throw new IllegalArgumentException("side phai la BOOK hoac BANK: " + a.side);
+            }
+        }
+        return new Result(ab, ak);
+    }
+}`,
+        hints: [
+          'Khởi tạo adjustedBook = bookBalance, adjustedBank = bankBalance, rồi duyệt adjustments cộng vào đúng biến theo side.',
+          'Kiểm tra side trước khi cộng; side lạ ném IllegalArgumentException.',
+          'difference = adjustedBook - adjustedBank; reconciled = (difference == 0).',
+        ],
+        explain: `Bài học kiểm tra: (1) **điều chỉnh đúng bên** — outstanding check (âm) cộng vào phía BANK, phí (âm) cộng vào phía BOOK; (2) **công thức** — adjustedBook/adjustedBank/difference đúng, reconciled chỉ khi difference = 0; (3) **side lạ** bị từ chối bằng IllegalArgumentException.
+
+Lỗi hay gặp: cộng nhầm bên (làm chênh gấp đôi), và dùng tolerance để "cho khớp" thay vì báo lệch thật. Trong bài này không có tolerance: chênh 1 đồng cũng là chưa khớp.`,
+      },
+    ],
+    check: [
+      { q: 'Đối soát số dư (balance reconciliation) so sánh cái gì?', options: ['Từng giao dịch theo mã tham chiếu', 'Hai số dư cuối kỳ (sổ nội bộ vs sao kê ngân hàng) và giải thích chênh lệch', 'Tổng số tài khoản', 'Lãi suất hai bên'], answer: 1, explain: 'Đúng (B): đối soát số dư lấy hai con số cuối kỳ rồi giải thích chênh bằng các khoản điều chỉnh thời điểm, khác đối soát giao dịch (so từng dòng theo ref). Sai (A): đó là đối soát giao dịch (bài 2/18). Sai (C): đếm tài khoản không phải đối soát. Sai (D): lãi suất là chuyện khác.' },
+      { q: 'Séc công ty đã ghi vào sổ nhưng chưa bị ngân hàng trừ (outstanding check) điều chỉnh vào bên nào?', options: ['Phía sổ, cộng thêm', 'Phía ngân hàng, trừ đi', 'Phía sổ, trừ đi', 'Không cần điều chỉnh'], answer: 1, explain: 'Đúng (B): công ty đã trừ séc vào sổ nhưng ngân hàng chưa trừ, nên phải trừ khoản đó khỏi phía ngân hàng để hai bên về cùng mốc. Sai (A): phía sổ đã ghi rồi. Sai (C): trừ phía sổ là sai bên. Sai (D): phải điều chỉnh, nếu không hai số lệch.' },
+      { q: 'Sau khi cộng mọi khoản điều chỉnh mà adjustedBook vẫn khác adjustedBank thì đó là gì?', options: ['Bình thường, bỏ qua', 'Break thật, phải tạo ticket điều tra', 'Lỗi làm tròn, dùng tolerance', 'Đối tác sai, sửa số dư'], answer: 1, explain: 'Đúng (B): còn chênh sau khi đã tính hết timing item nghĩa là thiếu giao dịch, sai số tiền hoặc gian lận — phải điều tra, không sửa số dư. Sai (A): không được bỏ qua. Sai (C): tolerance không phải để che lỗi. Sai (D): sửa số dư là vi phạm kiểm toán.' },
+      { q: 'Tiền khách nộp cuối ngày, công ty đã ghi sổ, ngân hàng chưa cộng (deposit in transit) điều chỉnh vào đâu?', options: ['Phía sổ, cộng', 'Phía ngân hàng, cộng', 'Phía ngân hàng, trừ', 'Phía sổ, trừ'], answer: 1, explain: 'Đúng (B): công ty đã ghi nhận tiền, ngân hàng chưa cộng, nên cộng khoản đó vào phía ngân hàng. Sai (A): phía sổ đã ghi rồi. Sai (C): đây là tiền vào, không phải trừ. Sai (D): sai cả bên lẫn chiều.' },
+    ],
+    related: ['banking-002', 'banking-023'],
+    tags: ['reconciliation', 'balance', 'timing-items', 'banking'],
+  },
+  {
+    id: 'lesson-banking-027',
+    track: 'banking',
+    order: 27,
+    title: 'Order book giá–thời gian và matching engine: TreeMap + ArrayDeque, limit/market/IOC/FOK, vì sao single-threaded',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Giải thích được sổ lệnh sắp theo giá tốt nhất trước, cùng giá thì theo thời gian đến trước (price–time priority) và vì sao dùng TreeMap cộng ArrayDeque',
+      'Phân biệt limit / market / IOC / FOK, xử lý khớp một phần và phần dư, giá khớp lấy theo lệnh chờ (maker)',
+      'Viết OrderBook.submit/cancel trả danh sách trade; hiểu vì sao matching engine thường chạy single-threaded',
+    ],
+    body: `**Tóm tắt:** Sổ lệnh (order book) là danh sách các lệnh mua/bán còn chờ khớp, sắp theo **giá tốt nhất trước, cùng giá thì theo thời gian đến trước** (price–time priority). Matching engine (bộ máy khớp lệnh) so lệnh mới với lệnh đang chờ, tạo ra các trade ở **mức giá của lệnh chờ**. Bài này cài đặt bằng {{TreeMap}} (tự sắp theo giá) cộng {{ArrayDeque}} (hàng đợi FIFO cho mỗi mức giá), xử lý bốn loại lệnh, khớp một phần và huỷ lệnh.
+
+### Các thuật ngữ (giải thích cho người mới)
+- **Sổ lệnh (order book)**: ví như quyển sổ ghi "ai muốn mua giá bao nhiêu, ai muốn bán giá bao nhiêu". Bên mua gọi là **bid**, bên bán gọi là **ask** (hoặc offer).
+- **Lệnh giới hạn (limit order)**: chỉ khớp ở mức giá bạn đặt **hoặc tốt hơn**. Ví dụ "mua 100 đơn vị ở giá 50" chỉ khớp khi có người bán ở mức 50 hoặc thấp hơn.
+- **Lệnh thị trường (market order)**: khớp ngay ở mức giá tốt nhất đang có, không quan tâm giá, miễn khớp được.
+- **IOC (Immediate-Or-Cancel)**: khớp phần làm được ngay, phần còn lại **huỷ**, không đặt lên sổ.
+- **FOK (Fill-Or-Kill)**: phải khớp **toàn bộ ngay lập tức**; nếu không đủ thanh khoản thì huỷ sạch, không khớp một phần.
+- **Khớp một phần (partial fill)**: lệnh lớn hơn lượng sẵn có nên chỉ khớp được một đoạn.
+- **Maker / taker**: lệnh nằm chờ trên sổ là **maker** (người tạo thanh khoản), lệnh mới đến khớp nó là **taker** (người lấy thanh khoản). Giá khớp luôn bằng giá của maker.
+
+### Vì sao dùng TreeMap cho giá và ArrayDeque cho thời gian
+Mỗi bên của sổ là một bảng ánh xạ **giá → hàng đợi lệnh**. Ta cần hai thao tác nhanh: (1) lấy mức giá tốt nhất, (2) trong một mức giá, lấy lệnh đến sớm nhất.
+
+- {{TreeMap}} giữ các khoá (giá) **tự sắp xếp**. Bên mua dùng {{Comparator.reverseOrder()}} để giá **cao nhất** nằm đầu (mua giá cao là tốt cho người mua); bên bán dùng thứ tự tự nhiên để giá **thấp nhất** nằm đầu. Lấy mức tốt nhất chỉ là {{firstEntry()}} — O(log n).
+- Mỗi mức giá là một {{ArrayDeque}} (hàng đợi hai đầu). Lệnh mới đến thì {{addLast}} (vào cuối), lệnh khớp thì {{peekFirst}}/{{pollFirst}} (lấy từ đầu). Nhờ vậy trong cùng một giá, lệnh đến trước được khớp trước — đúng **ưu tiên thời gian**.
+
+Ví dụ sổ bên mua (giá giảm dần): 110 (2 lệnh), 100 (1 lệnh). Một lệnh bán 5 đơn vị ở giá 100 sẽ khớp với lệnh mua 110 trước (giá tốt hơn cho người bán), và trong mức 110 thì khớp lệnh đến trước.
+
+### Luồng khớp một lệnh mới
+~~~seq
+title: Khop mot lenh ban voi so lenh mua
+actors: Client | MatchingEngine | OrderBook | TradeBus
+Client -> MatchingEngine: submit(lenh ban 100 @ 50)
+MatchingEngine -> OrderBook: tim bid tot nhat
+OrderBook --> MatchingEngine: bid 50 x 10 (maker)
+MatchingEngine -> MatchingEngine: tao trade 10 @ 50
+MatchingEngine -> TradeBus: phat trade
+MatchingEngine --> Client: danh sach trade
+~~~
+
+Các bước trong {{submit}}:
+1. Chọn phía đối diện: lệnh mua (bid) đi so với sổ bán (ask), và ngược lại.
+2. Lặp: lấy mức giá tốt nhất của phía đối diện. Nếu là lệnh giới hạn mà giá đối diện đã vượt mức chấp nhận (mua mà giá bán cao hơn giá đặt, hoặc bán mà giá mua thấp hơn giá đặt) thì **dừng**.
+3. Trong mức giá đó, lấy lệnh chờ cũ nhất, khớp số lượng = min(còn lại của hai bên), ghi một {{Trade}} ở **giá của lệnh chờ**.
+4. Trừ số lượng hai bên; lệnh chờ nào khớp hết thì xoá khỏi hàng đợi.
+5. Khi lệnh mới khớp hết hoặc không còn mức giá phù hợp thì dừng. Phần dư tuỳ loại lệnh (xem bảng).
+
+### Bốn loại lệnh và phần dư
+| Loại | Khớp ngay | Phần dư | Khi nào dùng |
+|---|---|---|---|
+| LIMIT | Có, trong phạm vi giá | **Đặt lên sổ** chờ tiếp | Hầu hết giao dịch; kiểm soát giá |
+| MARKET | Có, ở giá tốt nhất | **Huỷ** (không đặt sổ) | Cần khớp ngay, chấp nhận giá |
+| IOC | Có, phần làm được | **Huỷ** phần dư | Không muốn chờ, tránh rủi ro giá |
+| FOK | Chỉ khi khớp **hết** | Huỷ sạch nếu không đủ | Bắt buộc trọn vẹn (ví dụ lệnh lớn) |
+
+Với FOK, trước khi khớp phải **kiểm tra tổng thanh khoản** ở các mức giá chấp nhận được; nếu nhỏ hơn số lượng yêu cầu thì trả về rỗng, không khớp gì. Với IOC, sau khi khớp phần làm được, phần dư bị bỏ. Với LIMIT, phần dư được đưa vào đúng mức giá của nó ở **cuối hàng đợi** (giữ ưu tiên thời gian).
+
+### Vì sao matching engine thường single-threaded
+Khớp lệnh là bài toán **phụ thuộc lẫn nhau**: thứ tự hai lệnh đến ảnh hưởng kết quả (ai khớp trước, ai được giá). Nếu nhiều thread cùng sửa sổ, phải khoá và rất dễ sai (mất lệnh, khớp hai lần, tranh chấp). Giải pháp phổ biến trên sàn là **một luồng duy nhất** xử lý toàn bộ lệnh vào theo thứ tự, các luồng khác chỉ đọc bản sao sổ để gửi market data. Một luồng không khoá, không tranh chấp, dễ kiểm chứng, và thường đủ nhanh (hàng trăm nghìn lệnh/giây) vì mỗi lệnh chỉ vài thao tác trên map. Khi cần mở rộng, người ta **phân mảnh theo symbol** (mỗi symbol một engine một luồng) chứ không chia một sổ cho nhiều luồng.
+
+### Ví dụ đời thực (giả định)
+Một sàn phái sinh mở cửa, hợp đồng Vàng có sổ: mua 110×2, mua 100×3, bán 105×4. Lệnh taker đến: mua 5 ở giá 108 (limit). Engine khớp với bán 105×4 (giá 105 ≤ 108) tạo trade 4 ở 105, còn 1 đơn vị chưa khớp vì mức bán kế tiếp (nếu có) vượt 108; phần dư 1 được đặt lên sổ mua ở 108. Market data ngay lập tức phát đi "best ask 105, last trade 105×4" cho mọi client qua WebSocket/FIX.
+
+### Lỗi hay gặp trên production
+1. **Khớp sai giá**: lấy giá của taker thay vì maker. Giá khớp luôn là giá lệnh chờ (maker); lấy nhầm làm sai số dư tiền của cả hai bên.
+2. **Quên xử lý phần dư**: IOC/FOK để sót lệnh lên sổ, hoặc LIMIT không đặt phần dư lên sổ.
+3. **Sai ưu tiên thời gian**: dùng danh sách thường rồi chèn đầu, khiến lệnh đến sau khớp trước.
+4. **Đa luồng sửa sổ**: hai lệnh cùng khớp một maker, maker bị trừ hai lần. Sàn thật dùng single-threaded hoặc phân mảnh theo symbol.
+5. **FOK khớp một phần**: không kiểm tra tổng thanh khoản trước, để lại trạng thái nửa vời.
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Thiết kế matching engine cho order book, vì sao dùng TreeMap cộng ArrayDeque và vì sao single-threaded?"
+**Cách trả lời:** Mỗi bên sổ là {{TreeMap}} giá → {{ArrayDeque}} lệnh: TreeMap cho lấy mức giá tốt nhất O(log n), ArrayDeque cho FIFO trong mức giá nên khớp đúng ưu tiên giá rồi thời gian. Lệnh mới so với phía đối diện, khớp ở giá maker cho tới khi hết hoặc vượt giá đặt; LIMIT đặt phần dư lên sổ, MARKET/IOC huỷ phần dư, FOK kiểm tra tổng thanh khoản trước rồi mới khớp trọn. Engine chạy **single-threaded** để tránh tranh chấp và đảm bảo thứ tự tất định; khi cần throughput thì phân mảnh theo symbol, mỗi symbol một luồng, còn market data phát cho các luồng đọc.
+
+> Senior tip: Trong review, coi "giá khớp = giá maker" và "phần dư đúng loại lệnh" là hai bất biến phải test đầu tiên; và luôn hỏi "sổ này có bị nhiều luồng sửa không" trước khi tin vào tính đúng đắn.`,
+    exercises: [
+      {
+        title: 'OrderBook.submit / cancel với price–time priority',
+        prompt: `Viết class {{OrderBook}} cho sổ lệnh giá–thời gian. Lệnh {{Order}} gồm {{id}} (long), {{side}} ('B' mua / 'S' bán), {{type}} ("LIMIT"/"MARKET"/"IOC"/"FOK"), {{price}} (long, đơn vị nhỏ nhất), {{qty}} (long).
+
+{{List<Trade> submit(Order o)}}: đưa lệnh vào sổ, trả về danh sách trade tạo ra. {{Trade}} gồm {{price}} (giá khớp = giá lệnh chờ), {{qty}}, {{buyId}}, {{sellId}}.
+
+Quy tắc:
+1. Ưu tiên **giá tốt nhất trước** (mua: cao nhất; bán: thấp nhất), cùng giá thì **thời gian đến trước** (FIFO).
+2. Giá khớp = giá của lệnh đang chờ (maker).
+3. LIMIT: phần dư đặt lên sổ; MARKET: khớp tới hết thanh khoản, phần dư huỷ; IOC: khớp phần làm được, phần dư huỷ; FOK: nếu tổng thanh khoản ở giá chấp nhận < qty thì **không khớp gì**, ngược lại khớp trọn.
+4. {{boolean cancel(long id)}}: huỷ lệnh còn trên sổ, trả true nếu huỷ được (lệnh đã khớp hết hoặc không tồn tại ⇒ false).
+5. {{long remaining(long id)}}: số lượng còn lại của lệnh (0 nếu đã khớp hết/không có). {{long bestBid()}} / {{long bestAsk()}}: giá tốt nhất, 0 nếu sổ trống.`,
+        starter: `import java.util.*;
+
+class Order {
+    final long id;
+    final char side;        // 'B' mua, 'S' ban
+    final String type;      // LIMIT, MARKET, IOC, FOK
+    final long price;       // gia gioi han (don vi nho nhat)
+    final long qty;         // tong so luong
+    long remaining;         // con lai chua khop
+
+    Order(long id, char side, String type, long price, long qty) {
+        this.id = id;
+        this.side = side;
+        this.type = type;
+        this.price = price;
+        this.qty = qty;
+        this.remaining = qty;
+    }
+}
+
+class Trade {
+    final long price;       // gia khop = gia lenh cho san (maker)
+    final long qty;
+    final long buyId;
+    final long sellId;
+    Trade(long price, long qty, long buyId, long sellId) {
+        this.price = price; this.qty = qty; this.buyId = buyId; this.sellId = sellId;
+    }
+    public String toString() {
+        return "Trade[" + price + " x " + qty + ", mua " + buyId + " / ban " + sellId + "]";
+    }
+}
+
+class OrderBook {
+    private final TreeMap<Long, ArrayDeque<Order>> bids =
+            new TreeMap<>(Comparator.reverseOrder());
+    private final TreeMap<Long, ArrayDeque<Order>> asks = new TreeMap<>();
+    private final Map<Long, Order> byId = new HashMap<>();
+
+    List<Trade> submit(Order o) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean cancel(long id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long remaining(long id) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long bestBid() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long bestAsk() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static Order ord(long id, char side, String type, long price, long qty) {
+        return new Order(id, side, type, price, qty);
+    }
+    public static void main(String[] args) {
+        OrderBook ob = new OrderBook();
+        ob.submit(ord(1, 'B', "LIMIT", 100, 10));
+        ob.submit(ord(2, 'B', "LIMIT", 110, 10));
+        java.util.List<Trade> t = ob.submit(ord(3, 'S', "LIMIT", 100, 5));
+        check("uu_tien_gia", t.size() == 1 && t.get(0).price == 110 && t.get(0).qty == 5
+                && t.get(0).buyId == 2 && ob.remaining(2) == 5 && ob.remaining(1) == 10,
+                "trades=" + t + " bestBid=" + ob.bestBid());
+
+        OrderBook ob2 = new OrderBook();
+        ob2.submit(ord(1, 'B', "LIMIT", 100, 10));
+        ob2.submit(ord(2, 'B', "LIMIT", 100, 10));
+        java.util.List<Trade> t2 = ob2.submit(ord(3, 'S', "LIMIT", 100, 5));
+        check("uu_tien_thoi_gian", t2.size() == 1 && t2.get(0).buyId == 1
+                && ob2.remaining(1) == 5 && ob2.remaining(2) == 10,
+                "trades=" + t2);
+
+        OrderBook ob3 = new OrderBook();
+        ob3.submit(ord(1, 'S', "LIMIT", 100, 5));
+        java.util.List<Trade> t3 = ob3.submit(ord(2, 'B', "LIMIT", 100, 12));
+        check("khop_mot_phan", t3.size() == 1 && t3.get(0).qty == 5
+                && ob3.remaining(2) == 7 && ob3.bestBid() == 100,
+                "trades=" + t3 + " rem2=" + ob3.remaining(2));
+
+        OrderBook ob4 = new OrderBook();
+        ob4.submit(ord(1, 'S', "LIMIT", 100, 5));
+        java.util.List<Trade> t4 = ob4.submit(ord(2, 'B', "IOC", 100, 12));
+        check("ioc_huy_phan_du", t4.size() == 1 && t4.get(0).qty == 5
+                && ob4.bestBid() == 0 && ob4.remaining(2) == 0,
+                "trades=" + t4 + " bestBid=" + ob4.bestBid());
+
+        OrderBook ob5 = new OrderBook();
+        ob5.submit(ord(1, 'S', "LIMIT", 100, 5));
+        java.util.List<Trade> t5 = ob5.submit(ord(2, 'B', "FOK", 100, 12));
+        check("fok_khong_du", t5.isEmpty() && ob5.remaining(1) == 5 && ob5.bestAsk() == 100,
+                "trades=" + t5 + " bestAsk=" + ob5.bestAsk());
+
+        OrderBook ob5b = new OrderBook();
+        ob5b.submit(ord(1, 'S', "LIMIT", 100, 5));
+        java.util.List<Trade> t5b = ob5b.submit(ord(2, 'B', "FOK", 100, 5));
+        check("fok_du_thi_khop_het", t5b.size() == 1 && t5b.get(0).qty == 5
+                && ob5b.bestAsk() == 0 && ob5b.remaining(1) == 0,
+                "trades=" + t5b);
+
+        OrderBook ob6 = new OrderBook();
+        ob6.submit(ord(1, 'S', "LIMIT", 100, 10));
+        ob6.submit(ord(2, 'B', "LIMIT", 100, 4));
+        boolean c1 = ob6.cancel(1);
+        check("huy_lenh_mot_phan", c1 && ob6.bestAsk() == 0 && ob6.remaining(1) == 0
+                && !ob6.cancel(1),
+                "cancel=" + c1 + " bestAsk=" + ob6.bestAsk());
+
+        OrderBook ob7 = new OrderBook();
+        ob7.submit(ord(1, 'S', "LIMIT", 100, 5));
+        ob7.submit(ord(2, 'S', "LIMIT", 105, 5));
+        java.util.List<Trade> t7 = ob7.submit(ord(3, 'B', "MARKET", 0, 7));
+        check("market_khong_rest", t7.size() == 2 && t7.get(0).price == 100 && t7.get(1).price == 105
+                && ob7.bestBid() == 0 && ob7.remaining(3) == 0,
+                "trades=" + t7);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Order {
+    final long id;
+    final char side;
+    final String type;
+    final long price;
+    final long qty;
+    long remaining;
+
+    Order(long id, char side, String type, long price, long qty) {
+        this.id = id;
+        this.side = side;
+        this.type = type;
+        this.price = price;
+        this.qty = qty;
+        this.remaining = qty;
+    }
+}
+
+class Trade {
+    final long price;
+    final long qty;
+    final long buyId;
+    final long sellId;
+    Trade(long price, long qty, long buyId, long sellId) {
+        this.price = price; this.qty = qty; this.buyId = buyId; this.sellId = sellId;
+    }
+    public String toString() {
+        return "Trade[" + price + " x " + qty + ", mua " + buyId + " / ban " + sellId + "]";
+    }
+}
+
+class OrderBook {
+    private final TreeMap<Long, ArrayDeque<Order>> bids =
+            new TreeMap<>(Comparator.reverseOrder());
+    private final TreeMap<Long, ArrayDeque<Order>> asks = new TreeMap<>();
+    private final Map<Long, Order> byId = new HashMap<>();
+
+    List<Trade> submit(Order o) {
+        List<Trade> trades = new ArrayList<>();
+        boolean isBuy = o.side == 'B';
+        TreeMap<Long, ArrayDeque<Order>> opp = isBuy ? asks : bids;
+
+        // FOK: khong du thanh khoan thi huy toan bo, khong khop gi
+        if (o.type.equals("FOK") && available(opp, o, isBuy) < o.qty) {
+            return trades;
+        }
+
+        while (o.remaining > 0) {
+            Map.Entry<Long, ArrayDeque<Order>> best = opp.firstEntry();
+            if (best == null) break;
+            long bestPrice = best.getKey();
+            if (!o.type.equals("MARKET")) {
+                if (isBuy ? bestPrice > o.price : bestPrice < o.price) break;
+            }
+            ArrayDeque<Order> level = best.getValue();
+            while (!level.isEmpty() && o.remaining > 0) {
+                Order maker = level.peekFirst();
+                long matchQty = Math.min(o.remaining, maker.remaining);
+                long buyId = isBuy ? o.id : maker.id;
+                long sellId = isBuy ? maker.id : o.id;
+                trades.add(new Trade(bestPrice, matchQty, buyId, sellId));
+                maker.remaining -= matchQty;
+                o.remaining -= matchQty;
+                if (maker.remaining == 0) {
+                    level.pollFirst();
+                    byId.remove(maker.id);
+                }
+            }
+            if (level.isEmpty()) opp.pollFirstEntry();
+        }
+
+        // Phan con lai: chi LIMIT duoc dat len so
+        if (o.remaining > 0 && o.type.equals("LIMIT")) {
+            ArrayDeque<Order> level = (isBuy ? bids : asks)
+                    .computeIfAbsent(o.price, k -> new ArrayDeque<>());
+            level.addLast(o);
+            byId.put(o.id, o);
+        }
+        return trades;
+    }
+
+    private long available(TreeMap<Long, ArrayDeque<Order>> opp, Order o, boolean isBuy) {
+        long avail = 0;
+        for (Map.Entry<Long, ArrayDeque<Order>> e : opp.entrySet()) {
+            long p = e.getKey();
+            if (isBuy ? p > o.price : p < o.price) break;
+            for (Order m : e.getValue()) avail += m.remaining;
+        }
+        return avail;
+    }
+
+    boolean cancel(long id) {
+        Order o = byId.get(id);
+        if (o == null) return false;
+        TreeMap<Long, ArrayDeque<Order>> own = o.side == 'B' ? bids : asks;
+        ArrayDeque<Order> level = own.get(o.price);
+        if (level != null) {
+            level.remove(o);
+            if (level.isEmpty()) own.remove(o.price);
+        }
+        byId.remove(id);
+        return true;
+    }
+
+    long remaining(long id) {
+        Order o = byId.get(id);
+        return o == null ? 0 : o.remaining;
+    }
+
+    long bestBid() {
+        Map.Entry<Long, ArrayDeque<Order>> e = bids.firstEntry();
+        return e == null ? 0 : e.getKey();
+    }
+
+    long bestAsk() {
+        Map.Entry<Long, ArrayDeque<Order>> e = asks.firstEntry();
+        return e == null ? 0 : e.getKey();
+    }
+}`,
+        hints: [
+          'Mỗi bên sổ là {{TreeMap<Long, ArrayDeque<Order>>>}}: bên mua dùng {{Comparator.reverseOrder()}} để giá cao nhất ở đầu, bên bán dùng thứ tự tự nhiên.',
+          'Vòng khớp: lấy {{opp.firstEntry()}}, kiểm tra giá (trừ MARKET), khớp với {{level.peekFirst()}} ở giá maker cho tới khi hết; LIMIT thì {{addLast}} phần dư, IOC/MARKET bỏ phần dư.',
+          'FOK: duyệt các mức giá chấp nhận được để cộng tổng thanh khoản; nếu < qty thì trả danh sách rỗng.',
+        ],
+        explain: `Ý chính: giá khớp luôn là giá maker, ưu tiên giá rồi thời gian nhờ TreeMap cộng ArrayDeque, phần dư tuỳ loại lệnh. {{cancel}} chỉ huỷ lệnh còn trên sổ (đã khớp hết ⇒ false).
+
+Lỗi hay gặp:
+- Lấy giá taker thay vì maker làm sai tiền hai bên.
+- IOC/FOK để sót phần dư lên sổ; LIMIT quên đặt phần dư.
+- Dùng {{ArrayList}} rồi chèn đầu ⇒ mất ưu tiên thời gian; phải FIFO bằng hàng đợi.
+- FOK không kiểm tra tổng thanh khoản trước nên khớp dở dang.`,
+      },
+    ],
+    check: [
+      { q: 'Trong sổ lệnh, khi hai lệnh cùng mức giá thì lệnh nào được khớp trước?', options: ['Lệnh có id lớn hơn', 'Lệnh đến trước (FIFO theo thời gian)', 'Lệnh có số lượng lớn hơn', 'Lệnh của khách VIP'], answer: 1, explain: 'Đúng (B): cùng mức giá thì ưu tiên thời gian — lệnh đến trước khớp trước (price–time priority), cài bằng hàng đợi FIFO (ArrayDeque). Sai (A): id không quyết định thứ tự. Sai (C): số lượng không phá vỡ ưu tiên thời gian (chỉ chia nhỏ lệnh chờ). Sai (D): sàn không ưu tiên theo nhãn khách.' },
+      { q: 'Vì sao matching engine của sàn thường chạy single-threaded (hoặc phân mảnh theo symbol)?', options: ['Vì Java không hỗ trợ đa luồng', 'Vì thứ tự lệnh ảnh hưởng kết quả khớp; một luồng tránh tranh chấp và đảm bảo tất định', 'Vì TreeMap không thread-safe nên phải một luồng cho mọi symbol', 'Vì khớp lệnh cần I/O mạng nên một luồng là đủ'], answer: 1, explain: 'Đúng (B): khớp lệnh phụ thuộc thứ tự (ai tới trước được giá), nhiều luồng dễ khớp hai lần/mất lệnh; một luồng đơn giản, không khoá, tất định. Khi cần throughput thì phân mảnh theo symbol (mỗi symbol một engine), không phải một sổ chung nhiều luồng. Sai (A): Java hỗ trợ đa luồng đầy đủ. Sai (C): lý do không phải TreeMap mà là tính phụ thuộc thứ tự; phân mảnh theo symbol mới đúng. Sai (D): khớp lệnh là tính toán thuần, không phải I/O.' },
+      { q: 'Khác biệt giữa IOC và FOK là gì?', options: ['IOC khớp trọn hoặc huỷ sạch; FOK khớp phần làm được rồi huỷ phần dư', 'IOC khớp phần làm được rồi huỷ phần dư; FOK phải khớp trọn ngay, không đủ thì huỷ sạch', 'Cả hai đều đặt phần dư lên sổ', 'IOC là lệnh thị trường, FOK là lệnh giới hạn'], answer: 1, explain: 'Đúng (B): IOC (Immediate-Or-Cancel) khớp phần có thể ngay, phần dư huỷ; FOK (Fill-Or-Kill) bắt buộc khớp toàn bộ ngay, nếu không đủ thanh khoản thì huỷ sạch, không khớp gì. Sai (A): đảo ngược hai khái niệm. Sai (C): cả hai đều không đặt phần dư lên sổ. Sai (D): cả hai đều có thể kèm giá giới hạn; không phải market/limit.' },
+    ],
+    related: [],
+    tags: ['order-book', 'matching-engine', 'treemap', 'price-time', 'banking'],
+  },
+  {
+    id: 'lesson-banking-028',
+    track: 'banking',
+    order: 28,
+    title: 'Mark-to-market hằng ngày, variation margin và margin call: lãi lỗ theo settlement price, ngưỡng duy trì, idempotent',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Giải thích mark-to-market (định giá lại theo giá thị trường) và vì sao mỗi ngày phải tính lãi lỗ rồi cộng vào số dư ký quỹ',
+      'Phân biệt long/short, multiplier, variation margin, ký quỹ duy trì và margin call; hiểu biên "đúng ngưỡng thì an toàn"',
+      'Viết MarginEngine.settle trả variation margin + danh sách margin call; chạy lại cùng ngày phải idempotent',
+    ],
+    body: `**Tóm tắt:** Hợp đồng tương lai được **định giá lại hằng ngày** (mark-to-market): mỗi ngày lấy **giá thanh toán** (settlement price) mới, tính lãi/lỗ của từng vị thế so với giá hôm trước, rồi **cộng vào số dư ký quỹ** (variation margin). Nếu số dư tụt xuống **dưới ngưỡng duy trì**, tài khoản bị **gọi ký quỹ** (margin call) để nạp thêm; không nạp thì bị **tất toán bắt buộc**. Bài này cài {{MarginEngine.settle}} bằng số nguyên đơn vị nhỏ nhất (chính xác, không cần làm tròn), và settle lại cùng một ngày phải **idempotent**.
+
+### Các thuật ngữ (giải thích cho người mới)
+- **Hợp đồng tương lai (future)**: thoả thuận mua/bán một tài sản (vàng, dầu, nông sản) ở **giá chốt hôm nay**, giao vào ngày sau. Người mua không trả toàn bộ tiền ngay, chỉ đặt **ký quỹ**.
+- **Vị thế (position)**: trạng thái bạn đang giữ. **Long** = đang mua (hưởng lợi khi giá lên). **Short** = đang bán (hưởng lợi khi giá xuống).
+- **Giá thanh toán (settlement price)**: giá tham chiếu mỗi ngày do sàn công bố, dùng để tính lãi lỗ và ký quỹ.
+- **Multiplier (hệ số nhân)**: mỗi đơn vị giá ứng với bao nhiêu tiền. Ví dụ hợp đồng Vàng 1 điểm = 1.000.000đ, multiplier = 1.000.000.
+- **Mark-to-market (định giá lại)**: mỗi ngày đánh giá lại lãi/lỗ dựa trên giá mới, không đợi đến ngày đáo hạn.
+- **Variation margin (ký quỹ biến thiên)**: khoản tiền lãi/lỗ trong ngày, cộng vào (lỗ thì trừ) số dư ký quỹ.
+- **Ký quỹ duy trì (maintenance margin)**: ngưỡng số dư tối thiểu. Dưới ngưỡng ⇒ **margin call** (gọi nạp thêm).
+- **Tất toán bắt buộc (forced liquidation)**: nếu không nạp đủ sau margin call, sàn đóng vị thế của bạn.
+
+### Vì sao phải mark-to-market mỗi ngày
+Nếu đợi đến đáo hạn mới tính lãi lỗ, một người thua lỗ nặng có thể bùng nợ. Mark-to-market giải quyết bằng cách **chốt lãi lỗ mỗi ngày**: lãi được rút, lỗ bị trừ ngay. Nhờ vậy rủi ro tín dụng giữa các bên được giới hạn trong **một ngày biến động giá**, và ký quỹ luôn phản ánh đúng giá trị thực của vị thế.
+
+Ví dụ đời thường: bạn đặt cọc mua một chiếc xe, mỗi ngày đại lý định giá lại chiếc xe; nếu giá thị trường giảm khiến chiếc xe (mà bạn đã cam kết mua) mất giá, bạn phải bù thêm tiền cọc để đảm bảo không "quỵt".
+
+### Công thức variation margin theo ngày
+Với mỗi vị thế:
+- {{change = settlementToday − settlementPrev}} (độ biến động giá)
+- Long: {{variation = change × qty × multiplier}} (giá lên ⇒ lãi)
+- Short: {{variation = −change × qty × multiplier}} (giá xuống ⇒ lãi)
+- Số dư mới: {{balance += variation}}
+- Nếu {{balance < maintenance}} ⇒ margin call (đúng bằng ngưỡng thì **an toàn**, vì điều kiện là nhỏ hơn).
+
+### Luồng settle cuối ngày
+~~~seq
+title: Settle mark-to-market cuoi ngay
+actors: Scheduler | MarginEngine | PriceFeed | Risk
+Scheduler -> MarginEngine: settle(day, positions, prices)
+MarginEngine -> PriceFeed: lay settlement price hom nay
+MarginEngine -> MarginEngine: variation = (today - prev) * qty * mult
+MarginEngine -> MarginEngine: balance += variation
+MarginEngine -> Risk: danh sach margin call (balance < maint)
+MarginEngine --> Scheduler: variation + margin calls
+~~~
+
+### Vì sao dùng số nguyên (long) ở bài này
+Phép tính {{change × qty × multiplier}} là **nhân các số nguyên** nên kết quả luôn chính xác tuyệt đối, không có sai số nhị phân như {{double}} (xem bài 1). Vì vậy bài này dùng {{long}} ở đơn vị nhỏ nhất. Khi nào cần {{BigDecimal}}? Khi có **phép chia** hoặc **phần trăm** (ví dụ phí 0,5%, tỷ giá có phần thập phân) — lúc đó khởi tạo từ chuỗi và làm tròn {{HALF_UP}} một lần ở biên. Nguyên tắc: nhân/trừ số nguyên thì long là đủ và nhanh; chia/phần trăm thì BigDecimal.
+
+### Lỗi hay gặp trên production
+1. **Sai dấu short**: tính variation của short giống long ⇒ người bán tưởng lãi khi giá lên. Phải đảo dấu cho short.
+2. **Lệch ngưỡng (off-by-one)**: dùng {{balance <= maintenance}} thay vì {{<}} ⇒ báo margin call oan khi số dư đúng bằng ngưỡng. Đúng ngưỡng là an toàn.
+3. **Settle hai lần cùng ngày**: cộng variation hai lần ⇒ số dư sai. Phải idempotent (đánh dấu ngày đã settle cho mỗi tài khoản).
+4. **Dùng double cho tiền**: số dư lệch vài đồng sau nhiều ngày (bài 1).
+5. **Không cộng dồn nhiều ngày**: mỗi ngày chỉ tính trên balance = 0 thay vì số dư hiện có.
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Giải thích mark-to-market và variation margin. Vì sao phải settle mỗi ngày và margin call hoạt động thế nào?"
+**Cách trả lời:** Hợp đồng tương lai được định giá lại mỗi ngày theo settlement price: variation margin = (giá hôm nay − giá hôm trước) × số lượng × multiplier, dấu dương cho long khi giá lên, âm cho short. Khoản này cộng vào số dư ký quỹ; nếu số dư **dưới** ngưỡng duy trì thì phát margin call, không nạp đủ thì tất toán bắt buộc. Mark-to-market giới hạn rủi ro tín dụng trong một ngày. Bài này dùng {{long}} đơn vị nhỏ nhất vì chỉ nhân/trừ số nguyên; settle phải **idempotent** theo ngày để chạy lại không cộng trùng, và điều kiện margin call là **nhỏ hơn** ngưỡng (đúng bằng thì an toàn).
+
+> Senior tip: Luôn test biên "đúng bằng ngưỡng" và "chạy lại cùng ngày"; hai lỗi off-by-one và settle-trùng là nguyên nhân phổ biến nhất làm sai số dư ký quỹ hàng loạt tài khoản.`,
+    exercises: [
+      {
+        title: 'MarginEngine.settle: variation margin + margin call',
+        prompt: `Viết class {{MarginEngine}} tính mark-to-market cuối ngày. {{Position}} gồm {{account}}, {{product}}, {{side}} ('L' long / 'S' short), {{qty}} (số hợp đồng), {{multiplier}} (giá trị mỗi đơn vị giá), {{prevPrice}} (settlement hôm trước), {{maintMargin}} (ký quỹ duy trì của tài khoản).
+
+{{SettleResult settle(String day, List<Position> positions, Map<String, Long> prices)}} với {{prices}} ánh xạ {{product → settlement hôm nay}}. {{SettleResult}} có: {{Map<String, Long> variation}} (lãi/lỗ theo tài khoản), {{List<String> marginCalls}} (tài khoản bị gọi ký quỹ), {{Map<String, Long> balance}} (số dư sau settle của các tài khoản vừa xử lý).
+
+Quy tắc:
+1. {{change = today − prevPrice}}; long: {{variation = change × qty × multiplier}}; short: {{variation = −change × qty × multiplier}}.
+2. {{balance[account] += variation}} (cộng dồn từ số dư cũ, mặc định 0).
+3. Nếu {{balance < maintMargin}} ⇒ thêm account vào {{marginCalls}}. **Đúng bằng ngưỡng thì KHÔNG gọi.**
+4. **Idempotent theo ngày**: settle lại cùng {{day}} cho tài khoản đã settle ⇒ không cộng lại, {{variation}} rỗng, {{balance}} không đổi.
+5. {{long balance(String account)}}: số dư hiện tại (0 nếu chưa có).`,
+        starter: `import java.util.*;
+
+class Position {
+    final String account;
+    final String product;
+    final char side;          // 'L' long, 'S' short
+    final long qty;
+    final long multiplier;
+    final long prevPrice;
+    final long maintMargin;
+    Position(String account, String product, char side, long qty,
+             long multiplier, long prevPrice, long maintMargin) {
+        this.account = account; this.product = product; this.side = side;
+        this.qty = qty; this.multiplier = multiplier;
+        this.prevPrice = prevPrice; this.maintMargin = maintMargin;
+    }
+}
+
+class SettleResult {
+    final Map<String, Long> variation = new LinkedHashMap<>();
+    final List<String> marginCalls = new ArrayList<>();
+    final Map<String, Long> balance = new LinkedHashMap<>();
+}
+
+class MarginEngine {
+    private final Map<String, Long> balance = new HashMap<>();
+    private final Map<String, String> lastDay = new HashMap<>();
+
+    SettleResult settle(String day, List<Position> positions, Map<String, Long> prices) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long balance(String account) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static Position pos(String acc, String prod, char side, long qty, long mult, long prev, long maint) {
+        return new Position(acc, prod, side, qty, mult, prev, maint);
+    }
+    static java.util.Map<String, Long> px(String prod, long price) {
+        java.util.Map<String, Long> m = new java.util.HashMap<>();
+        m.put(prod, price);
+        return m;
+    }
+    static java.util.Map<String, Long> px2(long g, long o) {
+        java.util.Map<String, Long> m = new java.util.HashMap<>();
+        m.put("GOLD", g); m.put("OIL", o);
+        return m;
+    }
+    public static void main(String[] args) {
+        MarginEngine e = new MarginEngine();
+        SettleResult r = e.settle("2026-01-01",
+                java.util.List.of(pos("A", "GOLD", 'L', 2, 1000, 50000, 100000)),
+                px("GOLD", 51000));
+        check("long_loi", r.variation.get("A") == 2000000L && r.balance.get("A") == 2000000L
+                && r.marginCalls.isEmpty(), "var=" + r.variation + " bal=" + r.balance);
+
+        MarginEngine e2 = new MarginEngine();
+        SettleResult r2 = e2.settle("2026-01-01",
+                java.util.List.of(pos("B", "OIL", 'S', 3, 1000, 50000, 100000)),
+                px("OIL", 49000));
+        check("short_loi", r2.variation.get("B") == 3000000L && r2.marginCalls.isEmpty(),
+                "var=" + r2.variation);
+
+        MarginEngine e3 = new MarginEngine();
+        SettleResult r3 = e3.settle("2026-01-01",
+                java.util.List.of(pos("C", "OIL", 'S', 1, 1000, 50000, 100000)),
+                px("OIL", 51000));
+        check("short_lo_margin_call", r3.variation.get("C") == -1000000L
+                && r3.marginCalls.contains("C"), "calls=" + r3.marginCalls);
+
+        MarginEngine e4 = new MarginEngine();
+        SettleResult r4 = e4.settle("2026-01-01",
+                java.util.List.of(pos("D", "GOLD", 'L', 1, 1000, 50000, 500000)),
+                px("GOLD", 50500));
+        check("dung_nguong_khong_goi", r4.balance.get("D") == 500000L && r4.marginCalls.isEmpty(),
+                "bal=" + r4.balance + " calls=" + r4.marginCalls);
+
+        MarginEngine e4b = new MarginEngine();
+        SettleResult r4b = e4b.settle("2026-01-01",
+                java.util.List.of(pos("E", "GOLD", 'L', 1, 1000, 50000, 500000)),
+                px("GOLD", 50499));
+        check("duoi_nguong_mot_don_vi", r4b.balance.get("E") == 499000L && r4b.marginCalls.contains("E"),
+                "bal=" + r4b.balance + " calls=" + r4b.marginCalls);
+
+        MarginEngine e5 = new MarginEngine();
+        java.util.List<Position> ps = java.util.List.of(pos("F", "GOLD", 'L', 1, 1000, 50000, 100000));
+        SettleResult a1 = e5.settle("2026-01-01", ps, px("GOLD", 51000));
+        SettleResult a2 = e5.settle("2026-01-01", ps, px("GOLD", 51000));
+        check("idempotent_cung_ngay", a1.balance.get("F") == 1000000L
+                && a2.variation.isEmpty() && a2.balance.isEmpty()
+                && e5.balance("F") == 1000000L,
+                "a1=" + a1.balance + " a2var=" + a2.variation + " a2bal=" + a2.balance);
+
+        MarginEngine e6 = new MarginEngine();
+        e6.settle("2026-01-01", java.util.List.of(pos("G", "GOLD", 'L', 1, 1000, 50000, 100000)), px("GOLD", 51000));
+        SettleResult d2 = e6.settle("2026-01-02", java.util.List.of(pos("G", "GOLD", 'L', 1, 1000, 51000, 100000)), px("GOLD", 52000));
+        check("nhieu_ngay_cong_don", d2.variation.get("G") == 1000000L && d2.balance.get("G") == 2000000L,
+                "bal=" + d2.balance);
+
+        MarginEngine e7 = new MarginEngine();
+        SettleResult r7 = e7.settle("2026-01-01", java.util.List.of(
+                pos("H", "GOLD", 'L', 1, 1000, 50000, 100000),
+                pos("I", "OIL", 'S', 1, 1000, 50000, 100000)),
+                px2(51000, 51000));
+        check("nhieu_tai_khoan", r7.variation.get("H") == 1000000L && r7.variation.get("I") == -1000000L
+                && r7.marginCalls.contains("I") && !r7.marginCalls.contains("H"),
+                "var=" + r7.variation + " calls=" + r7.marginCalls);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Position {
+    final String account;
+    final String product;
+    final char side;
+    final long qty;
+    final long multiplier;
+    final long prevPrice;
+    final long maintMargin;
+    Position(String account, String product, char side, long qty,
+             long multiplier, long prevPrice, long maintMargin) {
+        this.account = account; this.product = product; this.side = side;
+        this.qty = qty; this.multiplier = multiplier;
+        this.prevPrice = prevPrice; this.maintMargin = maintMargin;
+    }
+}
+
+class SettleResult {
+    final Map<String, Long> variation = new LinkedHashMap<>();
+    final List<String> marginCalls = new ArrayList<>();
+    final Map<String, Long> balance = new LinkedHashMap<>();
+}
+
+class MarginEngine {
+    private final Map<String, Long> balance = new HashMap<>();
+    private final Map<String, String> lastDay = new HashMap<>();
+
+    SettleResult settle(String day, List<Position> positions, Map<String, Long> prices) {
+        SettleResult r = new SettleResult();
+        Map<String, Long> maint = new HashMap<>();
+        Set<String> touched = new LinkedHashSet<>();
+        if (positions != null) {
+            for (Position p : positions) {
+                if (day.equals(lastDay.get(p.account))) continue;   // idempotent theo ngay
+                long today = prices.get(p.product);
+                long change = today - p.prevPrice;
+                long var = (p.side == 'L' ? change : -change) * p.qty * p.multiplier;
+                long bal = balance.getOrDefault(p.account, 0L) + var;
+                balance.put(p.account, bal);
+                r.variation.merge(p.account, var, Long::sum);
+                maint.put(p.account, p.maintMargin);
+                touched.add(p.account);
+            }
+        }
+        for (String a : touched) lastDay.put(a, day);
+        for (String a : touched) {
+            long bal = balance.get(a);
+            r.balance.put(a, bal);
+            if (bal < maint.get(a)) r.marginCalls.add(a);   // dung nguong: bang thi an toan
+        }
+        return r;
+    }
+
+    long balance(String account) {
+        return balance.getOrDefault(account, 0L);
+    }
+}`,
+        hints: [
+          'Với mỗi position chưa settle trong {{day}}: {{change = today − prevPrice}}; dấu + cho long, đảo dấu cho short; {{var = change × qty × multiplier}}.',
+          'Cộng dồn: {{balance = balance.getOrDefault(account, 0) + var}}. Ghi {{lastDay}} cho account SAU vòng lặp để idempotent.',
+          'Margin call khi {{bal < maint}} (nhỏ hơn, không phải <=). {{balance}} trong kết quả chỉ gồm các account vừa xử lý.',
+        ],
+        explain: `Ý chính: variation = (giá mới − giá cũ) × qty × multiplier, đảo dấu cho short; cộng dồn vào số dư; margin call khi số dư **nhỏ hơn** ngưỡng duy trì; settle lại cùng ngày thì bỏ qua (idempotent).
+
+Lỗi hay gặp:
+- Tính short giống long (sai dấu) ⇒ báo lãi/lỗ ngược.
+- Dùng {{<=}} thay vì {{<}} ⇒ margin call oan khi đúng ngưỡng.
+- Không đánh dấu ngày đã settle ⇒ settle hai lần cộng trùng.
+- Quên cộng dồn số dư cũ, mỗi ngày tính lại từ 0.`,
+      },
+    ],
+    check: [
+      { q: 'Với một vị thế SHORT, khi giá thanh toán tăng thì variation margin là gì?', options: ['Lãi, vì giá tăng', 'Lỗ (âm), vì short hưởng lợi khi giá giảm nên giá tăng gây lỗ', 'Không đổi', 'Bằng 0 vì short không có variation'], answer: 1, explain: 'Đúng (B): short = đang bán, lãi khi giá xuống; giá tăng ⇒ lỗ, variation = −change × qty × multiplier (âm). Sai (A): đó là long. Sai (C): giá đổi thì variation đổi. Sai (D): short cũng có variation như long, chỉ khác dấu.' },
+      { q: 'Số dư ký quỹ đúng bằng ngưỡng duy trì thì có bị margin call không?', options: ['Có, vì bằng ngưỡng là vi phạm', 'Không, vì điều kiện gọi là nhỏ hơn ngưỡng (balance < maintenance)', 'Có, nhưng chỉ khi số dư âm', 'Tuỳ sàn quyết định từng lần'], answer: 1, explain: 'Đúng (B): margin call khi balance **nhỏ hơn** maintenance; đúng bằng là vẫn an toàn. Đây là lỗi off-by-one phổ biến: dùng <= sẽ báo oan. Sai (A): bằng ngưỡng chưa vi phạm. Sai (C): không phụ thuộc âm. Sai (D): quy tắc là số học, không tuỳ hứng.' },
+      { q: 'Vì sao settle cùng một ngày phải idempotent (chạy lại không cộng trùng)?', options: ['Để tiết kiệm bộ nhớ', 'Vì job settle có thể chạy lại (retry, restart) và nếu cộng hai lần sẽ làm sai số dư ký quỹ hàng loạt tài khoản', 'Vì prices thay đổi theo phút', 'Vì long không chính xác'], answer: 1, explain: 'Đúng (B): settle là job cuối ngày, có thể bị retry hoặc chạy lại sau sự cố; nếu không idempotent sẽ cộng variation hai lần ⇒ số dư sai, margin call sai. Cách làm: đánh dấu ngày đã settle cho mỗi tài khoản. Sai (A): không phải lý do. Sai (C): settlement là giá cố định trong ngày. Sai (D): bài dùng long chính xác cho phép nhân số nguyên.' },
+    ],
+    related: [],
+    tags: ['mark-to-market', 'variation-margin', 'margin-call', 'futures', 'banking'],
+  },
+  // ---- Thanh toán / Stripe Connect (chuyển từ lessons-payments.js, track payments không có trong topics.js) ----
+  {
+    id: 'lesson-banking-029',
+    track: 'banking',
+    order: 29,
+    title: 'Mô hình Stripe Connect: platform, connected account và ba loại account (Standard / Express / Custom)',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Giải thích được mô hình platform + connected account và vì sao tiền không đi qua tài khoản của bạn',
+      'Phân biệt Standard / Express / Custom và chọn Express cho dự án CLB trả tiền HLV',
+      'Hiểu account, capability, charges_enabled và payouts_enabled khác nhau thế nào'
+    ],
+    body: `### Bức tranh lớn: ai giữ tiền?
+**Tóm tắt:** Stripe Connect là bộ công cụ để **platform** (nền tảng của bạn, ví dụ web CLB thu phí thành viên) nhận tiền **thay cho bên thứ ba** (connected account, ví dụ HLV), rồi chuyển phần của họ đi. Điểm mấu chốt: trong mô hình chuẩn, **tiền của HLV không nằm trong tài khoản Stripe của bạn** — Stripe tách sổ (ledger) riêng cho từng connected account, bạn chỉ là người điều phối.
+
+**Thuật ngữ (giải thích cho người mới):**
+- **Platform**: tài khoản Stripe của chính bạn — nơi bạn cấu hình Connect, nhận phí nền tảng (application fee), xem báo cáo.
+- **Connected account**: tài khoản Stripe của "đối tác" mà bạn kết nối (HLV, CLB con). Mỗi cái có account id dạng {{acct_...}}.
+- **Capability**: một "quyền" cụ thể của connected account, ví dụ {{card_payments}} (được nhận tiền thẻ) hay {{transfers}} (được nhận chuyển tiền). Account phải được **kích hoạt** capability đó thì mới giao dịch được.
+- **charges_enabled / payouts_enabled**: hai cờ boolean tóm tắt trạng thái. {{charges_enabled}} = account đã đủ điều kiện nhận charge chưa; {{payouts_enabled}} = đã đủ điều kiện được trả tiền (payout) ra ngân hàng chưa. Một account có thể nhận tiền nhưng chưa rút được tiền ra.
+- **Requirements**: danh sách thông tin Stripe còn **thiếu** để account hoạt động đầy đủ (mã số thuế, giấy tờ, số tài khoản ngân hàng…). Khi còn thiếu, Stripe trả về mảng {{requirements.disabled_reason}} và các field cần bổ sung.
+
+### Ba loại account — khác nhau ở "ai chịu trách nhiệm gì"
+| Loại | Ai tạo account | Điền thông tin ở đâu | Ai chịu phí/lỗ chargeback | Khi nào chọn |
+|---|---|---|---|---|
+| **Standard** | Connected account tự tạo | Stripe-hosted, họ tự làm | Chính connected account | Bạn muốn đối tác tự chủ hoàn toàn, ít việc cho bạn |
+| **Express** | Bạn tạo hộ | Stripe-hosted nhưng bạn gửi link | Platform (bạn) | Bạn muốn onboard nhanh, ít code, vẫn kiểm soát luồng tiền |
+| **Custom** | Bạn tạo, bạn thu thập | Bạn tự làm form (requirements) | Platform (bạn) | Bạn cần UX riêng, tự thu thập KYC — nhiều việc & trách nhiệm nhất |
+
+### Vì sao dự án CLB chọn Express
+CLB thu phí thành viên rồi trả tiền HLV. Bạn (platform) muốn: HLV bấm vài bước là xong (không muốn tự lập tài khoản Stripe rườm rà), bạn kiểm soát việc chia tiền, và bạn không muốn tự xây form KYC. **Express** đúng điểm này: bạn gọi API tạo account, gửi **Account Link** (một URL do Stripe host) cho HLV điền thông tin, xong HLV nhận payout. Bạn tốn ít code nhất mà vẫn an toàn.
+
+### Luồng một lần thiết lập
+~~~seq
+title: Onboarding Express
+actors: App | Stripe | HLV
+App -> Stripe: tạo Express account (type=express)
+Stripe --> App: acct_123
+App -> Stripe: tạo Account Link
+Stripe --> App: https://connect.stripe.com/...
+App --> HLV: gửi link onboarding
+HLV -> Stripe: điền thông tin, submit
+Stripe --> App: webhook account.updated
+App -> Stripe: GET account acct_123
+Stripe --> App: charges_enabled, payouts_enabled
+~~~
+
+### Lỗi hay gặp
+1. **Tưởng tiền của HLV đi qua tài khoản mình**: nếu dùng direct charge (bài 3) thì tiền vào thẳng connected account; nếu nhầm sang mô hình khác, tiền có thể "đứng" ở platform và bạn phải chuyển tay — sai sổ sách.
+2. **Bỏ qua {{requirements}}**: account đã tạo nhưng {{charges_enabled=false}} vì thiếu thông tin; app báo "đã kết nối" nhưng HLV không nhận được tiền.
+3. **Không xử lý {{account.updated}} webhook**: trạng thái capability thay đổi (bị hạn chế, cần bổ sung giấy tờ) mà app không biết → HLV "mất" payout mà không ai báo.
+
+### Ví dụ: đọc trạng thái account
+~~~java
+// Giả lập phản hồi Stripe (không gọi mạng) để thấy các cờ quan trọng
+record AccountState(String id, boolean chargesEnabled, boolean payoutsEnabled, String disabledReason) {}
+AccountState s = new AccountState("acct_123", true, false, "requirements.past_due");
+// chargesEnabled=true  -> nhận được tiền
+// payoutsEnabled=false -> CHƯA rút được tiền ra ngân hàng
+// disabledReason       -> lý do: còn thiếu thông tin (past_due)
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Platform muốn trả tiền cho người bán, bạn chọn loại Connect account nào và vì sao?"
+**Cách trả lời:** Tôi phân biệt 3 loại: Standard (đối tác tự tạo, tự chịu trách nhiệm, ít việc cho platform), Express (platform tạo hộ, onboarding bằng Account Link do Stripe host, platform chịu chargeback — ít code, hợp khi muốn kiểm soát luồng tiền), Custom (platform tự làm form KYC, nhiều trách nhiệm nhất). Với dự án CLB trả tiền HLV, tôi chọn **Express**: HLV chỉ cần bấm link điền thông tin, tôi kiểm soát chia tiền bằng transfer, không phải tự xây form thu thập giấy tờ. Tôi luôn kiểm tra {{charges_enabled}} và {{payouts_enabled}} cùng {{requirements}} sau onboarding, và lắng nghe webhook {{account.updated}} để biết khi account bị hạn chế.
+
+> Senior tip: Trong Connect, "đã kết nối" (account tồn tại) KHÔNG có nghĩa là "đã nhận được tiền". Luôn kiểm tra cặp cờ {{charges_enabled}}/{{payouts_enabled}} và mảng {{requirements}} trước khi cho phép giao dịch — đây là nguồn bug "HLV không nhận được lương" phổ biến nhất.`,
+    exercises: [
+      {
+        title: 'ConnectState.interpret',
+        prompt: `Hoàn thiện class {{ConnectState}} với method {{interpret(boolean chargesEnabled, boolean payoutsEnabled, String disabledReason)}} trả về enum {{Status}}:
+- {{READY}}: cả chargesEnabled và payoutsEnabled đều true.
+- {{RECEIVE_ONLY}}: chargesEnabled true nhưng payoutsEnabled false.
+- {{BLOCKED}}: chargesEnabled false (disabledReason khác null).
+- {{INCOMPLETE}}: chargesEnabled false và disabledReason là null.`,
+        starter: `class ConnectState {
+    enum Status { READY, RECEIVE_ONLY, BLOCKED, INCOMPLETE }
+    static Status interpret(boolean chargesEnabled, boolean payoutsEnabled, String disabledReason) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        check("ready", ConnectState.interpret(true, true, null) == ConnectState.Status.READY, "");
+        check("receive only", ConnectState.interpret(true, false, "requirements.past_due") == ConnectState.Status.RECEIVE_ONLY, "");
+        check("blocked", ConnectState.interpret(false, false, "requirements.disabled") == ConnectState.Status.BLOCKED, "");
+        check("incomplete", ConnectState.interpret(false, false, null) == ConnectState.Status.INCOMPLETE, "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class ConnectState {
+    enum Status { READY, RECEIVE_ONLY, BLOCKED, INCOMPLETE }
+    static Status interpret(boolean chargesEnabled, boolean payoutsEnabled, String disabledReason) {
+        if (chargesEnabled) return payoutsEnabled ? Status.READY : Status.RECEIVE_ONLY;
+        return disabledReason == null ? Status.INCOMPLETE : Status.BLOCKED;
+    }
+}`,
+        hints: ['chargesEnabled quyết định READY/RECEIVE_ONLY vs BLOCKED/INCOMPLETE', 'disabledReason null = chưa đủ thông tin, khác null = bị chặn có lý do'],
+        explain: `Cờ charges_enabled là điều kiện tiên quyết: nếu false thì account chưa nhận được tiền. Khi false, phân biệt INCOMPLETE (chưa có disabled_reason — mới tạo, đang chờ điền) và BLOCKED (có lý do bị hạn chế). Khi charges_enabled true, payouts_enabled quyết định đã rút tiền ra được chưa.`
+      }
+    ],
+    check: [
+      { q: 'Trong mô hình Connect, tiền của connected account (HLV) nằm ở đâu?', options: ['Trong tài khoản Stripe của platform, platform phải chuyển tay', 'Trong sổ (ledger) riêng của connected account, platform chỉ điều phối', 'Trong tài khoản ngân hàng của platform ngay lập tức', 'Ở Stripe giữ hộ cho đến khi rút'], answer: 1, explain: 'Đúng: Stripe tách sổ riêng cho mỗi connected account; với direct/destination charge tiền vào thẳng connected account, platform không giữ hộ. Sai (A): đó là hiểu nhầm phổ biến — nếu tiền đứng ở platform thì bạn phải tự chuyển, dễ sai sổ. Sai (C): tiền không vào ngân hàng platform. Sai (D): không phải "Stripe giữ hộ đến khi rút" theo nghĩa chung; mỗi account có ledger và payout riêng.' },
+      { q: 'Account Express khác Standard chủ yếu ở điểm nào?', options: ['Express không cần KYC', 'Platform tạo account hộ và gửi Account Link do Stripe host để onboard nhanh, platform chịu chargeback', 'Express chỉ dùng cho Custom', 'Standard không hỗ trợ payout'], answer: 1, explain: 'Đúng: Express do platform tạo hộ, onboarding qua Account Link Stripe-hosted, ít code, platform chịu trách nhiệm chargeback. Sai (A): Express vẫn cần KYC (điền qua link). Sai (C): Express và Custom là hai loại riêng biệt. Sai (D): Standard hỗ trợ payout bình thường (connected account tự quản).' },
+      { q: 'Hai cờ charges_enabled và payouts_enabled khác nhau thế nào?', options: ['Chúng luôn bằng nhau', 'charges_enabled = được nhận tiền; payouts_enabled = được rút tiền ra ngân hàng', 'payouts_enabled = được nhận tiền; charges_enabled = rút tiền', 'Cả hai đều nói về việc tạo account'], answer: 1, explain: 'Đúng: charges_enabled cho biết account đã đủ điều kiện nhận charge chưa; payouts_enabled cho biết đã rút payout ra ngân hàng chưa — một account có thể nhận tiền nhưng chưa rút được. Sai (A): chúng độc lập. Sai (C): đảo ngược nghĩa. Sai (D): không liên quan tạo account.' },
+      { q: 'Webhook account.updated dùng để làm gì?', options: ['Để gửi email cho HLV', 'Để biết khi trạng thái account/capability/requirements thay đổi (bị hạn chế, cần bổ sung giấy tờ)', 'Để tạo account mới', 'Để tính application fee'], answer: 1, explain: 'Đúng: account.updated bắn khi account thay đổi (capability bị tắt, requirements thay đổi…), giúp app cập nhật trạng thái và báo HLV bổ sung. Sai (A): gửi email là việc khác. Sai (C): tạo account dùng API create, không phải webhook. Sai (D): application fee tính lúc tạo charge, không qua webhook này.' }
+    ],
+    related: [],
+    tags: ['stripe', 'connect', 'payments']
+  },
+  {
+    id: 'lesson-banking-030',
+    track: 'banking',
+    order: 30,
+    title: 'Onboarding bằng Account Links: tạo account, gửi link, kiểm tra charges_enabled/payouts_enabled',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Biết thứ tự gọi API: tạo account → tạo Account Link → gửi HLV → nhận webhook',
+      'Hiểu return_url/refresh_url và vì sao Account Link hết hạn (khác login link)',
+      'Viết Onboarding.isComplete kiểm tra account đã đủ điều kiện giao dịch chưa'
+    ],
+    body: `### Onboarding là gì
+**Tóm tắt:** Onboarding là quá trình đưa một connected account từ "vừa tạo, chưa có thông tin" đến "đủ điều kiện nhận và rút tiền". Với Express, bạn không tự làm form: bạn tạo account rồi tạo **Account Link** — một URL ngắn do Stripe host — gửi cho HLV. HLV điền thông tin trên trang của Stripe, xong quay về {{return_url}} của bạn.
+
+**Thuật ngữ:**
+- **Account Link**: URL onboarding một lần, do Stripe host, hết hạn sau một khoảng (thường ~10 phút) — khác **login link** (dùng để HLV vào dashboard Express, không hết hạn nhanh như vậy). Khi link hết hạn, bạn tạo link mới bằng API.
+- **return_url**: nơi Stripe đưa HLV về sau khi hoàn tất (hoặc thoát giữa chừng).
+- **refresh_url**: nơi đưa HLV về nếu link hết hạn, để bạn tạo link mới.
+- **requirements / disabled_reason**: như bài 1 — thông tin còn thiếu và lý do account chưa hoạt động.
+
+### Thứ tự các bước (vì sao theo thứ tự này)
+1. **Tạo account** {{POST /v1/accounts}} với {{type=express}} (và {{country}}, {{email}} nếu có). Lấy {{acct_...}}.
+2. **Lưu {{acct_id}}** vào DB của bạn (bảng {{connected_accounts}}), gắn với HLV.
+3. **Tạo Account Link** {{POST /v1/account_links}} với {{account}}, {{refresh_url}}, {{return_url}}, {{type=account_onboarding}}.
+4. **Gửi URL** cho HLV (email, link trong app).
+5. HLV điền → quay về {{return_url}}. Bạn **không tin** return_url: gọi {{GET /v1/accounts/id}} để đọc trạng thái thật, hoặc nghe webhook {{account.updated}}.
+6. Kiểm tra {{charges_enabled}} && {{payouts_enabled}}. Nếu chưa đủ, hiện {{requirements}} để HLV bổ sung.
+
+### Luồng onboarding
+~~~seq
+title: Onboarding Express
+actors: App | Stripe | HLV
+App -> Stripe: POST /v1/accounts type=express
+Stripe --> App: acct_123
+App -> Stripe: POST /v1/account_links
+Stripe --> App: https://connect.stripe.com/e/...
+App --> HLV: gửi link
+HLV -> Stripe: điền thông tin
+Stripe --> App: webhook account.updated
+App -> Stripe: GET /v1/accounts/acct_123
+Stripe --> App: charges_enabled, payouts_enabled, requirements
+~~~
+
+### Lỗi hay gặp
+1. **Tin {{return_url}}**: HLV đóng tab giữa chừng vẫn bị coi là "xong". Luôn đọc trạng thái thật từ API/webhook.
+2. **Account Link hết hạn**: HLV để link 15 phút mới bấm → link chết. Cần {{refresh_url}} để tạo link mới.
+3. **Không lưu {{acct_id}}**: không map được HLV ↔ account, sau này không biết trả tiền cho ai.
+4. **Bỏ qua requirements**: account tồn tại nhưng {{payouts_enabled=false}}, HLV không rút được tiền.
+
+### Ví dụ: kiểm tra onboarding xong chưa
+~~~java
+record Account(String id, boolean chargesEnabled, boolean payoutsEnabled, java.util.List<String> missingFields) {}
+boolean ready = a.chargesEnabled() && a.payoutsEnabled();
+// nếu chưa ready, missingFields chứa các field HLV cần điền (vd "individual.tax_id")
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Bạn tích hợp Connect Express, mô tả luồng onboarding và cách biết HLV đã xong."
+**Cách trả lời:** Tôi tạo account {{type=express}} qua {{POST /v1/accounts}}, lưu {{acct_id}} vào bảng connected_accounts, rồi tạo **Account Link** {{type=account_onboarding}} với {{return_url}} và {{refresh_url}} và gửi cho HLV. HLV điền trên trang Stripe rồi quay về. Tôi **không tin return_url** mà đọc trạng thái thật bằng {{GET /v1/accounts/id}} hoặc webhook {{account.updated}}, kiểm tra {{charges_enabled}} && {{payouts_enabled}}. Nếu chưa đủ, tôi hiện {{requirements.missing_fields}} (hoặc {{disabled_reason}}) để HLV bổ sung. Link hết hạn thì dùng {{refresh_url}} tạo link mới — tôi phân biệt rõ Account Link (hết hạn nhanh) với login link.
+
+> Senior tip: Coi return_url chỉ là "gợi ý UI", nguồn sự thật là API/webhook. Lưu {{acct_id}} ngay khi tạo và gắn với bản ghi HLV — thiếu bước này là bạn không thể trả tiền đúng người về sau.`,
+    exercises: [
+      {
+        title: 'Onboarding.isComplete',
+        prompt: `Hoàn thiện class {{Onboarding}} với method {{isComplete(boolean chargesEnabled, boolean payoutsEnabled, java.util.List<String> missingFields)}} trả về boolean: true chỉ khi chargesEnabled && payoutsEnabled. Method {{nextStep(...)}} trả String: "DONE" nếu complete; "COLLECT_INFO" nếu missingFields khác rỗng; "WAIT" nếu không complete nhưng missingFields rỗng.`,
+        starter: `import java.util.List;
+class Onboarding {
+    static boolean isComplete(boolean chargesEnabled, boolean payoutsEnabled, List<String> missingFields) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static String nextStep(boolean chargesEnabled, boolean payoutsEnabled, List<String> missingFields) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static java.util.List<String> list(String... s) { return java.util.Arrays.asList(s); }
+    public static void main(String[] args) {
+        check("complete", Onboarding.isComplete(true, true, list()) , "");
+        check("not complete", !Onboarding.isComplete(true, false, list("individual.tax_id")), "");
+        check("step done", Onboarding.nextStep(true, true, list()).equals("DONE"), "");
+        check("step collect", Onboarding.nextStep(false, false, list("individual.tax_id")).equals("COLLECT_INFO"), "");
+        check("step wait", Onboarding.nextStep(false, false, list()).equals("WAIT"), "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.List;
+class Onboarding {
+    static boolean isComplete(boolean chargesEnabled, boolean payoutsEnabled, List<String> missingFields) {
+        return chargesEnabled && payoutsEnabled;
+    }
+    static String nextStep(boolean chargesEnabled, boolean payoutsEnabled, List<String> missingFields) {
+        if (isComplete(chargesEnabled, payoutsEnabled, missingFields)) return "DONE";
+        if (missingFields != null && !missingFields.isEmpty()) return "COLLECT_INFO";
+        return "WAIT";
+    }
+}`,
+        hints: ['isComplete = chargesEnabled && payoutsEnabled', 'nextStep: DONE > COLLECT_INFO (có field thiếu) > WAIT'],
+        explain: `Onboarding chỉ coi là xong khi cả hai cờ bật. nextStep phân 3 nhánh: DONE (đủ), COLLECT_INFO (còn field cụ thể cần điền — hiện form), WAIT (chưa đủ nhưng chưa có field cụ thể — thường do Stripe xử lý/kiểm duyệt, chờ webhook). Lỗi hay gặp: chỉ kiểm charges_enabled mà quên payouts_enabled.`
+      }
+    ],
+    check: [
+      { q: 'Account Link khác login link ở điểm nào?', options: ['Account Link dùng để đăng nhập dashboard', 'Account Link dùng cho onboarding một lần và hết hạn nhanh; login link để vào Express dashboard', 'Chúng giống hệt nhau', 'Account Link không cần return_url'], answer: 1, explain: 'Đúng: Account Link (type=account_onboarding) là link một lần để điền thông tin, hết hạn sau khoảng ngắn; login link cho HLV vào dashboard Express xem payout. Sai (A): đó là login link. Sai (C): khác mục đích và thời hạn. Sai (D): Account Link cần refresh_url/return_url.' },
+      { q: 'Vì sao không được coi return_url là bằng chứng onboarding xong?', options: ['Vì return_url luôn sai', 'HLV có thể đóng tab/thoát giữa chừng, nên phải đọc trạng thái thật từ API hoặc webhook account.updated', 'Vì return_url không tồn tại', 'Vì Stripe không cho dùng return_url'], answer: 1, explain: 'Đúng: HLV có thể thoát giữa chừng mà trình duyệt vẫn điều hướng, nên return_url không đảm bảo hoàn tất; nguồn sự thật là GET account hoặc webhook. Sai (A): return_url không "luôn sai", chỉ là không đủ tin cậy. Sai (C): return_url có thật. Sai (D): Stripe cho dùng return_url.' },
+      { q: 'Điều kiện để coi một Express account đã sẵn sàng giao dịch là gì?', options: ['Account đã được tạo', 'charges_enabled && payouts_enabled đều true', 'HLV đã mở email', 'return_url đã được truy cập'], answer: 1, explain: 'Đúng: cần cả charges_enabled (nhận tiền) và payouts_enabled (rút tiền) true. Sai (A): tạo account mới chỉ là bước đầu. Sai (C): mở email không liên quan. Sai (D): truy cập return_url không đảm bảo trạng thái.' },
+      { q: 'Khi Account Link hết hạn, bạn làm gì?', options: ['Bắt HLV tạo account mới', 'Dùng refresh_url để tạo Account Link mới', 'Gửi lại link cũ', 'Bỏ qua, HLV tự xoay xở'], answer: 1, explain: 'Đúng: Account Link hết hạn nhanh; dùng refresh_url (hoặc gọi lại API account_links) để tạo link mới, không bắt tạo account mới. Sai (A): account vẫn còn, chỉ link hết hạn. Sai (C): link cũ đã chết. Sai (D): trải nghiệm tệ, HLV kẹt.' }
+    ],
+    related: [],
+    tags: ['stripe', 'onboarding', 'account-link']
+  },
+  {
+    id: 'lesson-banking-031',
+    track: 'banking',
+    order: 31,
+    title: 'Các kiểu charge: direct, destination, separate charges and transfers và application fee',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Phân biệt direct charge, destination charge và separate charges & transfers',
+      'Hiểu application_fee_amount và ai chịu phí Stripe/chargeback trong từng kiểu',
+      'Chọn kiểu charge phù hợp cho mô hình CLB thu phí thành viên trả HLV'
+    ],
+    body: `### Ba kiểu charge — khác nhau ở "tiền chảy qua đâu"
+**Tóm tắt:** Connect có 3 cách charge. **Direct**: bạn gọi API trên connected account, tiền vào thẳng HLV, bạn thu application fee. **Destination**: bạn charge trên platform, chỉ định {{transfer_data.destination}}, Stripe tự chuyển (trừ fee) sang HLV. **Separate charges & transfers (SCT)**: bạn charge trên platform (tiền vào platform) rồi **tự** gọi transfer sang HLV — bạn kiểm soát từng bước, nhưng cũng gánh trách nhiệm.
+
+**Thuật ngữ:**
+- **Direct charge**: request gửi tới {{/v1/payment_intents}} với header {{Stripe-Account: acct_HLV}}. Tiền vào ledger HLV. Bạn (platform) nhận application fee nếu truyền {{application_fee_amount}}.
+- **Destination charge**: request trên platform, gán trường {{transfer_data.destination}} bằng {{acct_HLV}}. Stripe tự động chuyển tiền (sau khi trừ application fee) sang HLV. Ít code, tiền không "đứng" ở bạn.
+- **Separate charges & transfers (SCT)**: charge trên platform (tiền vào platform), sau đó gọi {{POST /v1/transfers}} để chuyển cho HLV. Linh hoạt nhất (có thể giữ lại, chia nhiều, hoàn tiền có kiểm soát) nhưng bạn phải tự đảm bảo transfer khớp charge.
+- **Application fee**: khoản platform thu cho mỗi giao dịch, truyền {{application_fee_amount}} (đơn vị nhỏ nhất). Có thể hoàn (refund) riêng.
+
+### So sánh
+| Kiểu | Tiền vào đâu trước | Ai tự chuyển | Ai chịu chargeback | Độ linh hoạt | Code |
+|---|---|---|---|---|---|
+| Direct | thẳng HLV | Stripe (theo account) | connected account | thấp | ít |
+| Destination | HLV (Stripe tự chuyển) | Stripe | platform | trung bình | ít |
+| SCT | platform rồi transfer | bạn | platform | cao | nhiều |
+
+### Vì sao CLB (thu phí → trả HLV) chọn Destination hoặc SCT
+- Nếu muốn **ít code, tiền không đứng ở mình**: **Destination**. Thu phí 100k, application fee 10k, 90k tự chuyển HLV.
+- Nếu muốn **giữ lại 1 phần, chia nhiều HLV, hoặc hoàn có kiểm soát**: **SCT**. Thu về platform, rồi transfer từng khoản — nhưng phải đảm bảo mỗi transfer có mapping tới charge (bài 6 idempotency).
+
+### Luồng Destination charge
+~~~seq
+title: Destination charge
+actors: App | Stripe | HLV
+App -> Stripe: POST PaymentIntent (platform) transfer_data.destination=acct_HLV
+Stripe --> App: pi_123, status
+Stripe -> Stripe: trừ application fee, chuyển phần còn lại
+Stripe --> HLV: tiền vào ledger HLV
+Stripe --> App: webhook payment_intent.succeeded
+~~~
+
+### Lỗi hay gặp
+1. **Nhầm đơn vị tiền**: application_fee_amount là số nguyên đơn vị nhỏ nhất (cent). 10 USD = 1000, không phải 10.
+2. **SCT quên transfer**: charge thành công nhưng quên gọi transfer → tiền nằm ở platform, HLV không nhận. Phải có reconciliation.
+3. **Direct charge không truyền Stripe-Account**: request đi nhầm vào platform.
+4. **Hoàn tiền không khớp**: refund ở SCT phải tính cả application fee và transfer đã gửi.
+
+### Ví dụ: tính chia tiền
+~~~java
+long totalCents = 10000;      // 100.00 USD
+long feeCents = 1000;         // application fee 10.00 USD
+long toCoach = totalCents - feeCents;  // 9000 = 90.00 USD
+// Destination: truyền transfer_data.destination=acct_HLV, application_fee_amount=1000
+// SCT: charge 10000 vào platform, rồi POST /v1/transfers amount=9000 destination=acct_HLV
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "So sánh direct, destination và separate charges & transfers; với mô hình platform thu tiền rồi trả người bán, bạn chọn gì?"
+**Cách trả lời:** Direct charge chạy trên connected account (header Stripe-Account), tiền vào thẳng người bán, ít code nhưng khó kiểm soát. Destination charge chạy trên platform với {{transfer_data.destination}}, Stripe tự chuyển phần còn lại sau application fee — ít code, tiền không đứng ở platform, hợp khi tôi muốn đơn giản. SCT: charge vào platform rồi tôi tự gọi {{/v1/transfers}} — linh hoạt nhất (giữ lại, chia nhiều, hoàn có kiểm soát) nhưng tôi phải đảm bảo transfer khớp charge và chịu chargeback. Với CLB trả HLV, tôi chọn Destination nếu chỉ cần chia đơn giản; chọn SCT nếu cần giữ phí nền tảng phức tạp hoặc chia nhiều bên. Lưu ý application_fee_amount là đơn vị nhỏ nhất và có thể hoàn riêng.
+
+> Senior tip: Chọn kiểu charge là quyết định thiết kế, không chỉ là "gọi API nào". Destination ít bug tiền đứng; SCT mạnh nhưng bắt buộc có reconciliation charge↔transfer (bài 6) — thiếu nó là bạn sẽ có ngày "tiền của HLV nằm mãi ở platform".`,
+    exercises: [
+      {
+        title: 'ChargeSplit.split',
+        prompt: `Hoàn thiện class {{ChargeSplit}} với method {{split(long totalCents, long feeCents)}} trả về long[] {toAccount, fee}:
+- toAccount = totalCents - feeCents (không âm).
+- fee = feeCents, nhưng không vượt totalCents.
+- Nếu feeCents < 0 coi như 0; nếu totalCents < 0 trả {0,0}.`,
+        starter: `class ChargeSplit {
+    static long[] split(long totalCents, long feeCents) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        long[] a = ChargeSplit.split(10000, 1000);
+        check("split basic", a[0] == 9000 && a[1] == 1000, "");
+        long[] b = ChargeSplit.split(10000, 20000);
+        check("fee capped", b[0] == 0 && b[1] == 10000, "");
+        long[] c = ChargeSplit.split(10000, -5);
+        check("neg fee", c[0] == 10000 && c[1] == 0, "");
+        long[] d = ChargeSplit.split(-1, 100);
+        check("neg total", d[0] == 0 && d[1] == 0, "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class ChargeSplit {
+    static long[] split(long totalCents, long feeCents) {
+        if (totalCents <= 0) return new long[]{0, 0};
+        long fee = Math.max(0, feeCents);
+        if (fee > totalCents) fee = totalCents;
+        return new long[]{totalCents - fee, fee};
+    }
+}`,
+        hints: ['fee không vượt total, không âm', 'total âm trả {0,0}'],
+        explain: `Phép chia tiền phải xử lý biên: fee âm → 0, fee > total → cap bằng total, total âm → trả 0. Lỗi hay gặp: để toAccount âm khi fee > total. Đây là logic nền cho cả destination fee lẫn SCT transfer amount.`
+      }
+    ],
+    check: [
+      { q: 'Direct charge khác destination charge ở điểm cốt lõi nào?', options: ['Direct chạy trên connected account (header Stripe-Account), tiền vào thẳng người bán; destination chạy trên platform, Stripe tự chuyển', 'Direct luôn rẻ hơn', 'Destination không cần application fee', 'Chúng giống nhau hoàn toàn'], answer: 0, explain: 'Đúng: direct gửi request tới connected account, tiền vào ledger người bán; destination charge trên platform với transfer_data.destination, Stripe tự chuyển. Sai (B): phí không phải điểm phân biệt cốt lõi. Sai (C): destination vẫn dùng application fee. Sai (D): khác nhau rõ.' },
+      { q: 'Trong Separate Charges & Transfers, vì sao cần reconciliation charge↔transfer?', options: ['Vì Stripe yêu cầu', 'Tiền vào platform trước, nếu quên/đặt sai transfer thì HLV không nhận — phải đối soát để phát hiện', 'Vì transfer luôn thất bại', 'Vì application fee không hoàn được'], answer: 1, explain: 'Đúng: SCT tách charge và transfer; nếu transfer quên hoặc sai destination, tiền đứng ở platform, HLV không được trả — reconciliation phát hiện charge chưa có transfer. Sai (A): không phải yêu cầu bắt buộc của Stripe mà là kiểm soát nội bộ. Sai (C): transfer không "luôn" thất bại. Sai (D): application fee hoàn được.' },
+      { q: 'application_fee_amount nên truyền giá trị nào?', options: ['Số nguyên đơn vị nhỏ nhất (cent), ví dụ 10 USD = 1000', 'Số thập phân 10.00', 'Phần trăm 10', 'Chuỗi "10.00 USD"'], answer: 0, explain: 'Đúng: Stripe dùng số nguyên đơn vị nhỏ nhất; 10 USD = 1000 cent. Sai (B): Stripe không nhận số thực cho amount. Sai (C): đó là fee rate, không phải amount. Sai (D): amount là số nguyên, không phải chuỗi.' },
+      { q: 'Khi nào Separate Charges & Transfers phù hợp hơn Destination?', options: ['Khi cần giữ lại một phần, chia nhiều bên, hoặc hoàn tiền có kiểm soát chi tiết', 'Khi muốn ít code nhất', 'Khi không cần application fee', 'Khi người bán tự tạo account'], answer: 0, explain: 'Đúng: SCT linh hoạt nhất — charge vào platform rồi tự transfer, phù hợp giữ phí phức tạp, chia nhiều HLV, hoàn có kiểm soát. Sai (B): destination ít code hơn. Sai (C): SCT vẫn dùng fee. Sai (D): đó là đặc điểm Standard.' }
+    ],
+    related: [],
+    tags: ['stripe', 'charge', 'destination', 'application-fee']
+  },
+  {
+    id: 'lesson-banking-032',
+    track: 'banking',
+    order: 32,
+    title: 'Transfers và payouts: luồng tiền, lịch payout, reverse transfer khi refund',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Phân biệt transfer (platform → connected account) và payout (connected account → ngân hàng)',
+      'Hiểu schedule payout (daily/weekly/manual) và vì sao không kiểm soát được lịch rút của Express',
+      'Biết reverse transfer khi refund và cách xử lý khi account không đủ tiền để reverse'
+    ],
+    body: `### Transfer vs payout — đừng nhầm
+**Tóm tắt:** **Transfer** là chuyển tiền từ platform sang connected account (bạn chủ động, trong SCT). **Payout** là connected account rút tiền từ ledger Stripe ra **ngân hàng** của họ — lịch payout do Stripe/đối tác kiểm soát, bạn không điều khiển. Khi hoàn tiền cho thành viên, bạn có thể phải **reverse transfer** (lấy lại tiền đã chuyển cho HLV) — nếu HLV không đủ số dư, Stripe có thể đưa số dư âm hoặc chặn.
+
+**Thuật ngữ:**
+- **Transfer**: {{POST /v1/transfers}} với {{destination: acct_HLV}}, {{amount}}. Chỉ dùng trong SCT.
+- **Payout**: {{POST /v1/payouts}} (hoặc tự động theo schedule) — rút từ ledger connected account ra bank. Lịch: {{daily}}, {{weekly}}, {{manual}}.
+- **Reverse transfer**: khi refund, nếu cần lấy lại transfer đã gửi, gọi {{POST /v1/transfers/id/reversals}}. Nếu account không đủ tiền, số dư có thể âm (Express/Custom tuỳ cấu hình).
+- **Negative balance**: ledger âm — HLV "nợ" platform; payout sau này bị giữ để bù.
+
+### Vì sao lịch payout không phải bạn quyết (với Express)
+Express account do Stripe quản lý payout schedule (thường daily T+2 hoặc weekly). Bạn không đặt {{payout_schedule}} cho Express; bạn chỉ quyết định **khi nào transfer** vào ledger. Đây là lý do "HLV thấy tiền trong dashboard" khác "tiền đã về ngân hàng HLV".
+
+### Luồng SCT + payout + refund
+~~~seq
+title: Transfer, payout, refund
+actors: App | Stripe | HLV
+App -> Stripe: charge 10000 (platform)
+App -> Stripe: transfer 9000 -> acct_HLV
+Stripe --> HLV: ledger +9000
+Stripe -> HLV: payout theo lịch -> ngân hàng
+App -> Stripe: refund (thành viên đòi lại)
+App -> Stripe: reverse transfer 9000
+Stripe --> HLV: ledger -9000 (có thể âm)
+~~~
+
+### Lỗi hay gặp
+1. **Nhầm transfer với payout**: tưởng gọi transfer là "trả lương về ngân hàng HLV" — thực ra transfer mới vào ledger, payout mới ra ngân hàng.
+2. **Refund không reverse transfer**: hoàn tiền thành viên nhưng không lấy lại từ HLV → platform lỗ.
+3. **Reverse khi account âm**: HLV đã rút hết, reverse làm số dư âm; cần chính sách (giữ payout sau, hoặc chấp nhận nợ).
+4. **Không log mapping**: không biết transfer nào ứng charge nào → không đối soát được (bài 6).
+
+### Ví dụ: quyết định có reverse được không
+~~~java
+record Wallet(long balanceCents) {}
+// reverse 9000 khi balance 9000 -> còn 0; khi balance 3000 -> -6000 (âm)
+long after = 3000 - 9000; // -6000: số dư âm, cần chính sách giữ payout sau
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Phân biệt transfer và payout; khi hoàn tiền cho thành viên, bạn xử lý tiền đã trả HLV thế nào?"
+**Cách trả lời:** Transfer là platform → connected account (tôi chủ động trong SCT); payout là connected account rút ra ngân hàng, lịch do Stripe/đối tác quản (Express thường T+2), tôi không điều khiển. Khi hoàn tiền thành viên, nếu đã transfer cho HLV, tôi gọi **reverse transfer** {{POST /v1/transfers/id/reversals}} để lấy lại; nếu HLV không đủ số dư, ledger có thể âm và tôi phải có chính sách giữ payout sau hoặc chấp nhận nợ. Tôi luôn log mapping charge↔transfer↔refund để đối soát, tránh lỗ âm thầm.
+
+> Senior tip: "Đã transfer" ≠ "HLV đã nhận tiền mặt". Với Express, payout theo lịch Stripe; khi thiết kế refund, luôn hỏi "tiền đã ra khỏi ledger HLV chưa?" — nếu rồi, reverse sẽ tạo số dư âm và bạn cần quy trình thu hồi, không chỉ bấm nút.`,
+    exercises: [
+      {
+        title: 'TransferLedger.apply',
+        prompt: `Hoàn thiện class {{TransferLedger}} mô phỏng ledger connected account:
+- constructor nhận balanceCents ban đầu.
+- {{transfer(long amount)}}: cộng vào balance (amount > 0), trả balance mới.
+- {{reverse(long amount)}}: trừ khỏi balance (cho phép âm), trả balance mới.
+- {{balance()}}: trả balance hiện tại.`,
+        starter: `class TransferLedger {
+    private long balance;
+    TransferLedger(long initial) { this.balance = initial; }
+    long transfer(long amount) { throw new UnsupportedOperationException("TODO"); }
+    long reverse(long amount) { throw new UnsupportedOperationException("TODO"); }
+    long balance() { throw new UnsupportedOperationException("TODO"); }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        TransferLedger l = new TransferLedger(0);
+        check("transfer", l.transfer(9000) == 9000, "");
+        check("balance", l.balance() == 9000, "");
+        check("reverse ok", l.reverse(4000) == 5000, "");
+        check("reverse negative", l.reverse(9000) == -4000, "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class TransferLedger {
+    private long balance;
+    TransferLedger(long initial) { this.balance = initial; }
+    long transfer(long amount) { balance += amount; return balance; }
+    long reverse(long amount) { balance -= amount; return balance; }
+    long balance() { return balance; }
+}`,
+        hints: ['transfer cộng, reverse trừ (cho phép âm)', 'balance trả số dư hiện tại'],
+        explain: `Mô phỏng ledger: transfer cộng tiền vào, reverse trừ (có thể âm khi HLV đã rút). Số dư âm là tín hiệu cần chính sách thu hồi (giữ payout sau). Lỗi hay gặp: chặn reverse khi âm — thực tế Stripe có thể cho âm, app phải xử lý.`
+      }
+    ],
+    check: [
+      { q: 'Transfer và payout khác nhau thế nào?', options: ['Transfer = platform sang connected account; payout = connected account rút ra ngân hàng', 'Transfer = rút ra ngân hàng; payout = platform sang account', 'Chúng giống nhau', 'Transfer chỉ dùng cho Standard'], answer: 0, explain: 'Đúng: transfer là platform→connected account (SCT), payout là connected account→bank. Sai (B): đảo ngược. Sai (C): khác nhau. Sai (D): transfer dùng trong SCT (Express/Custom), không giới hạn Standard.' },
+      { q: 'Với Express account, ai kiểm soát lịch payout?', options: ['Platform đặt tùy ý', 'Stripe/đối tác quản (thường daily T+2 hoặc weekly), platform không đặt', 'HLV đặt trong app của bạn', 'Không có payout'], answer: 1, explain: 'Đúng: Express do Stripe quản payout schedule; platform chỉ quyết định khi transfer vào ledger. Sai (A): platform không đặt cho Express. Sai (C): không phải trong app bạn. Sai (D): Express có payout.' },
+      { q: 'Khi refund mà cần lấy lại tiền đã transfer cho HLV, bạn làm gì?', options: ['Gọi reverse transfer; nếu account âm thì có chính sách giữ payout sau', 'Bỏ qua, coi như lỗ', 'Xóa account HLV', 'Gọi payout thủ công'], answer: 0, explain: 'Đúng: dùng reverse transfer {{/v1/transfers/id/reversals}}; nếu HLV không đủ tiền, ledger âm và cần chính sách giữ payout sau/thu hồi. Sai (B): lỗ âm thầm là lỗi. Sai (C): không liên quan. Sai (D): payout là ra ngân hàng, không lấy lại transfer.' },
+      { q: 'Số dư âm (negative balance) trên connected account nghĩa là gì?', options: ['HLV nợ platform, payout sau bị giữ để bù', 'HLV được thêm tiền', 'Account bị xóa', 'Không có ý nghĩa'], answer: 0, explain: 'Đúng: ledger âm = HLV nợ platform (thường do reverse/refund vượt số dư), payout tương lai bị giữ để bù. Sai (B): ngược lại. Sai (C): không mất account. Sai (D): có ý nghĩa quan trọng cho thu hồi.' }
+    ],
+    related: [],
+    tags: ['stripe', 'transfer', 'payout', 'refund']
+  },
+  {
+    id: 'lesson-banking-033',
+    track: 'banking',
+    order: 33,
+    title: 'Webhooks trong Spring: xác thực chữ ký, trả 2xx nhanh, xử lý bất đồng bộ',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Hiểu vì sao webhook cần xác thực chữ ký (Stripe-Signature, whsec_...) và không tin body thô',
+      'Biết vì sao phải trả 2xx thật nhanh và xử lý phần nặng bất đồng bộ',
+      'Viết SignatureVerifier.verify mô phỏng HMAC-SHA256 và biết event đến sai thứ tự'
+    ],
+    body: `### Webhook là gì
+**Tóm tắt:** Webhook là cách Stripe **chủ động gọi** server bạn khi có sự kiện (payment_intent.succeeded, account.updated…). Vì endpoint công khai trên Internet, bạn **phải xác thực** request thật sự đến từ Stripe (chữ ký HMAC), trả **2xx thật nhanh** rồi xử lý phần nặng sau (bất đồng bộ). Không tin body thô, không xử lý lâu trong request.
+
+**Thuật ngữ:**
+- **Stripe-Signature**: header chứa {{t=...,v1=...}} — timestamp và chữ ký HMAC-SHA256 của {{timestamp + "." + rawBody}} dùng secret {{whsec_...}} (signing secret, khác secret API sk_...).
+- **Idempotency**: cùng một event có thể được Stripe gửi lại (retry) — phải xử lý một lần (bài 6).
+- **2xx nhanh**: Stripe coi 2xx là "đã nhận"; nếu bạn trả 4xx/5xx hoặc timeout, Stripe retry (theo lịch exponential). Xử lý nặng trong request dễ timeout → retry → trùng.
+- **Out-of-order**: event đến không theo thứ tự tạo (vd refund đến trước payment.succeeded) — cần dựa vào trạng thái, không dựa thứ tự.
+
+### Vì sao xác thực chữ ký
+Nếu không xác thực, bất kỳ ai biết URL cũng có thể POST giả event "payment succeeded" → bạn cho free dịch vụ. HMAC với {{whsec_...}} đảm bảo chỉ Stripe (nắm secret) tạo được chữ ký hợp lệ. Tolerate timestamp lệch (mặc định ~5 phút) để chống replay.
+
+### Luồng webhook
+~~~seq
+title: Webhook Stripe
+actors: Stripe | API | Queue | Worker
+Stripe -> API: POST /webhooks (Stripe-Signature)
+API -> API: verify HMAC(rawBody, whsec)
+API -> Queue: enqueue event.id (nhanh)
+API --> Stripe: 200 OK
+Worker -> Worker: xử lý event (DB, transfer)
+~~~
+
+### Lỗi hay gặp
+1. **Đọc body đã parse JSON rồi verify**: chữ ký tính trên **raw body**; nếu framework parse trước, ký sai. Phải lấy raw bytes.
+2. **Xử lý nặng trong request**: gọi Stripe API, gửi email ngay → timeout → Stripe retry → xử lý trùng.
+3. **Không verify**: endpoint bị giả mạo.
+4. **Tin thứ tự**: refund đến trước, account bị trừ tiền sai.
+
+### Ví dụ: verify HMAC (mô phỏng)
+~~~java
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+// signed = timestamp + "." + rawBody; so sánh với v1 trong header (constant-time)
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(whsec.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+byte[] sig = mac.doFinal((t + "." + rawBody).getBytes(StandardCharsets.UTF_8));
+// dùng MessageDigest.isEqual để so sánh an toàn timing
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Bạn nhận webhook Stripe trong Spring, làm sao an toàn và không bị retry trùng?"
+**Cách trả lời:** Tôi xác thực chữ ký HMAC-SHA256 trên **raw body** với secret {{whsec_...}} và timestamp trong header {{Stripe-Signature}}, dùng so sánh constant-time, chống replay bằng cửa sổ timestamp. Sau khi verify, tôi **trả 200 ngay** và đẩy event vào queue; worker xử lý bất đồng bộ (ghi DB, gọi Stripe). Vì Stripe retry khi không 2xx, tôi làm idempotent theo {{event.id}} (bài 6) và không dựa thứ tự event mà dựa trạng thái. Tôi không bao giờ xử lý nặng trong request để tránh timeout → retry.
+
+> Senior tip: Hai lỗi webhook phổ biến nhất: (1) verify trên JSON đã parse thay vì raw body → chữ ký luôn sai; (2) xử lý nặng trong request → timeout → Stripe retry → nhân đôi side-effect. Trả 2xx sớm + idempotent + queue là bộ ba bắt buộc.`,
+    exercises: [
+      {
+        title: 'SignatureVerifier.verify',
+        prompt: `Hoàn thiện class {{SignatureVerifier}} với method {{verify(String secret, long timestamp, String rawBody, String providedHex, long nowSeconds, long toleranceSeconds)}} trả boolean:
+- Tính HMAC-SHA256 của (timestamp + "." + rawBody) với secret (UTF-8), lấy hex.
+- Chỉ true khi |nowSeconds - timestamp| <= toleranceSeconds VÀ hex khớp providedHex (so sánh không phân biệt hoa/thường).`,
+        starter: `import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+class SignatureVerifier {
+    static boolean verify(String secret, long timestamp, String rawBody, String providedHex, long nowSeconds, long toleranceSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static String hex(byte[] b) {
+        StringBuilder s = new StringBuilder();
+        for (byte x : b) s.append(String.format("%02x", x));
+        return s.toString();
+    }
+    static String sign(String secret, long t, String body) throws Exception {
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(secret.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+        return hex(mac.doFinal((t + "." + body).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+    public static void main(String[] args) throws Exception {
+        String secret = "whsec_test";
+        long t = 1700000000L;
+        String body = "{\\"id\\":\\"evt_1\\"}";
+        String good = sign(secret, t, body);
+        check("valid", SignatureVerifier.verify(secret, t, body, good, t + 10, 300), "");
+        check("bad sig", !SignatureVerifier.verify(secret, t, body, "deadbeef", t, 300), "");
+        check("expired", !SignatureVerifier.verify(secret, t, body, good, t + 1000, 300), "");
+        check("upper hex", SignatureVerifier.verify(secret, t, body, good.toUpperCase(), t, 300), "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+class SignatureVerifier {
+    static boolean verify(String secret, long timestamp, String rawBody, String providedHex, long nowSeconds, long toleranceSeconds) {
+        if (Math.abs(nowSeconds - timestamp) > toleranceSeconds) return false;
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] sig = mac.doFinal((timestamp + "." + rawBody).getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : sig) sb.append(String.format("%02x", b));
+            return MessageDigestCompat.eq(sb.toString(), providedHex.toLowerCase());
+        } catch (Exception e) { return false; }
+    }
+    static class MessageDigestCompat {
+        static boolean eq(String a, String b) {
+            return java.security.MessageDigest.isEqual(a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+}`,
+        hints: ['signed = timestamp + "." + rawBody', 'kiểm tra tolerance trước, so sánh hex constant-time'],
+        explain: `Verify HMAC trên chuỗi timestamp+"."+rawBody với secret whsec. Chặn replay bằng tolerance (vd 300s). So sánh hex bằng MessageDigest.isEqual (constant-time) tránh timing attack; chấp nhận hex hoa/thường. Lỗi hay gặp: verify trên JSON đã parse (phải dùng raw body).`
+      }
+    ],
+    check: [
+      { q: 'Vì sao webhook Stripe phải xác thực chữ ký?', options: ['Để nén dữ liệu', 'Endpoint công khai, nếu không xác thực ai biết URL cũng giả được event "đã thanh toán"', 'Để Stripe gửi nhanh hơn', 'Vì JSON cần chữ ký'], answer: 1, explain: 'Đúng: endpoint public, chữ ký HMAC với whsec đảm bảo chỉ Stripe tạo được, tránh giả mạo. Sai (A): chữ ký không để nén. Sai (C): không liên quan tốc độ gửi. Sai (D): chữ ký trên raw body, không phải JSON.' },
+      { q: 'Chữ ký Stripe được tính trên dữ liệu nào?', options: ['JSON đã parse thành object', 'Raw body thô + timestamp (timestamp + "." + rawBody)', 'Chỉ timestamp', 'Header Authorization'], answer: 1, explain: 'Đúng: HMAC trên timestamp + "." + raw body; nếu verify trên JSON đã parse sẽ sai. Sai (A): parse làm đổi format. Sai (C): thiếu body. Sai (D): không dùng Authorization.' },
+      { q: 'Vì sao nên trả 2xx nhanh rồi xử lý bất đồng bộ?', options: ['Để Stripe không retry; xử lý nặng trong request dễ timeout → retry → trùng side-effect', 'Vì 2xx đẹp hơn', 'Vì không được dùng queue', 'Vì Stripe yêu cầu trả 4xx'], answer: 0, explain: 'Đúng: 2xx báo Stripe "đã nhận", tránh retry; xử lý nặng trong request dễ timeout → Stripe retry → trùng. Sai (B): không phải thẩm mỹ. Sai (C): queue là giải pháp. Sai (D): Stripe coi 2xx là nhận, 4xx/5xx mới retry.' },
+      { q: 'Event đến sai thứ tự (refund trước payment.succeeded) nên xử lý thế nào?', options: ['Dựa vào thứ tự đến', 'Dựa vào trạng thái hiện tại và event.id idempotent, không dựa thứ tự', 'Bỏ qua refund', 'Trả 500 cho Stripe'], answer: 1, explain: 'Đúng: không đảm bảo thứ tự; xử lý theo trạng thái và idempotent theo event.id. Sai (A): thứ tự không đảm bảo. Sai (C): bỏ refund sai. Sai (D): 500 gây retry.' }
+    ],
+    related: [],
+    tags: ['stripe', 'webhook', 'hmac', 'spring']
+  },
+  {
+    id: 'lesson-banking-034',
+    track: 'banking',
+    order: 34,
+    title: 'Idempotency và retry: bảng processed_events với event.id UNIQUE, Idempotency-Key, đối soát',
+    level: 'lead',
+    minutes: 35,
+    goals: [
+      'Hiểu vì sao Stripe retry và vì sao cần idempotent theo event.id (UNIQUE)',
+      'Biết Idempotency-Key khi gọi Stripe API để tránh tạo trùng charge/transfer',
+      'Viết EventLog.process mô phỏng dedupe event.id và phát hiện out-of-order'
+    ],
+    body: `### Vấn đề: "exactly once" là ảo
+**Tóm tắt:** Mạng và retry khiến một event có thể đến nhiều lần, hoặc request của bạn tới Stripe bị timeout rồi bạn gửi lại → tạo trùng. Giải pháp thực tế là **idempotency**: xử lý một event nhiều lần cho ra cùng kết quả như một lần. Hai lớp: (1) **event.id UNIQUE** trong bảng {{processed_events}} để dedupe webhook; (2) **Idempotency-Key** khi gọi Stripe API để Stripe gộp các request giống nhau.
+
+**Thuật ngữ:**
+- **Idempotent**: thực hiện N lần = 1 lần về mặt kết quả. Ví dụ {{SET x=1}} idempotent; {{x=x+1}} không.
+- **processed_events**: bảng có {{event_id}} UNIQUE, {{type}}, {{received_at}}, {{status}}. Lần đầu insert; nếu đã có thì bỏ qua (đã xử lý).
+- **Idempotency-Key**: header bạn gửi kèm request POST tới Stripe (vd {{idem-123}}). Stripe lưu kết quả theo key trong ~24h; gửi lại cùng key trả kết quả cũ, không tạo mới.
+- **Out-of-order**: event đến sai thứ tự; xử lý theo trạng thái (vd chỉ chuyển "succeeded" khi đang "pending").
+
+### Hai lớp idempotency
+1. **Nhận webhook**: insert {{event.id}} vào {{processed_events}} trong **cùng transaction** với side-effect. UNIQUE constraint chặn trùng; nếu insert lỗi duplicate → đã xử lý, trả 200.
+2. **Gọi Stripe**: mọi POST tạo tài nguyên (charge, transfer, refund) kèm {{Idempotency-Key}} duy nhất theo nghiệp vụ (vd {{transfer:chargeId}}). Timeout → gửi lại cùng key → không tạo đôi.
+
+### Luồng idempotent
+~~~seq
+title: Idempotent webhook
+actors: Stripe | API | DB
+Stripe -> API: POST event evt_1 (lần 1)
+API -> DB: INSERT processed_events evt_1 + side-effect
+DB --> API: ok
+API --> Stripe: 200
+Stripe -> API: POST event evt_1 (retry)
+API -> DB: INSERT evt_1 -> duplicate
+DB --> API: lỗi UNIQUE
+API --> Stripe: 200 (đã xử lý)
+~~~
+
+### Lỗi hay gặp
+1. **Check-then-act không atomic**: SELECT rồi INSERT rời nhau → hai thread cùng qua → trùng. Phải dựa UNIQUE + transaction.
+2. **Không dùng Idempotency-Key khi gọi Stripe**: timeout → gửi lại → hai charge.
+3. **Dùng event.id làm idempotency key cho mọi request**: key phải theo nghiệp vụ, không tái dùng.
+4. **Không đối soát**: không phát hiện charge chưa có transfer, transfer mồ côi.
+
+### Ví dụ: dedupe bằng Set (mô phỏng UNIQUE)
+~~~java
+import java.util.HashSet;
+import java.util.Set;
+Set<String> processed = new HashSet<>();
+boolean firstTime = processed.add("evt_1"); // true lần đầu, false nếu đã có
+if (firstTime) { /* xử lý */ }
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Stripe gửi trùng webhook hoặc bạn timeout khi gọi Stripe, làm sao không tạo trùng charge/transfer?"
+**Cách trả lời:** Tôi làm idempotent hai lớp. Nhận webhook: insert {{event.id}} vào bảng {{processed_events}} có UNIQUE, trong cùng transaction với side-effect; duplicate thì coi như đã xử lý và trả 200 — dựa DB constraint, không check-then-act. Gọi Stripe: mọi POST tạo tài nguyên kèm {{Idempotency-Key}} theo nghiệp vụ (vd {{transfer:chargeId}}); timeout gửi lại cùng key, Stripe trả kết quả cũ, không tạo đôi. Tôi cũng không dựa thứ tự event mà dựa trạng thái, và có job đối soát charge↔transfer để phát hiện mồ côi.
+
+> Senior tip: Idempotency không phải "nhớ id đã thấy" bằng một Set trong RAM (mất khi restart, không share nhiều instance). Phải là UNIQUE constraint trong DB + transaction. Và Idempotency-Key khi gọi Stripe phải theo nghiệp vụ, không phải event.id — nếu không, hai nghiệp vụ khác nhau dùng chung key sẽ bị gộp sai.`,
+    exercises: [
+      {
+        title: 'EventLog.process',
+        prompt: `Hoàn thiện class {{EventLog}} mô phỏng dedupe event.id bằng LinkedHashSet:
+- {{process(String eventId)}}: nếu eventId đã có trả "DUPLICATE"; nếu chưa, thêm vào và trả "PROCESSED".
+- {{seen()}}: trả số event đã xử lý (size).`,
+        starter: `import java.util.LinkedHashSet;
+import java.util.Set;
+class EventLog {
+    private final Set<String> seen = new LinkedHashSet<>();
+    String process(String eventId) { throw new UnsupportedOperationException("TODO"); }
+    int seen() { throw new UnsupportedOperationException("TODO"); }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        EventLog log = new EventLog();
+        check("first", log.process("evt_1").equals("PROCESSED"), "");
+        check("dup", log.process("evt_1").equals("DUPLICATE"), "");
+        check("second", log.process("evt_2").equals("PROCESSED"), "");
+        check("count", log.seen() == 2, "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.LinkedHashSet;
+import java.util.Set;
+class EventLog {
+    private final Set<String> seen = new LinkedHashSet<>();
+    String process(String eventId) { return seen.add(eventId) ? "PROCESSED" : "DUPLICATE"; }
+    int seen() { return seen.size(); }
+}`,
+        hints: ['Set.add trả true nếu thêm mới, false nếu đã có', 'seen trả size'],
+        explain: `Mô phỏng UNIQUE event.id: Set.add trả false khi trùng → DUPLICATE. Thực tế dùng UNIQUE constraint + transaction (không check-then-act). seen đếm số event đã xử lý. Lỗi hay gặp: dùng List.contains (O(n)) hoặc check rồi add tách rời.`
+      }
+    ],
+    check: [
+      { q: 'Vì sao cần event.id UNIQUE trong processed_events?', options: ['Để nén dữ liệu', 'Để dedupe webhook: cùng event gửi lại (retry) chỉ xử lý một lần', 'Để tăng tốc đọc', 'Vì Stripe yêu cầu tên bảng'], answer: 1, explain: 'Đúng: UNIQUE event.id + transaction đảm bảo retry không xử lý trùng; duplicate insert lỗi → bỏ qua. Sai (A): không để nén. Sai (C): không phải tối ưu đọc. Sai (D): tên bảng tùy bạn.' },
+      { q: 'Idempotency-Key khi gọi Stripe API dùng để làm gì?', options: ['Để định danh platform', 'Để Stripe gộp các request giống nhau (trong ~24h) trả kết quả cũ, tránh tạo trùng charge/transfer khi timeout gửi lại', 'Để mã hóa request', 'Để tăng rate limit'], answer: 1, explain: 'Đúng: gửi lại cùng key, Stripe trả kết quả cũ, không tạo tài nguyên mới — tránh trùng khi timeout. Sai (A): không định danh platform. Sai (C): không mã hóa. Sai (D): không liên quan rate limit.' },
+      { q: 'Vì sao check-then-act (SELECT rồi INSERT) không an toàn cho dedupe?', options: ['Vì chậm', 'Hai thread có thể cùng qua SELECT trước khi INSERT → trùng; phải dựa UNIQUE constraint + transaction', 'Vì không dùng được DB', 'Vì event.id luôn null'], answer: 1, explain: 'Đúng: race giữa SELECT và INSERT; UNIQUE + transaction mới atomic. Sai (A): không phải vấn đề tốc độ. Sai (C): dùng DB bình thường. Sai (D): event.id không null.' },
+      { q: 'Idempotency-Key nên được sinh theo gì?', options: ['Theo nghiệp vụ (vd transfer:{chargeId}), không tái dùng event.id cho mọi request', 'Theo event.id webhook cho mọi request', 'Ngẫu nhiên mỗi lần', 'Theo timestamp hiện tại'], answer: 0, explain: 'Đúng: key theo nghiệp vụ để retry cùng nghiệp vụ gộp đúng, hai nghiệp vụ khác nhau không gộp nhầm. Sai (B): tái dùng event.id dễ gộp sai. Sai (C): ngẫu nhiên thì retry không gộp. Sai (D): timestamp đổi mỗi lần → không idempotent.' }
+    ],
+    related: [],
+    tags: ['stripe', 'idempotency', 'webhook', 'retry']
+  },
+  {
+    id: 'lesson-banking-035',
+    track: 'banking',
+    order: 35,
+    title: 'Test Stripe tích hợp: Stripe CLI (listen/trigger), test mode, Testcontainers Postgres',
+    level: 'senior',
+    minutes: 30,
+    goals: [
+      'Biết test mode + Stripe CLI (stripe listen/trigger) để test webhook không cần tiền thật',
+      'Hiểu vì sao dùng Testcontainers Postgres cho test tích hợp thay vì H2',
+      'Viết TestClock.deterministic mô phỏng xử lý webhook theo thời gian cố định để test retry'
+    ],
+    body: `### Vì sao test thanh toán khó
+**Tóm tắt:** Tích hợp thanh toán khó test vì có bên thứ ba (Stripe), có tiền thật, và webhook đến bất đồng bộ. Giải pháp: **test mode** (API key {{sk_test_...}}, không tiền thật), **Stripe CLI** ({{stripe listen}} chuyển event Stripe thành webhook tới localhost; {{stripe trigger}} bắn event mẫu), và **Testcontainers** (Postgres thật trong Docker) để test schema/UNIQUE/transaction đúng như production.
+
+**Thuật ngữ:**
+- **Test mode**: môi trường Stripe với key {{sk_test_...}} và account {{acct_...}} test; không giao dịch tiền thật. Dùng song song với {{whsec_...}} test.
+- **Stripe CLI**: công cụ dòng lệnh. {{stripe listen --forward-to localhost:8080/webhooks}} in ra {{whsec_...}} để verify; {{stripe trigger payment_intent.succeeded}} bắn event mẫu.
+- **Testcontainers**: thư viện test khởi tạo container Docker (Postgres) trong lúc test, cho DB thật, ephemeral. Khác H2 (in-memory, không giống Postgres về constraint, transaction, JSONB).
+- **Deterministic**: test không phụ thuộc thời gian thực; dùng {{Clock.fixed}} / thời gian gán cứng.
+
+### Bộ ba test
+1. **Test mode + CLI**: chạy server Spring, {{stripe listen}}, bắn {{stripe trigger}}, kiểm tra webhook verify + side-effect. Không tốn tiền.
+2. **Testcontainers Postgres**: test {{processed_events}} UNIQUE, transaction rollback khi side-effect lỗi, isolation. Bắt lỗi chỉ xuất hiện trên Postgres thật.
+3. **Deterministic clock**: test retry/idempotency theo timestamp cố định, không {{sleep}}.
+
+### Luồng test webhook
+~~~seq
+title: Test webhook
+actors: Dev | StripeCLI | API | DB
+Dev -> StripeCLI: stripe trigger payment_intent.succeeded
+StripeCLI -> API: POST /webhooks (signed)
+API -> DB: INSERT processed_events + side-effect
+API --> StripeCLI: 200
+Dev -> DB: assert side-effect tồn tại
+~~~
+
+### Lỗi hay gặp
+1. **Test bằng H2 rồi production Postgres lỗi**: H2 không enforce UNIQUE/transaction giống Postgres → bug lọt.
+2. **Gọi Stripe thật khi test**: tốn tiền, bẩn dữ liệu. Luôn {{sk_test_...}}.
+3. **Test phụ thuộc {{Thread.sleep}}**: flaky. Dùng clock cố định, await với timeout.
+4. **Không test trùng/sai thứ tự**: thiếu case retry → bug idempotency.
+
+### Ví dụ: clock cố định cho test retry
+~~~java
+import java.time.*;
+Clock fixed = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
+// mọi tính toán thời gian trong test dựa trên fixed -> deterministic
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Bạn test tích hợp Stripe Connect thế nào cho an toàn, không tốn tiền, và bắt được bug idempotency?"
+**Cách trả lời:** Tôi dùng test mode ({{sk_test_...}}) + Stripe CLI: {{stripe listen --forward-to localhost:8080/webhooks}} để nhận event thật đã ký, {{stripe trigger ...}} bắn event mẫu — không tiền thật. DB test dùng Testcontainers Postgres để UNIQUE/transaction giống production (không H2). Tôi viết test cho webhook trùng (gửi cùng event.id hai lần → một side-effect) và sai thứ tự, dùng {{Clock.fixed}} thay {{sleep}} để deterministic. Tôi cũng test transaction rollback khi side-effect lỗi để đảm bảo processed_events không "ăn gian".
+
+> Senior tip: Test thanh toán phải có case "gửi lại cùng event" và "side-effect lỗi → rollback". Nếu chỉ test happy path, bạn sẽ ship bug nhân đôi transfer. Testcontainers Postgres bắt được lỗi UNIQUE/transaction mà H2 bỏ qua — đừng tiết kiệm ở khoản này.`,
+    exercises: [
+      {
+        title: 'TestClock.deterministic',
+        prompt: `Hoàn thiện class {{TestClock}} mô phỏng đồng hồ test cố định:
+- constructor nhận epochSecond ban đầu.
+- {{now()}}: trả epochSecond hiện tại.
+- {{advance(long seconds)}}: cộng vào epochSecond, trả giá trị mới.
+- {{isExpired(long createdAt, long ttlSeconds)}}: true khi now() - createdAt > ttlSeconds.`,
+        starter: `class TestClock {
+    private long epochSecond;
+    TestClock(long start) { this.epochSecond = start; }
+    long now() { throw new UnsupportedOperationException("TODO"); }
+    long advance(long seconds) { throw new UnsupportedOperationException("TODO"); }
+    boolean isExpired(long createdAt, long ttlSeconds) { throw new UnsupportedOperationException("TODO"); }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        TestClock c = new TestClock(1000);
+        check("now", c.now() == 1000, "");
+        check("advance", c.advance(50) == 1050, "");
+        check("not expired", !c.isExpired(1000, 100), "");
+        check("expired", c.isExpired(1000, 10), "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class TestClock {
+    private long epochSecond;
+    TestClock(long start) { this.epochSecond = start; }
+    long now() { return epochSecond; }
+    long advance(long seconds) { epochSecond += seconds; return epochSecond; }
+    boolean isExpired(long createdAt, long ttlSeconds) { return now() - createdAt > ttlSeconds; }
+}`,
+        hints: ['advance cộng và trả giá trị mới', 'isExpired: now - createdAt > ttl'],
+        explain: `Đồng hồ test cố định giúp deterministic: không phụ thuộc thời gian thực, không sleep. advance mô phỏng thời gian trôi; isExpired kiểm tra hết hạn (vd idempotency key 24h, link hết hạn). Lỗi hay gặp: dùng Instant.now trong test → flaky.`
+      }
+    ],
+    check: [
+      { q: 'Vì sao dùng test mode (sk_test_...) khi test Stripe?', options: ['Để nhanh hơn', 'Không giao dịch tiền thật, an toàn, dữ liệu test tách biệt', 'Vì sk_live không tồn tại', 'Để bỏ qua verify chữ ký'], answer: 1, explain: 'Đúng: test mode không tiền thật, key sk_test, account test, an toàn. Sai (A): không phải lý do chính. Sai (C): sk_live có thật. Sai (D): vẫn verify chữ ký với whsec test.' },
+      { q: 'Stripe CLI stripe listen dùng để làm gì?', options: ['Tạo account', 'Chuyển event Stripe thành webhook đã ký tới localhost và in whsec để verify', 'Tính application fee', 'Xóa dữ liệu'], answer: 1, explain: 'Đúng: listen forward event tới localhost, in whsec test; trigger bắn event mẫu. Sai (A): tạo account qua API. Sai (C): không tính fee. Sai (D): không xóa dữ liệu.' },
+      { q: 'Vì sao nên dùng Testcontainers Postgres thay vì H2 cho test thanh toán?', options: ['H2 luôn sai', 'Postgres thật giống production về UNIQUE/transaction/JSONB, bắt lỗi H2 bỏ qua', 'Testcontainers không cần Docker', 'H2 không chạy được'], answer: 1, explain: 'Đúng: Postgres thật enforce constraint/transaction giống production; H2 khác biệt dễ bỏ sót bug. Sai (A): H2 không "luôn sai". Sai (C): Testcontainers cần Docker. Sai (D): H2 chạy được nhưng không giống.' },
+      { q: 'Vì sao test retry nên dùng Clock.fixed thay Thread.sleep?', options: ['sleep luôn sai', 'Để deterministic, không phụ thuộc thời gian thực, tránh flaky', 'Vì sleep bị cấm', 'Vì Clock.fixed nhanh hơn'], answer: 1, explain: 'Đúng: thời gian cố định → lặp lại ổn định, không flaky. Sai (A): sleep không "luôn sai" nhưng gây flaky. Sai (C): không bị cấm. Sai (D): không phải vấn đề tốc độ.' }
+    ],
+    related: [],
+    tags: ['stripe', 'test', 'testcontainers', 'cli']
+  },
+  {
+    id: 'lesson-banking-036',
+    track: 'banking',
+    order: 36,
+    title: 'Ticket diễn tập: refund + reverse transfer — phân tích, kế hoạch, test, checklist review code thanh toán',
+    level: 'lead',
+    minutes: 40,
+    goals: [
+      'Đọc ticket refund + reverse transfer và lập kế hoạch an toàn (staging trước, test trước)',
+      'Biết checklist review khi agent viết code thanh toán (secret, idempotency, staging, test)',
+      'Viết RefundPolicy.refund mô phỏng quyết định hoàn tiền + lấy lại transfer theo số dư'
+    ],
+    body: `### Bối cảnh ticket
+**Tóm tắt:** Ticket: "Thành viên hoàn huỷ, cần hoàn tiền và lấy lại phần đã trả HLV". Đây là bài toán nguy hiểm vì tiền đã ra khỏi ledger HLV (có thể âm). Quy trình an toàn: đọc kỹ trạng thái → viết test trước (trùng, âm, sai thứ tự) → code trên staging → review diff từng dòng (đặc biệt secret/idempotency) → mới lên production.
+
+**Thuật ngữ:**
+- **Refund**: hoàn tiền cho thành viên (charge bị trả lại).
+- **Reverse transfer**: lấy lại transfer đã gửi HLV ({{/v1/transfers/id/reversals}}).
+- **Staging**: môi trường gần production để thử trước; quy tắc "staging trước thứ Sáu".
+- **Checklist review**: danh sách kiểm tra khi agent viết code thanh toán.
+
+### Các bước xử lý (an toàn)
+1. **Đọc trạng thái**: charge đã succeeded? transfer đã gửi? HLV đã rút (payout)? số dư ledger HLV?
+2. **Viết test trước**: hoàn khi đủ số dư (ledger về 0), hoàn khi thiếu (ledger âm), hoàn khi chưa transfer (chỉ refund), event trùng (idempotent).
+3. **Code + idempotency**: refund kèm Idempotency-Key; reverse transfer có key riêng; log mapping charge↔transfer↔refund.
+4. **Staging**: chạy Stripe test mode + Testcontainers, bắn event trùng/sai thứ tự.
+5. **Review diff**: secret không lọt, verify chữ ký, 2xx nhanh, không xử lý nặng trong request.
+6. **Production**: deploy sau review, theo dõi dashboard số dư âm.
+
+### Checklist review code thanh toán (dùng khi agent viết)
+- [ ] Không có secret/key thật trong code/log/prompt (chỉ {{sk_test_...}}, {{whsec_...}} placeholder).
+- [ ] Idempotency: {{processed_events}} UNIQUE + Idempotency-Key khi gọi Stripe.
+- [ ] Webhook: verify HMAC raw body, trả 2xx nhanh, queue.
+- [ ] Tiền: không dùng double; đơn vị nhỏ nhất; không làm tròn giữa chừng.
+- [ ] Test: có case trùng, sai thứ tự, thiếu số dư (âm), rollback.
+- [ ] Staging trước production; PR mô tả "Agent wrote / I reviewed / I rewrote".
+
+### Luồng refund + reverse
+~~~seq
+title: Refund + reverse
+actors: App | Stripe | HLV
+App -> Stripe: refund charge (Idempotency-Key)
+App -> Stripe: reverse transfer (key riêng)
+Stripe --> HLV: ledger -amount (có thể âm)
+App -> App: log mapping, đối soát
+~~~
+
+### Lỗi hay gặp
+1. **Hoàn tiền mà quên reverse**: platform lỗ ngầm.
+2. **Reverse khi HLV đã rút**: ledger âm, không có chính sách thu hồi.
+3. **Agent để lộ secret**: key thật trong diff → phải rotate ngay.
+4. **Không test trùng**: bấm hoàn hai lần → hoàn hai lần.
+
+### Ví dụ: quyết định hoàn
+~~~java
+record RefundState(long chargeCents, long transferredCents, long walletCents) {}
+// nếu transferredCents>0: cần reverse; sau reverse wallet = walletCents - transferredCents (có thể âm)
+long after = 3000 - 9000; // -6000 -> âm, cần chính sách
+~~~
+
+### Liên hệ phỏng vấn
+**Câu hỏi:** "Ticket gấp: hoàn tiền thành viên và lấy lại tiền đã trả HLV, bạn làm gì để an toàn?"
+**Cách trả lời:** Tôi bắt đầu bằng đọc trạng thái: charge, transfer, payout, số dư ledger HLV. Tôi viết test trước cho các case: đủ số dư (về 0), thiếu (âm), chưa transfer (chỉ refund), event trùng (idempotent). Code dùng Idempotency-Key cho refund và key riêng cho reverse transfer, log mapping để đối soát. Tôi chạy trên staging với Stripe test mode + Testcontainers, bắn event trùng/sai thứ tự, rồi mới review diff theo checklist: không secret, verify chữ ký, 2xx nhanh, không double cho tiền. Khi ledger âm tôi áp chính sách giữ payout sau. Quy trình PR ghi rõ Agent wrote / I reviewed / I rewrote.
+
+> Senior tip: Với code thanh toán do agent viết, review diff quan trọng hơn tốc độ. Luôn kiểm: secret không lọt, idempotency đủ hai lớp, có test cho "trùng/âm/sai thứ tự", và staging trước production. Một dòng log thiếu che secret là sự cố phải rotate key — đừng bao giờ dán key thật vào prompt.`,
+    exercises: [
+      {
+        title: 'RefundPolicy.refund',
+        prompt: `Hoàn thiện class {{RefundPolicy}} với method {{refund(long transferredCents, long walletCents)}} trả long[] {refundAmount, walletAfter}:
+- refundAmount = transferredCents (hoàn cho thành viên phần đã thu).
+- walletAfter = walletCents - transferredCents (có thể âm sau reverse).
+- Nếu transferredCents < 0 coi như 0.`,
+        starter: `class RefundPolicy {
+    static long[] refund(long transferredCents, long walletCents) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        long[] a = RefundPolicy.refund(9000, 9000);
+        check("refund to zero", a[0] == 9000 && a[1] == 0, "");
+        long[] b = RefundPolicy.refund(9000, 3000);
+        check("refund negative", b[0] == 9000 && b[1] == -6000, "");
+        long[] c = RefundPolicy.refund(-5, 1000);
+        check("neg transfer", c[0] == 0 && c[1] == 1000, "");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class RefundPolicy {
+    static long[] refund(long transferredCents, long walletCents) {
+        long t = Math.max(0, transferredCents);
+        return new long[]{t, walletCents - t};
+    }
+}`,
+        hints: ['refundAmount = max(0, transferred)', 'walletAfter = wallet - refundAmount (cho phép âm)'],
+        explain: `Mô phỏng refund + reverse: hoàn cho thành viên phần đã transfer, ledger HLV trừ đi (có thể âm nếu HLV đã rút). Âm → cần chính sách giữ payout sau. Lỗi hay gặp: quên reverse (platform lỗ), hoặc chặn âm mà không có thu hồi.`
+      }
+    ],
+    check: [
+      { q: 'Khi hoàn tiền thành viên mà đã transfer cho HLV, bước bắt buộc tiếp theo là gì?', options: ['Gọi payout', 'Reverse transfer để lấy lại tiền, có chính sách nếu ledger âm', 'Xóa account', 'Gửi email'], answer: 1, explain: 'Đúng: cần reverse transfer lấy lại; nếu HLV đã rút, ledger âm và phải có chính sách giữ payout sau. Sai (A): payout ra ngân hàng, không lấy lại. Sai (C): không liên quan. Sai (D): không thay thế reverse.' },
+      { q: 'Checklist review code thanh toán do agent viết, mục nào quan trọng nhất?', options: ['Tên biến đẹp', 'Không secret thật, idempotency hai lớp, verify chữ ký, test trùng/âm/sai thứ tự, staging trước', 'Comment nhiều', 'Số dòng ít'], answer: 1, explain: 'Đúng: secret, idempotency, verify, test case nguy hiểm, staging là lõi an toàn thanh toán. Sai (A): tên biến không phải ưu tiên. Sai (C): comment không thay test. Sai (D): số dòng không đo an toàn.' },
+      { q: 'Vì sao phải viết test cho case ledger âm khi refund?', options: ['Vì luôn âm', 'Để đảm bảo logic xử lý số dư âm (giữ payout sau/thu hồi) đúng, tránh lỗ âm thầm', 'Vì Stripe cấm âm', 'Vì test phải chậm'], answer: 1, explain: 'Đúng: HLV có thể đã rút, reverse làm âm; test đảm bảo chính sách thu hồi đúng. Sai (A): không "luôn" âm. Sai (C): Stripe có thể cho âm. Sai (D): test không cần chậm.' },
+      { q: 'Quy tắc "staging trước production" trong code thanh toán nghĩa là gì?', options: ['Deploy thẳng production cho nhanh', 'Chạy trên môi trường staging (test mode + DB thật) trước, review rồi mới production', 'Không cần test', 'Chỉ test trên máy dev'], answer: 1, explain: 'Đúng: staging gần production để bắt lỗi trước, sau review mới lên production. Sai (A): rủi ro cao. Sai (C): test là bắt buộc. Sai (D): dev không đủ giống production.' }
+    ],
+    related: [],
+    tags: ['stripe', 'refund', 'reverse-transfer', 'review']
+  }
 );
