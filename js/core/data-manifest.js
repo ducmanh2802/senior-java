@@ -50,6 +50,7 @@
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
       bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
       toeic: ['toeic.js'],                                    // #/toeic TOEIC Speaking & Writing practice (window.TOEIC)
+      ckad: ['ckad-mock-1.js', 'ckad-mock-2.js', 'ckad-mock-3.js', 'ckad-labs-1.js', 'ckad-labs-2.js', 'ckad-labs-3.js'],   // #/ckad đề thực hành + lab CKAD (docs/CKAD-MOCK.md)
       'toeic-lr': ['toeic-tips.js', 'toeic-lr-1a.js', 'toeic-lr-1b.js', 'toeic-lr-1c.js', 'toeic-lr-1d.js', 'toeic-lr-1e.js', 'toeic-lr-2a.js', 'toeic-lr-2b.js', 'toeic-lr-2c.js', 'toeic-lr-2d.js', 'toeic-lr-2e.js'],   // #/toeic tab L&R + tips (docs/TOEIC-LR.md)
       stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
@@ -87,6 +88,8 @@
       career: ['index', 'companies', 'stars'],
       sdlc: ['sdlc'],
       toeic: ['toeic'],
+      toeiclr: ['toeic-lr'],                                  // #/toeiclr TOEIC Listening & Reading + tips 4 kỹ năng
+      ckad: ['ckad'],                                         // #/ckad tổng quan + đề thực hành + lab
       bugs: ['bugs', 'index', 'glossary'],                  // related-questions widget
       'jobs/prep': ['questions', 'glossary'],               // #/jobs/prep/<jobId>: JD study plan + knowledge summary from the bank
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
@@ -96,7 +99,7 @@
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'freelance', 'upwork', 'sdlc', 'jobs', 'bugs', 'toeic'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'freelance', 'upwork', 'sdlc', 'jobs', 'bugs', 'toeic', 'toeiclr', 'ckad'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)

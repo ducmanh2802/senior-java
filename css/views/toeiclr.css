@@ -1,0 +1,41 @@
+/* #/toeiclr — TOEIC Listening & Reading + tips (js/views/toeiclr.js) */
+.view-toeiclr .tl-tabs { margin-bottom: 16px; }
+.view-toeiclr .tl-test { margin-bottom: 12px; display: grid; gap: 10px; }
+.view-toeiclr .tl-test h3 { margin: 0; }
+.view-toeiclr .tl-partial { opacity: .7; border-style: dashed; }
+.view-toeiclr .tl-parts { margin-bottom: 16px; }
+.view-toeiclr .tl-part { display: grid; gap: 4px; color: var(--text); }
+.view-toeiclr .tl-part:hover { border-color: var(--accent); text-decoration: none; }
+.view-toeiclr .tl-bar { margin-bottom: 12px; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-toeiclr .tl-timer { font-variant-numeric: tabular-nums; }
+.view-toeiclr .tl-timer.warn { background: var(--warn-soft); color: var(--warn); }
+.view-toeiclr .tl-unit { display: grid; gap: 14px; margin-bottom: 12px; }
+.view-toeiclr .tl-picture, .view-toeiclr .tl-passage, .view-toeiclr .tl-script, .view-toeiclr .tl-graphic {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+}
+.view-toeiclr .tl-picture p, .view-toeiclr .tl-script p { margin: 4px 0; }
+.view-toeiclr .tl-text { line-height: 1.6; }
+.view-toeiclr .tl-q { display: grid; gap: 8px; }
+.view-toeiclr .tl-opts { display: grid; gap: 6px; }
+.view-toeiclr .tl-opt { text-align: left; justify-content: flex-start; white-space: normal; }
+.view-toeiclr .tl-opt.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.view-toeiclr .tl-explain { border-left: 3px solid var(--accent); padding-left: 12px; }
+.view-toeiclr .tl-extra { border-top: 1px dashed var(--border); padding-top: 10px; }
+.view-toeiclr .tl-sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 4px; margin: 16px 0; }
+.view-toeiclr .tl-cell { padding: 4px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: var(--fs-sm); cursor: pointer; }
+.view-toeiclr .tl-cell.done { background: var(--accent-soft); color: var(--accent); }
+.view-toeiclr .tl-cell.cur { outline: 2px solid var(--accent); }
+.view-toeiclr .tl-cell.ok { background: var(--ok-soft); color: var(--ok); }
+.view-toeiclr .tl-cell.bad { background: var(--bad-soft); color: var(--bad); }
+.view-toeiclr .tl-score { margin-bottom: 8px; }
+.view-toeiclr .tl-table { width: 100%; border-collapse: collapse; }
+.view-toeiclr .tl-table td { padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.view-toeiclr .tl-table td:last-child { width: 40%; }
+.view-toeiclr .tl-tip { margin-bottom: 10px; }
+.view-toeiclr .tl-tip summary { cursor: pointer; }
+.view-toeiclr .tl-videos ul { margin: 6px 0 0; padding-left: 20px; }
+.view-toeiclr .tl-checklist { display: grid; gap: 6px; margin-top: 12px; }
+.view-toeiclr .tl-check { display: flex; gap: 8px; align-items: flex-start; }
+@media (max-width: 480px) {
+  .view-toeiclr .tl-table td:last-child { width: 30%; }
+}

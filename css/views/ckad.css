@@ -1,0 +1,21 @@
+/* #/ckad — CKAD overview, hands-on mock exams, labs (js/views/ckad.js) */
+.view-ckad .ck-tabs { margin-bottom: 16px; }
+.view-ckad .ck-stats { margin-bottom: 16px; }
+.view-ckad .ck-stats .stat { color: var(--text); }
+.view-ckad .ck-stats .stat:hover { text-decoration: none; }
+.view-ckad .card { margin-bottom: 12px; }
+.view-ckad .ck-table { width: 100%; border-collapse: collapse; }
+.view-ckad .ck-table td { padding: 8px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.view-ckad .ck-table td:last-child { text-align: right; font-weight: 600; white-space: nowrap; }
+.view-ckad .ck-videos { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.view-ckad .ck-item { display: grid; gap: 6px; color: var(--text); }
+.view-ckad .ck-item:hover { border-color: var(--accent); text-decoration: none; }
+.view-ckad .ck-bar { align-items: center; gap: 8px; flex-wrap: wrap; position: sticky; top: 64px; z-index: 2; }
+.view-ckad .ck-timer { font-variant-numeric: tabular-nums; }
+.view-ckad .ck-task { display: grid; gap: 10px; }
+.view-ckad .ck-task .row { gap: 8px; flex-wrap: wrap; align-items: center; }
+.view-ckad .badge.ok { background: var(--ok-soft); color: var(--ok); }
+.view-ckad .badge.bad { background: var(--bad-soft); color: var(--bad); }
+.view-ckad .ck-code summary, .view-ckad details > summary { cursor: pointer; font-weight: 500; }
+.view-ckad .ck-code pre { max-height: 360px; overflow: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: var(--fs-sm); }
+.view-ckad .ck-code .row { margin: 6px 0; }
