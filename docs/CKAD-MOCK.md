@@ -64,9 +64,18 @@ Every resource name used by `verify` must appear in `task`.
   id: 'ckad-lab-05', order: 5,
   title: '…', summary: '40–300 chars',
   concepts: `markup ≥ 800 chars: khái niệm + VÌ SAO, cheat sheet lệnh (~~~bash), bẫy hay gặp trong đề`,
+  videos: [{ title: '…', url: 'https://www.youtube.com/watch?v=…', note: 'xem đoạn nào, vì sao' }],   // 1–3, xem dưới
   tasks: [ ...4–8 tasks, easy → hard, the last one combines the module's skills ]
 });
 ```
+
+### `videos` (bắt buộc cho mỗi lab module)
+
+`videos: [{ title, url, note? }]`, 1–3 video hướng dẫn, kiểm tra bởi checker:
+- `url` dạng `https://www.youtube.com/watch?v=<ID>` (được thêm `&t=<giây>s` để nhảy tới đoạn liên quan).
+- **Chỉ dùng ID có trong `scripts/videos-verified.js`** (đã kiểm chứng bằng oEmbed). Không đoán ID: AI hay bịa ID video, checker chặn mọi ID ngoài danh sách. Cần video khác thì ghi đề xuất vào `## Notes` của task.
+- `title` chép đúng tên video trong danh sách (không có `[` `]`); `note` ≤ 160 ký tự, tiếng Việt: xem đoạn nào, vì sao hữu ích (ví dụ "phút 10–25: demo init container chờ DB").
+- Chọn video khớp chủ đề (cột thứ 3 trong danh sách), video chuyên đề trước, khoá học tổng quan sau.
 
 Lab task = exam task **without** `weight`, plus `level: 'easy' | 'medium' | 'hard'` and `hints: [1–3 strings]`;
 id `ckad-lab-NN-MM`. Namespace per lab `lab<NN>`, answer files `/opt/ckad/lab<NN>-<MM>.txt`.

@@ -94,6 +94,15 @@ Rules:
   summary: '…',                    // 40–300 chars
   body: `markup ≥ 2500 chars, starts with **Tóm tắt:**, ends with > Senior tip: (người đã đạt 900+ chia sẻ)`,
   checklist: ['…'],                // 3–8 items, things to practise / check
+  videos: [{ title, url, note }],  // 1–3 YouTube videos from scripts/videos-verified.js (see below)
   related: ['toeic-s1-001', 'lr1-p3-05']   // optional, existing ids
 }
 ```
+
+### `videos` (bắt buộc cho mỗi tip)
+
+`videos: [{ title, url, note? }]`, 1–3 video hướng dẫn, kiểm tra bởi checker:
+- `url` dạng `https://www.youtube.com/watch?v=<ID>` (được thêm `&t=<giây>s` để nhảy tới đoạn liên quan).
+- **Chỉ dùng ID có trong `scripts/videos-verified.js`** (đã kiểm chứng bằng oEmbed). Không đoán ID: AI hay bịa ID video, checker chặn mọi ID ngoài danh sách. Cần video khác thì ghi đề xuất vào `## Notes` của task.
+- `title` chép đúng tên video trong danh sách (không có `[` `]`); `note` ≤ 160 ký tự, tiếng Việt: xem đoạn nào, vì sao hữu ích (ví dụ "phút 10–25: demo init container chờ DB").
+- Chọn video khớp chủ đề (cột thứ 3 trong danh sách), video chuyên đề trước, khoá học tổng quan sau.

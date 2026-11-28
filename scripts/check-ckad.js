@@ -18,7 +18,24 @@ const Diagram = require(path.join(__dirname, '..', 'js', 'core', 'diagram.js'));
 const DOMAINS = { 'Design & Build': 20, 'Deployment': 20, 'Observability & Maintenance': 15, 'Environment, Config & Security': 25, 'Services & Networking': 20 };
 const EXAM_KEYS = new Set(['id', 'title', 'minutes', 'passPct', 'intro', 'tasks']);
 const TASK_KEYS = new Set(['id', 'no', 'domain', 'weight', 'env', 'minutes', 'title', 'task', 'setup', 'verify', 'solution', 'refs', 'tags']);
-const LAB_KEYS = new Set(['id', 'order', 'title', 'summary', 'concepts', 'tasks']);
+const LAB_KEYS = new Set(['id', 'order', 'title', 'summary', 'concepts', 'videos', 'tasks']);
+// videos: [{title, url, note?}] — url must be a YouTube video listed in scripts/videos-verified.js (AI invents IDs)
+const VERIFIED = require('./videos-verified.js');
+function checkVideos(errors, id, v, min) {
+  if (v == null) { if (min) errors.push(`${id}: cần videos (${min}–3 video trong scripts/videos-verified.js)`); return; }
+  if (!Array.isArray(v) || v.length < min || v.length > 3) { errors.push(`${id}: videos ${min}–3 mục`); return; }
+  const seen = new Set();
+  v.forEach((x, k) => {
+    const m = x && /^https:\/\/www\.youtube\.com\/watch\?v=([\w-]{11})(&t=\d+s)?$/.exec(x.url || '');
+    if (!m) { errors.push(`${id}.videos[${k}]: url dạng https://www.youtube.com/watch?v=<ID> (tuỳ chọn &t=<giây>s)`); return; }
+    if (!VERIFIED[m[1]]) errors.push(`${id}.videos[${k}]: video ${m[1]} chưa kiểm chứng, chỉ dùng ID trong scripts/videos-verified.js`);
+    if (seen.has(m[1])) errors.push(`${id}.videos[${k}]: video trùng`); seen.add(m[1]);
+    if (!x.title || typeof x.title !== 'string' || x.title.length < 5 || /[\[\]]/.test(x.title)) errors.push(`${id}.videos[${k}]: title ≥ 5 ký tự, không có [ ]`);
+    if (x.note != null && (typeof x.note !== 'string' || x.note.length > 160)) errors.push(`${id}.videos[${k}]: note ≤ 160 ký tự`);
+    Object.keys(x).forEach(q => { if (!['title', 'url', 'note'].includes(q)) errors.push(`${id}.videos[${k}]: field lạ "${q}"`); });
+  });
+}
+
 const LAB_TASK_KEYS = new Set([...TASK_KEYS].filter(k => k !== 'weight').concat(['level', 'hints']));
 const LEVELS = new Set(['easy', 'medium', 'hard']);
 // ckad-labs-N.js holds modules: 1 -> 1..4, 2 -> 5..8, 3 -> 9..12
@@ -166,6 +183,7 @@ function check() {
     if (!str(l.summary, 40) || l.summary.length > 300) errors.push(`${lid}: summary 40–300 ký tự`);
     if (!str(l.concepts, 800)) errors.push(`${lid}: concepts ≥ 800 ký tự`);
     markup(`${lid}.concepts`, l.concepts); vietnamese(`${lid}.concepts`, l.concepts);
+    checkVideos(errors, lid, l.videos, 1);
     Object.keys(l).forEach(k => { if (!LAB_KEYS.has(k)) errors.push(`${lid}: field lạ "${k}"`); });
     const tasks = Array.isArray(l.tasks) ? l.tasks : [];
     if (tasks.length < 4 || tasks.length > 8) errors.push(`${lid}: cần 4–8 bài (đang ${tasks.length})`);

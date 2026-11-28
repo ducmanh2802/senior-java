@@ -27,7 +27,24 @@ const Q_KEYS = new Set(['n', 'q', 'options', 'answer', 'type', 'explain']);
 const SPEAKERS = new Set(['M', 'W', 'M2', 'W2', 'N']);
 const ACCENTS = new Set(['us', 'uk', 'au', 'ca']);
 const SKILLS = new Set(['listening', 'reading', 'speaking', 'writing', 'overall']);
-const TIP_KEYS = new Set(['id', 'skill', 'order', 'title', 'summary', 'body', 'checklist', 'related']);
+const TIP_KEYS = new Set(['id', 'skill', 'order', 'title', 'summary', 'body', 'checklist', 'videos', 'related']);
+// videos: [{title, url, note?}] — url must be a YouTube video listed in scripts/videos-verified.js (AI invents IDs)
+const VERIFIED = require('./videos-verified.js');
+function checkVideos(errors, id, v, min) {
+  if (v == null) { if (min) errors.push(`${id}: cần videos (${min}–3 video trong scripts/videos-verified.js)`); return; }
+  if (!Array.isArray(v) || v.length < min || v.length > 3) { errors.push(`${id}: videos ${min}–3 mục`); return; }
+  const seen = new Set();
+  v.forEach((x, k) => {
+    const m = x && /^https:\/\/www\.youtube\.com\/watch\?v=([\w-]{11})(&t=\d+s)?$/.exec(x.url || '');
+    if (!m) { errors.push(`${id}.videos[${k}]: url dạng https://www.youtube.com/watch?v=<ID> (tuỳ chọn &t=<giây>s)`); return; }
+    if (!VERIFIED[m[1]]) errors.push(`${id}.videos[${k}]: video ${m[1]} chưa kiểm chứng, chỉ dùng ID trong scripts/videos-verified.js`);
+    if (seen.has(m[1])) errors.push(`${id}.videos[${k}]: video trùng`); seen.add(m[1]);
+    if (!x.title || typeof x.title !== 'string' || x.title.length < 5 || /[\[\]]/.test(x.title)) errors.push(`${id}.videos[${k}]: title ≥ 5 ký tự, không có [ ]`);
+    if (x.note != null && (typeof x.note !== 'string' || x.note.length > 160)) errors.push(`${id}.videos[${k}]: note ≤ 160 ký tự`);
+    Object.keys(x).forEach(q => { if (!['title', 'url', 'note'].includes(q)) errors.push(`${id}.videos[${k}]: field lạ "${q}"`); });
+  });
+}
+
 const VN = /[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]/gi;
 
 const words = s => (String(s).match(/[A-Za-z0-9'’-]+/g) || []).length;
@@ -195,6 +212,7 @@ function check() {
     }
     markup(`${id}.body`, t.body); vietnamese(`${id}.body`, t.body, 300);
     if (!Array.isArray(t.checklist) || t.checklist.length < 3 || t.checklist.length > 8 || t.checklist.some(c => !str(c, 10))) errors.push(`${id}: checklist 3–8 mục`);
+    checkVideos(errors, id, t.videos, 1);
     Object.keys(t).forEach(k => { if (!TIP_KEYS.has(k)) errors.push(`${id}: field lạ "${k}"`); });
   });
   for (const t of tips) for (const r of (t && Array.isArray(t.related) ? t.related : [])) {
