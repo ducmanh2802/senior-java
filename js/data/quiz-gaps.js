@@ -4642,5 +4642,236 @@ Nếu API endpoint không tồn tại/lỗi, response phải JSON. Forward index
 - **Static resource không load**: không liên quan.
 
 > Senior tip: fallback exclude /api/**, /actuator/**, static assets.`
+},
+{
+  id: 'qz-behavioral-030',
+  topic: 'behavioral',
+  q: 'Bạn được giao một task mới trong sprint, nhưng nhận ra nó sẽ đụng vào code bạn không hiểu rõ và đồng nghiệp phụ trách module đó đang bận. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Tự mò và sửa code của người khác để không làm phiền đồng nghiệp.',
+    'Yêu cầu đồng nghiệp dừng việc đang làm để giải thích ngay.',
+    'Ghi rõ các giả định và câu hỏi, đưa ra PR nhỏ với test, và hẹn đồng nghiệp review khi rảnh; meanwhile làm phần không phụ thuộc.',
+    'Trì hoãn task cho tới khi đồng nghiệp rảnh hoàn toàn.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Ghi rõ các giả định và câu hỏi, đưa ra PR nhỏ với test, và hẹn đồng nghiệp review khi rảnh; meanwhile làm phần không phụ thuộc.**
+
+### Vì sao đúng
+Senior không tự mò code người khác (dễ sai) cũng không ép người khác dừng việc (kém hợp tác). Cách tốt: viết ra giả định và câu hỏi cụ thể, làm phần không phụ thuộc, và tạo PR nhỏ kèm test để đồng nghiệp review khi rảnh. Cách này giữ tiến độ, giảm rủi ro, và tôn trọng thời gian người khác.
+
+### Vì sao các phương án khác sai
+- **Tự mò và sửa code của người khác để không làm phiền đồng nghiệp**: dễ phá vỡ invariant ẩn trong module, gây bug khó truy. Không làm phiền không phải là lý do để mò bừa.
+- **Yêu cầu đồng nghiệp dừng việc đang làm để giải thích ngay**: selfish, làm gián đoạn công việc của người khác. Chỉ nên làm khi bị chặn thực sự và không có cách khác.
+- **Trì hoãn task cho tới khi đồng nghiệp rảnh hoàn toàn**: làm mất thời gian sprint, và thường không cần thiết vì nhiều phần có thể làm song song.
+
+> Senior tip: PR nhỏ + giả định rõ ràng là công cụ giao tiếp tốt nhất. Đồng nghiệp review khi rảnh và chỉ ra chỗ sai, thay vì bạn phải chờ để bắt đầu.`
+},
+{
+  id: 'qz-behavioral-031',
+  topic: 'behavioral',
+  multi: true,
+  q: 'Bạn chuẩn bị một bài trình bày kỹ thuật cho team. Đâu là 2 điểm quan trọng nên có? (Chọn 2)',
+  options: [
+    'Nêu rõ vấn đề và mục tiêu của buổi trình bày ngay từ đầu.',
+    'Nhồi càng nhiều chi tiết kỹ thuật càng tốt để thể hiện chuyên môn.',
+    'Kèm ví dụ cụ thể và trade-off, không chỉ lý thuyết.',
+    'Đọc slide nguyên văn để không bỏ sót.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: (0) Nêu rõ vấn đề và mục tiêu của buổi trình bày ngay từ đầu. (2) Kèm ví dụ cụ thể và trade-off, không chỉ lý thuyết.**
+
+### Vì sao đúng
+Một buổi trình bày tốt phải trả lời "tại sao mọi người nên nghe" ngay từ đầu (vấn đề + mục tiêu) và cung cấp giá trị thực tế qua ví dụ và trade-off. Chi tiết kỹ thuật nhiều không có nghĩa là giá trị nhiều; ví dụ cụ thể giúp người nghe áp dụng được.
+
+### Vì sao các phương án khác sai
+- **Nhồi càng nhiều chi tiết kỹ thuật càng tốt để thể hiện chuyên môn**: gây quá tải, người nghe không theo kịp. Chuyên môn thể hiện qua sự rõ ràng, không qua khối lượng.
+- **Đọc slide nguyên văn để không bỏ sót**: làm buổi trình bày nhàm chán và mất tương tác. Slide nên là hỗ trợ, không phải kịch bản.
+
+> Senior tip: quy tắc "one idea per slide" và "tell them what you'll tell them, tell them, tell them what you told them". Kết thúc bằng hành động cụ thể cho team.`
+},
+{
+  id: 'qz-behavioral-032',
+  topic: 'behavioral',
+  q: 'Trong một cuộc họp, bạn không đồng ý với quyết định kiến trúc của lead. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Im lặng trong họp rồi phàn nàn sau với đồng nghiệp.',
+    'Challenging gay gắt trong họp để chứng minh bạn đúng.',
+    'Đặt câu hỏi làm rõ lý do và rủi ro, nêu quan điểm kèm evidence, rồi chấp nhận quyết định của lead nếu họ vẫn giữ quan điểm.',
+    'Bỏ họp và viết email phản đối sau.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Đặt câu hỏi làm rõ lý do và rủi ro, nêu quan điểm kèm evidence, rồi chấp nhận quyết định của lead nếu họ vẫn giữ quan điểm.**
+
+### Vì sao đúng
+Disagree and commit: senior có quyền và trách nhiệm nêu quan điểm kèm evidence (số liệu, case thực tế), nhưng sau khi lead ra quyết định thì phải cam kết thực hiện. Điều này giữ tốc độ team và tránh chia rẽ. Im lặng hoặc gay gắt đều không phải cách trưởng thành.
+
+### Vì sao các phương án khác sai
+- **Im lặng trong họp rồi phàn nàn sau với đồng nghiệp**: không giải quyết vấn đề, chỉ tạo tâm lý tiêu cực và chia rẽ team.
+- **Challenging gay gắt trong họp để chứng minh bạn đúng**: biến cuộc họp thành cuộc chiến cá nhân, làm hỏng quan hệ. Dù bạn đúng kỹ thuật thì cách truyền đạt sai cũng làm bạn sai.
+- **Bỏ họp và viết email phản đối sau**: thiếu chuyên nghiệp, và email thường dễ bị hiểu sai ngữ cảnh hơn nói trực tiếp.
+
+> Senior tip: "disagree and commit" là nguyên tắc của Amazon. Nếu bạn không thể commit, hãy escalation trước khi quyết định, không phải sau.`
+},
+{
+  id: 'qz-behavioral-033',
+  topic: 'behavioral',
+  q: 'Bạn đang phỏng vấn và được hỏi "Bạn xử lý thất bại thế nào?". Câu trả lời tốt nhất nên chứa yếu tố nào?',
+  options: [
+    'Nói rằng bạn chưa bao giờ thất bại lớn.',
+    'Kể một thất bại thật, nguyên nhân, bài học, và cách bạn thay đổi để không lặp lại.',
+    'Đổ lỗi cho đồng nghiệp hoặc công cụ.',
+    'Kể một thất bại nhỏ không quan trọng để tránh bị đánh giá.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Kể một thất bại thật, nguyên nhân, bài học, và cách bạn thay đổi để không lặp lại.**
+
+### Vì sao đúng
+Interviewer hỏi câu này để đánh giá tự nhận thức (self-awareness) và khả năng học từ sai lầm. Câu trả lời mạnh nhất là kể một thất bại thật, nêu nguyên nhân (không đổ lỗi), bài học rút ra, và thay đổi cụ thể sau đó. Điều này chứng minh bạn trưởng thành và học hỏi liên tục.
+
+### Vì sao các phương án khác sai
+- **Nói rằng bạn chưa bao giờ thất bại lớn**: không ai tin; hoặc bạn chưa làm việc đủ lâu, hoặc bạn thiếu tự nhận thức. Đây là tín hiệu đỏ trong phỏng vấn.
+- **Đổ lỗi cho đồng nghiệp hoặc công cụ**: cho thấy bạn không sở hữu lỗi của mình. Interviewer sẽ đánh giá thấp về trách nhiệm.
+- **Kể một thất bại nhỏ không quan trọng để tránh bị đánh giá**: câu trả lời sáo rỗng, không cho interviewer biết gì về bạn. Họ sẽ hỏi sâu hơn và bạn sẽ bị kẹt.
+
+> Senior tip: chuẩn bị 2-3 câu chuyện thất bại thật với số liệu. Interviewer không đánh giá bạn qua việc bạn có thất bại không, mà qua cách bạn xử lý sau đó.`
+},
+{
+  id: 'qz-behavioral-034',
+  topic: 'behavioral',
+  multi: true,
+  q: 'Bạn được giao làm mentor cho một bạn mid-level muốn lên senior. Đâu là 2 việc nên làm? (Chọn 2)',
+  options: [
+    'Chỉ giao task và kiểm tra kết quả, không can thiệp quá trình.',
+    'Đặt mục tiêu rõ ràng, theo dõi tiến độ, và cho feedback cụ thể về kỹ năng cần phát triển.',
+    'Làm thay phần khó để bạn ấy có thời gian.',
+    'Tạo cơ hội cho bạn ấy dẫn dắt một phần nhỏ, review cùng, và khuyến khích tự quyết định.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: (1) Đặt mục tiêu rõ ràng, theo dõi tiến độ, và cho feedback cụ thể về kỹ năng cần phát triển. (3) Tạo cơ hội cho bạn ấy dẫn dắt một phần nhỏ, review cùng, và khuyến khích tự quyết định.**
+
+### Vì sao đúng
+Mentorship tốt = đặt mục tiêu + feedback + cơ hội thực hành. Mid-level lên senior không chỉ là kỹ thuật mà còn là ownership và decision-making. Tạo cơ hội dẫn dắt phần nhỏ và review cùng giúp bạn ấy rèn cả kỹ năng kỹ thuật lẫn soft skill.
+
+### Vì sao các phương án khác sai
+- **Chỉ giao task và kiểm tra kết quả, không can thiệp quá trình**: bỏ qua coaching, bạn ấy không biết vì sao cách làm của mình đúng/sai. Task management không phải mentorship.
+- **Làm thay phần khó để bạn ấy có thời gian**: tước đi cơ hội học hỏi. Bạn ấy sẽ phụ thuộc vào bạn và không phát triển lên senior.
+
+> Senior tip: mentorship đo bằng "bạn ấy có thể làm tốt mà không cần bạn" sau 6 tháng. Nếu vẫn cần bạn cho mọi quyết định, mentorship chưa thành công.`
+},
+{
+  id: 'qz-behavioral-035',
+  topic: 'behavioral',
+  q: 'Bạn phát hiện một đồng nghiệp đang làm việc quá sức (overtime liên tục) và chất lượng code giảm. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Khen ngợi sự chăm chỉ và để họ tiếp tục.',
+    'Báo với quản lý rằng đồng nghiệp không đủ năng lực.',
+    'Nói chuyện riêng với đồng nghiệp về workload, đề xuất điều chỉnh scope hoặc hỗ trợ, và nếu cần thì escalate với lead về capacity.',
+    'Giao thêm task để họ "rèn luyện".'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Nói chuyện riêng với đồng nghiệp về workload, đề xuất điều chỉnh scope hoặc hỗ trợ, và nếu cần thì escalate với lead về capacity.**
+
+### Vì sao đúng
+Burnout là vấn đề hệ thống, không phải cá nhân. Senior xử lý bằng cách nói chuyện riêng (private), tìm hiểu nguyên nhân (workload, scope, kỹ năng), đề xuất điều chỉnh và hỗ trợ. Nếu vượt thẩm quyền thì escalate về capacity với lead. Cách này bảo vệ cả đồng nghiệp và chất lượng dự án.
+
+### Vì sao các phương án khác sai
+- **Khen ngợi sự chăm chỉ và để họ tiếp tục**: overtime không phải thành tích; khen ngợi burnout là khuyến khích tự hủy hoại. Chất lượng giảm sẽ gây sự cố.
+- **Báo với quản lý rằng đồng nghiệp không đủ năng lực**: quy kết sai nguyên nhân (capacity thay vì ability) và làm hỏng danh tiếng đồng nghiệp. Đây là hành vi không chuyên nghiệp.
+- **Giao thêm task để họ "rèn luyện"**: thêm workload khi đang quá tải là đẩy họ vào burnout nặng hơn. Không phải "rèn luyện".
+
+> Senior tip: overtime liên tục là tín hiệu capacity planning sai, không phải tinh thần làm việc cao. Senior phát hiện sớm và điều chỉnh trước khi sự cố xảy ra.`
+},
+{
+  id: 'qz-behavioral-036',
+  topic: 'behavioral',
+  q: 'Bạn cần thuyết phục team áp dụng một công nghệ mới (ví dụ: virtual threads) vào dự án. Cách tiếp cận tốt nhất là gì?',
+  options: [
+    'Ép team áp dụng vì bạn tin công nghệ đó tốt hơn.',
+    'Viết ADR (Architecture Decision Record) với bối cảnh, phương án, trade-off, và pilot nhỏ để đo lường.',
+    'Tự ý áp dụng vào production mà không thông báo.',
+    'Chờ đến khi mọi người tự đề xuất.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Viết ADR (Architecture Decision Record) với bối cảnh, phương án, trade-off, và pilot nhỏ để đo lường.**
+
+### Vì sao đúng
+Thuyết phục team về công nghệ mới cần evidence và structured decision. ADR ghi lại bối cảnh, các phương án, trade-off và quyết định. Pilot nhỏ với đo lường (benchmark, error rate) cung cấp evidence thực tế. Cách này tôn trọng team và giảm rủi ro áp dụng sai.
+
+### Vì sao các phương án khác sai
+- **Ép team áp dụng vì bạn tin công nghệ đó tốt hơn**: áp đặt không có evidence làm team phản kháng và dễ áp dụng sai. Tin tưởng cá nhân không phải lý do đủ.
+- **Tự ý áp dụng vào production mà không thông báo**: bypass quy trình, gây rủi ro và mất niềm tin. Nếu có sự cố, bạn phải chịu toàn bộ trách nhiệm.
+- **Chờ đến khi mọi người tự đề xuất**: không chủ động, và công nghệ tốt có thể bị bỏ lỡ. Senior phải dẫn dắt, không chỉ chờ.
+
+> Senior tip: ADR + pilot là công thức thuyết phục tốt nhất. Khi có số liệu đo được, tranh luận ý kiến trở thành quyết định dựa trên bằng chứng.`
+},
+{
+  id: 'qz-behavioral-037',
+  topic: 'behavioral',
+  q: 'Bạn nhận được feedback tiêu cực trong performance review. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Phủ nhận và giải thích rằng reviewer sai.',
+    'Im lặng và không thay đổi gì.',
+    'Cảm ơn, làm rõ các điểm cụ thể, đặt kế hoạch cải thiện với mốc đo lường, và theo dõi tiến độ.',
+    'Đe dọa rời công ty.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Cảm ơn, làm rõ các điểm cụ thể, đặt kế hoạch cải thiện với mốc đo lường, và theo dõi tiến độ.**
+
+### Vì sao đúng
+Feedback tiêu cực là cơ hội phát triển. Senior xử lý bằng cách cảm ơn (show maturity), làm rõ các điểm cụ thể (để không hiểu sai), đặt kế hoạch cải thiện với mốc đo lường (để progress rõ ràng), và theo dõi tiến độ. Cách này biến feedback thành hành động, không phải cảm xúc.
+
+### Vì sao các phương án khác sai
+- **Phủ nhận và giải thích rằng reviewer sai**: phòng thủ làm bạn bỏ lỡ cơ hội học hỏi. Ngay cả khi reviewer sai một phần, phủ nhận toàn bộ là phản ứng không chuyên nghiệp.
+- **Im lặng và không thay đổi gì**: bỏ lỡ cơ hội phát triển và có thể lặp lại cùng một vấn đề trong review sau.
+- **Đe dọa rời công ty**: phản ứng thái quá và không chuyên nghiệp. Nếu bạn không đồng ý với review, hãy thảo luận calmly, không đe dọa.
+
+> Senior tip: feedback tiêu cực mà bạn xử lý tốt thường là bước ngoặt trong sự nghiệp. Người biết nhận feedback và cải thiện nhanh thường được tin tưởng giao việc lớn hơn.`
+},
+{
+  id: 'qz-behavioral-038',
+  topic: 'behavioral',
+  q: 'Bạn được yêu cầu ước lượng thời gian cho một tính năng lớn chưa rõ phạm vi. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Đưa ra một con số chắc chắn để không bị coi là do dự.',
+    'Từ chối ước lượng vì không đủ thông tin.',
+    'Đưa ra phạm vi ước lượng (range) với giả định rõ ràng, và đề xuất spike (nghiên cứu) để giảm uncertainty.',
+    'Ước lượng theo thời gian của người khác đã làm tương tự.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Đưa ra phạm vi ước lượng (range) với giả định rõ ràng, và đề xuất spike (nghiên cứu) để giảm uncertainty.**
+
+### Vì sao đúng
+Ước lượng cho tính năng chưa rõ phạm vi không thể là một con số chắc chắn. Senior đưa ra phạm vi (range) kèm giả định rõ ràng (scope, dependency), và đề xuất spike (time-boxed research) để giảm uncertainty. Cách này minh bạch và giúp stakeholder ra quyết định với thông tin đúng.
+
+### Vì sao các phương án khác sai
+- **Đưa ra một con số chắc chắn để không bị coi là do dự**: con số chắc chắn cho công việc chưa rõ phạm vi là sai lệch. Khi trễ, bạn mất niềm tin; và bạn đang hứa điều không thể giữ.
+- **Từ chối ước lượng vì không đủ thông tin**: từ chối thẳng không đưa ra giải pháp. Stakeholder vẫn cần thông tin để planning; nên đưa range kèm giả định.
+- **Ước lượng theo thời gian của người khác đã làm tương tự**: context khác nhau (team, codebase, requirement), nên thời gian không trực tiếp áp dụng. Dễ sai lệch lớn.
+
+> Senior tip: công thức ước lượng: "Nếu scope là X, thì 2-4 tuần; nếu scope là Y, thì 4-8 tuần. Để chắc hơn, tôi cần 2 ngày spike." Stakeholder respect honesty hơn false precision.`
+},
+{
+  id: 'qz-behavioral-039',
+  topic: 'behavioral',
+  q: 'Bạn nhận ra một quyết định kiến trúc trước đây của bạn đang gây vấn đề. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Giấu và sửa âm thầm để không ai biết bạn sai.',
+    'Đổ lỗi cho requirement hoặc công nghệ.',
+    'Chủ động nêu vấn đề, đề xuất giải pháp (refactor, migration), và cùng team quyết định timing.',
+    'Để nguyên vì "đã làm rồi, sửa tốn kém".'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Chủ động nêu vấn đề, đề xuất giải pháp (refactor, migration), và cùng team quyết định timing.**
+
+### Vì sao đúng
+Senior sở hữu quyết định của mình, kể cả khi sai. Khi nhận ra quyết định trước đây gây vấn đề, cách tốt là chủ động nêu vấn đề, đề xuất giải pháp (refactor hoặc migration), và cùng team quyết định timing (khi nào sửa, có worth không). Cách này giữ niềm tin và cải thiện hệ thống liên tục.
+
+### Vì sao các phương án khác sai
+- **Giấu và sửa âm thầm để không ai biết bạn sai**: che giấu sai lầm làm team không học được và làm bạn phải ôm bí mật. Nếu phát hiện sau, mất niềm tin nặng hơn.
+- **Đổ lỗi cho requirement hoặc công nghệ**: không sở hữu quyết định của mình. Requirement và công nghệ là input, quyết định là của bạn.
+- **Để nguyên vì "đã làm rồi, sửa tốn kém"**: sunk cost fallacy. Nếu vấn đề đang gây pain, không sửa sẽ tốn kém hơn theo thời gian. Cần đánh giá trade-off thực sự.
+
+> Senior tip: "I was wrong, here's what I learned, here's the plan" là câu nói xây dựng niềm tin mạnh nhất. Người dám nhận sai và sửa mới được tin giao việc lớn.`
 }
+
 );
