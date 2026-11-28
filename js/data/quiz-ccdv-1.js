@@ -2861,5 +2861,811 @@ explain: `**Đáp án đúng: phương án 2.** Eval suite với golden dataset 
   ],
   answer: 1,
   explain: `**Đáp án đúng: phương án 2.** Edit là phép thay thế chuỗi chính xác (exact string replace): nếu nội dung file đã đổi, chuỗi cũ không còn khớp nên tool trả lỗi thay vì ghi mù — đây chính là cơ chế chống ghi đè lên thay đổi của người khác. Claude nhận lỗi, Read lại file rồi thử Edit lần nữa với đoạn neo mới. Với xung đột git thật (rebase/merge) thì việc chọn giữ bên nào vẫn do bạn quyết định. Claude không tự force ghi đè, không tự tạo branch, và lỗi tool không làm chết phiên.`
+},
+
+{
+  id: 'qz-ccdv-211',
+  topic: 'claude',
+  q: '[Model Selection] A SaaS company runs three Claude workloads: a high-volume intent classifier, an agent that plans a multi-system migration, and a customer support summarizer. Finance asks you to cut spend without hurting quality. Which allocation of Claude models is the best fit for current tiers?',
+  options: [
+    'Use Fable 5.2 for all three workloads so quality is uniform and there is only one model to operate.',
+    'Use Haiku 5.5 for the high-volume classifier, Sonnet 5.5 for the support summarizer, and Fable 5.2 (with thinking) for the migration-planning agent.',
+    'Use Haiku 5.5 for all three workloads because it is the cheapest model per token.',
+    'Use Opus 5.5 for the classifier and summarizer, and Haiku 5.5 for the migration-planning agent.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Nguyên tắc chọn model là khớp model với độ khó của tác vụ (right-sizing), không phải một model cho tất cả. Phân loại ý định (intent classification) là tác vụ đơn giản, chạy hàng triệu lần: Haiku 5.5 rẻ nhất ($0.10 đầu vào / $0.50 đầu ra mỗi triệu token — MTok) và nhanh nhất nên phù hợp. Tóm tắt hội thoại hỗ trợ là tác vụ trung bình, cần viết tự nhiên và bám sát ngữ cảnh: Sonnet 5.5 ($2 / $10) cân bằng giữa chất lượng và giá. Agent lập kế hoạch di trú nhiều hệ thống là tác vụ suy luận nhiều bước, ràng buộc chéo: dùng Fable 5.2 ($8 / $40) kèm thinking để có thêm token suy luận trước khi trả lời.
+
+### Vì sao các phương án còn lại sai
+- **Fable 5.2 cho cả ba:** đúng chất lượng nhưng đắt nhất; trả $8/$40 cho việc phân loại đơn giản là lãng phí lớn khi bài toán chỉ cần luật hoặc model nhỏ.
+- **Haiku 5.5 cho cả ba:** tiết kiệm nhưng agent lập kế hoạch di trú cần suy luận sâu; Haiku sẽ bỏ sót phụ thuộc và tạo kế hoạch thiếu bước, lỗi này tốn kém hơn tiền tiết kiệm.
+- **Opus 5.5 cho tác vụ đơn giản, Haiku cho tác vụ khó nhất:** ngược hoàn toàn — trả giá cao cho việc dễ và giao việc khó nhất cho model yếu nhất.
+
+> Mẹo senior: trước khi đổi model, hãy chạy một bộ eval nhỏ trên chính dữ liệu của bạn (xem mục Eval). Giá niêm yết chỉ là một biến; tỉ lệ phải làm lại (retry), độ trễ và chi phí vận hành mới quyết định hoá đơn cuối.`
+},
+{
+  id: 'qz-ccdv-212',
+  topic: 'claude',
+  multi: true,
+  q: '[Model Selection] A fintech is choosing a Claude model for a fraud-review assistant that reads a transaction, a short customer history, and a policy snippet, then returns a risk decision with reasons. Which statements about the choice are correct? (Choose 2)',
+  options: [
+    'Because the input is short, Haiku 5.5 is automatically the right choice regardless of how hard the decision is.',
+    'A mid-tier model such as Sonnet 5.5 is a reasonable default; measure its accuracy on a labelled set before considering a larger model.',
+    'Enabling thinking on a stronger model can improve multi-factor reasoning, but thinking tokens are billed at the output rate.',
+    'The decision quality depends only on the model, so prompt design and policy text have no effect.'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: phương án 2 và 3.** (2) Với bài toán phân loại có nhiều yếu tố, Sonnet 5.5 là điểm khởi đầu hợp lý; điều quyết định là đo trên tập dữ liệu đã gán nhãn (labelled set) rồi mới nâng lên Fable 5.2 nếu còn sai. (3) Bật thinking giúp mô hình cân nhắc nhiều tín hiệu trước khi kết luận; lưu ý thinking tokens vẫn bị tính phí theo mức giá đầu ra và được tính vào output_tokens.
+
+### Vì sao các phương án còn lại sai
+- **Đầu vào ngắn thì luôn chọn Haiku:** độ dài đầu vào không quyết định độ khó suy luận. Một hồ sơ 300 token vẫn có thể cần cân nhắc mâu thuẫn giữa các tín hiệu.
+- **Chất lượng chỉ do model:** prompt, thứ tự thông tin, độ rõ của snippet policy và cách yêu cầu trích dẫn đều ảnh hưởng lớn đến kết quả — cùng một model có thể đúng 70% hoặc 95% tuỳ thiết kế.
+
+> Mẹo senior: với quyết định rủi ro, hãy yêu cầu model trả kèm lý do và trích dẫn đoạn policy; như vậy bộ phận risk có thể kiểm tra lại thay vì tin mù.`
+},
+{
+  id: 'qz-ccdv-213',
+  topic: 'claude',
+  q: '[Model Selection] Your team pins the model alias "claude-sonnet-5-5-latest" in production. A new Sonnet 5.5 point release ships with slightly different refusal behaviour. What is the main operational risk and the safest mitigation?',
+  options: [
+    'There is no risk: an alias never changes behaviour once it is used the first time.',
+    'An alias can move to a new point release without a code change, so behaviour may shift; pin a dated model ID for critical paths and re-run the eval suite before adopting a new release.',
+    'Aliases are only for testing; using one in production causes HTTP 404.',
+    'The only safe option is to send every request to Fable 5.2, which never changes.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Alias dạng "latest" luôn trỏ tới bản phát hành mới nhất của dòng model đó; khi Anthropic phát hành point release, request của bạn tự động chạy trên bản mới mà không cần sửa code. Điều đó tiện nhưng nghĩa là hành vi (kể cả tỉ lệ từ chối, định dạng đầu ra, độ trễ) có thể đổi ngoài ý bạn. Cách làm an toàn: dùng model ID có ngày (dated ID) cho các luồng quan trọng, và trước khi chuyển sang bản mới thì chạy lại bộ eval trên dữ liệu thật.
+
+### Vì sao các phương án còn lại sai
+- **Alias không bao giờ đổi:** alias "latest" được thiết kế để luôn cập nhật, nên khẳng định này sai.
+- **Alias chỉ dùng cho test, production sẽ 404:** alias là ID hợp lệ; 404 xảy ra khi model bị retire, không phải vì dùng alias.
+- **Fable 5.2 không bao giờ đổi:** mọi dòng model đều có bản cập nhật và cuối cùng bị retire; không có model "đứng yên".
+
+> Mẹo senior: hãy coi việc nâng model như một lần deploy: có changelog nội bộ, chạy eval, so sánh chi phí và độ trễ, rồi mới bật.`
+},
+{
+  id: 'qz-ccdv-214',
+  topic: 'claude',
+  q: '[Model Selection] A support bot answers 200000 short FAQ questions a day and must stay under a strict per-conversation cost budget. The answers come from a curated help centre and rarely need reasoning. Which combination best controls cost while keeping quality acceptable?',
+  options: [
+    'Use Fable 5.2 with a large thinking budget for every conversation to guarantee correct answers.',
+    'Use Haiku 5.5 with prompt caching on the help-centre content that is identical for every request, and escalate only the conversations the bot marks as low confidence.',
+    'Disable prompt caching because caching adds a write cost that is never recovered.',
+    'Use Sonnet 5.5 with the full 200000-token help centre pasted into every request.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Ba đòn bẩy chi phí kết hợp: (1) Haiku 5.5 là model rẻ nhất, đủ cho FAQ bám sát tài liệu. (2) Prompt caching: phần help centre giống nhau ở mọi request được đánh dấu cache_control kiểu ephemeral; request đầu trả cache_creation_input_tokens, các request sau đọc với giá cache_read_input_tokens rẻ hơn nhiều. (3) Chỉ leo thang (escalate) lên model mạnh hơn cho các hội thoại mà bot tự đánh giá là không chắc — thay vì trả giá cao cho tất cả.
+
+### Vì sao các phương án còn lại sai
+- **Fable 5.2 + thinking cho mọi hội thoại:** chất lượng cao nhất nhưng chi phí và độ trễ cao nhất; thinking tokens tính theo giá đầu ra, và ngân sách tư duy lớn nhân với 200000 request sẽ vượt xa ngân sách.
+- **Tắt caching vì chi phí ghi không bao giờ hoàn lại:** với tiền tố dùng chung rất lớn và tần suất cao, cache_creation một lần được bù lại chỉ sau vài request; tắt caching là bỏ mất khoản tiết kiệm lớn nhất.
+- **Sonnet 5.5 + dán cả help centre mỗi request:** vừa đắt (input tokens tính đủ mỗi lượt) vừa có thể vượt context; đây chính là tình huống caching sinh ra để giải quyết.
+
+> Mẹo senior: đặt ngưỡng cache: nếu tỉ lệ đọc cache (cache_read_input_tokens / tổng input) dưới ~50%, tiền tố của bạn có thể đang thay đổi quá thường xuyên hoặc TTL (khoảng 5 phút không hoạt động) đang hết trước khi tái sử dụng.`
+},
+{
+  id: 'qz-ccdv-215',
+  topic: 'claude',
+  q: '[Model Selection] A team must choose between Haiku 5.5, Sonnet 5.5 and Fable 5.2 for a feature that rewrites a 300-word paragraph into three tones. The rewrite is user-facing but not high stakes, latency target is under two seconds, and volume is about 5000 requests a day. Which choice is most defensible?',
+  options: [
+    'Fable 5.2 for maximum rewrite quality even if latency exceeds the target.',
+    'Haiku 5.5 for the lowest cost, accepting noticeably weaker rewrites.',
+    'Sonnet 5.5 as the balanced choice, then verify latency and rewrite quality with a small eval before committing.',
+    'Randomly rotate between the three models to average out quality.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Tác vụ viết lại cần chất lượng ngôn ngữ tốt hơn phân loại nhưng không cần suy luận chuyên sâu; Sonnet 5.5 là mức cân bằng giữa chất lượng, giá ($2 / $10 mỗi MTok) và độ trễ. Điều quan trọng là kiểm chứng: chạy một eval nhỏ (ví dụ 100 đoạn đại diện) để đo chất lượng và p95 latency trước khi chốt.
+
+### Vì sao các phương án còn lại sai
+- **Fable 5.2 bất chấp độ trễ:** model mạnh nhất thường chậm hơn; với 5000 request/ngày và yêu cầu dưới hai giây, việc vượt target làm hỏng trải nghiệm dù văn bản hay hơn.
+- **Haiku 5.5 chấp nhận chất lượng kém hơn rõ rệt:** tiết kiệm chi phí nhưng nếu người dùng phải viết lại, chi phí ẩn (họ bỏ dùng, khiếu nại) lớn hơn tiền tiết kiệm.
+- **Xoay vòng ngẫu nhiên giữa các model:** cùng một tính năng cho ra văn phong khác nhau mỗi lần, người dùng mất niềm tin và bạn không thể quy trách nhiệm khi có lỗi.
+
+> Mẹo senior: hãy đo cả p50 và p95, không chỉ trung bình; latency trung bình 1.2 giây vẫn có thể có 10% request trên 4 giây.`
+},
+{
+  id: 'qz-ccdv-216',
+  topic: 'claude',
+  multi: true,
+  q: '[Model Selection] A company is migrating from an older Claude model to a newer one. Which statements about the migration are correct? (Choose 3)',
+  options: [
+    'The new model may reject sampling parameters such as temperature, top_p and top_k with HTTP 400, so remove them.',
+    'Prefilling the assistant reply may fail with HTTP 400 on newer models, so restructure the prompt or use thinking.',
+    'Behaviour, price and context limits can change, so re-run the eval suite and re-check cost per task.',
+    'The model ID never needs to change because Anthropic keeps old IDs working forever at the same price.'
+  ],
+  answer: [0, 1, 2],
+  explain: `**Đáp án đúng: phương án 1, 2 và 3.** Khi lên model mới: (1) các tham số lấy mẫu (temperature, top_p, top_k) thường bị từ chối bằng 400 unknown parameter; (2) prefill (gửi trước câu trả lời của assistant) cũng bị 400; (3) giá, context window và hành vi có thể khác, nên phải đo lại chất lượng và chi phí trên dữ liệu của bạn.
+
+### Vì sao các phương án còn lại sai
+- **ID cũ dùng mãi với cùng giá:** các phiên bản model có ngày sẽ bị retire theo thời gian; request tới ID đã retire trả 404, và giá có thể đã đổi từ trước đó.
+
+> Mẹo senior: thêm một bước "smoke eval" vào pipeline CI: 20–30 case tiêu biểu chạy trên model mới, so với ngưỡng chất lượng đã chốt. Deploy model mới mà không có bước này là cách nhanh nhất để phát hiện hồi quy... từ người dùng.`
+},
+{
+  id: 'qz-ccdv-217',
+  topic: 'claude',
+  q: '[Model Selection] A research assistant must read a 400-page PDF and answer questions that require comparing tables on page 30 and page 250. The team is deciding how to configure the request. Which approach is most appropriate?',
+  options: [
+    'Send the PDF as base64 with media_type application/pdf and put the shared document prefix under cache_control so repeated questions reuse it.',
+    'Convert only page 1 to text and hope the model infers the rest.',
+    'Send a public URL of the PDF because Claude downloads documents from URLs itself.',
+    'Split the PDF into 400 single-page requests and ask the model to remember all pages.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Documents (PDF) được gửi dạng base64 trong source.data với media_type application/pdf; mô hình xử lý từng trang. Vì tài liệu dùng chung cho nhiều câu hỏi, hãy đặt nó làm tiền tố và gắn cache_control kiểu ephemeral để các lượt sau đọc từ cache với giá cache_read_input_tokens rẻ hơn.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ gửi trang 1:** phần còn lại không tồn tại trong ngữ cảnh, câu hỏi so sánh trang 30 và 250 không thể trả lời đúng.
+- **Gửi URL công khai:** Messages API không tự tải tài liệu từ URL; phải gửi dữ liệu nhị phân base64.
+- **400 request một trang:** mỗi request độc lập, không có bộ nhớ chung; đồng thời 400 lần gửi làm chi phí và độ trễ tăng vọt, và việc "nhớ" 400 trang là bất khả thi.
+
+> Mẹo senior: với tài liệu lớn dùng nhiều lần, hãy đo tỉ lệ cache hit; nếu câu hỏi luôn đến sau nhiều phút im lặng, TTL khoảng 5 phút sẽ làm cache liên tục bị tạo lại.`
+},
+{
+  id: 'qz-ccdv-218',
+  topic: 'claude',
+  q: '[Model Selection] An architect must pick a model for a nightly batch that classifies 2 million documents, with results needed by 8 AM and no user waiting. Which choice and API feature combination is best?',
+  options: [
+    'Fable 5.2 with streaming, because streaming makes batch work finish faster.',
+    'Haiku 5.5 or Sonnet 5.5 through the Message Batches API, which costs about 50% less and completes within about 24 hours.',
+    'Opus 5.5 through the standard Messages API with maximum concurrency, because batch has no rate limits.',
+    'Any model through the standard Messages API, because there is no price difference for large volumes.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Batch API (Message Batches) được thiết kế cho khối lượng lớn, không cần kết quả tức thì: giá thấp hơn khoảng 50% so với Messages API tiêu chuẩn và hoàn tất trong khoảng 24 giờ. Với 2 triệu tài liệu phân loại, chọn model rẻ (Haiku 5.5) hoặc trung bình (Sonnet 5.5) tuỳ yêu cầu chất lượng.
+
+### Vì sao các phương án còn lại sai
+- **Fable 5.2 + streaming:** streaming chỉ là cách nhận kết quả theo mảnh cho tương tác thời gian thực; nó không làm batch nhanh hơn và không giảm giá.
+- **Opus 5.5 + "batch không có rate limit":** batch vẫn chịu giới hạn tốc độ của tài khoản, và dùng model đắt nhất cho phân loại là lãng phí.
+- **Không có khác biệt giá theo khối lượng:** Messages API tính theo token với giá niêm yết; batch mới là cơ chế giảm giá.
+
+> Mẹo senior: chia batch theo model: dùng Haiku cho phần văn bản ngắn, rõ ràng; chỉ đưa phần khó (bảng, chữ viết tay) sang Sonnet. Cách này thường giảm 30–50% chi phí mà chất lượng tổng không đổi.`
+},
+{
+  id: 'qz-ccdv-219',
+  topic: 'claude',
+  q: '[Prompt] A support team keeps editing a 2000-word system prompt to fix small mistakes, and prompt-cache hit rate keeps dropping. The same prompt is sent on every request. What is the most likely cause and the best fix?',
+  options: [
+    'Any edit to the prompt changes the cached prefix, so the cache is invalidated; move stable instructions into a versioned block, keep volatile text out of the prefix, and only change the prefix when you intend to.',
+    'Prompt caching cannot be used with system prompts at all.',
+    'The cache is invalidated by the user message, so remove the user message.',
+    'The cache expires after one request, so caching is useless for chat.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Prompt cache (ephemeral) khoá theo nội dung của tiền tố: chỉ cần một ký tự trong phần được cache thay đổi là toàn bộ tiền tố phía sau bị coi là mới và phải tạo lại (cache_creation_input_tokens). Nếu nhóm liên tục sửa câu chữ trong system prompt, mỗi lần sửa là một lần mất cache. Cách xử lý: tách phần ổn định (role, quy tắc, tài liệu) thành một khối có version, giữ phần hay thay đổi (ví dụ tên người dùng, thời gian) ra ngoài tiền tố cache, và chỉ đổi prefix khi thực sự muốn.
+
+### Vì sao các phương án còn lại sai
+- **Cache không dùng được cho system prompt:** cache hoạt động cho system prompt cũng như documents và messages; đây là nơi dùng phổ biến nhất.
+- **User message làm mất cache:** chính user message thay đổi mỗi lượt là điều bình thường; cache chỉ cần tiền tố đứng trước nó không đổi.
+- **Cache hết hạn sau một request:** TTL khoảng 5 phút không hoạt động, không phải một request; nếu bạn gửi liên tục thì cache vẫn sống.
+
+> Mẹo senior: hãy coi system prompt như code: có version, có changelog. Sửa "một chữ" trong prefix cũng giống như đổi khoá cache — hãy làm có chủ đích.`
+},
+{
+  id: 'qz-ccdv-220',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] A team builds a RAG assistant over an internal wiki. Which design choices reduce prompt injection risk from wiki content and user queries? (Choose 2)',
+  options: [
+    'Place retrieved wiki passages in clearly delimited blocks (for example XML tags) and label them as data, not instructions.',
+    'Keep the user query in a separate user message after the system prompt and the retrieved documents.',
+    'Tell the system prompt to ignore any instructions found in documents, and consider that sufficient protection.',
+    'Concatenate the user query and the top wiki passage into one system prompt string to save tokens.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Đặt tài liệu truy hồi trong khối có ranh giới rõ ràng (thẻ XML) và nói rõ đây là dữ liệu tham khảo, không phải chỉ thị. (2) Giữ câu hỏi của người dùng ở user message riêng, sau system prompt và tài liệu, để mô hình phân biệt "luật hệ thống" với "dữ liệu cần xử lý".
+
+### Vì sao các phương án còn lại sai
+- **Chỉ nhắc "hãy bỏ qua hướng dẫn trong tài liệu":** đây là biện pháp mềm, không có ranh giới kỹ thuật; tài liệu độc hại vẫn có thể thuyết phục mô hình làm theo.
+- **Ghép tất cả vào system prompt:** khi mọi thứ nằm trong system prompt, mô hình không còn cách phân biệt chỉ thị của bạn với nội dung không tin cậy; đây là mẫu lỗi nguy hiểm nhất.
+
+> Mẹo senior: ngoài ranh giới, hãy giới hạn tool theo ngữ cảnh: nếu tài liệu đến từ wiki, tool ghi/xoá không nên nằm trong cùng request. Phòng thủ theo lớp (defense in depth) quan trọng hơn một câu nhắc nhở suông.
+`},
+{
+  id: 'qz-ccdv-221',
+  topic: 'claude',
+  q: '[Prompt] A product team wants Claude to always answer in this exact shape: a one-line verdict, then three bullet reasons, then a "Next step" line. They tried repeating the format in every user message and it drifts. What is the most reliable approach?',
+  options: [
+    'Repeat the format instruction at the end of every user message with increasing emphasis.',
+    'Put the format specification and one worked example in the system prompt, and validate the shape in your application.',
+    'Ask Claude to "be consistent" in the system prompt without showing an example.',
+    'Raise temperature so the model explores more formats and picks the best one.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** System prompt là nơi đặt luật ổn định; kèm một ví dụ mẫu (few-shot) giúp mô hình bám đúng cấu trúc. Vì đầu ra vẫn có thể lệch, hãy kiểm tra hình dạng ở tầng ứng dụng (có đủ 3 bullet không, có dòng Next step không) và trả lỗi để thử lại — đây là nguyên tắc defense in depth.
+
+### Vì sao các phương án còn lại sai
+- **Nhấn mạnh ngày càng nhiều trong user message:** lặp lại làm loãng ngữ cảnh và mô hình vẫn trôi; không có ranh giới cứng.
+- **Chỉ nói "hãy nhất quán" mà không có ví dụ:** yêu cầu mơ hồ, mô hình không biết chính xác hình dạng nào là đúng.
+- **Tăng temperature:** ngẫu nhiên hơn không làm định dạng ổn định hơn; thường còn làm trôi nhiều hơn.
+
+> Mẹo senior: nếu cần JSON đúng schema tuyệt đối, dùng structured output (json_schema) hoặc tool có input_schema; nếu chỉ cần hình dạng văn bản, ví dụ trong system prompt cộng validate là đủ.`
+},
+{
+  id: 'qz-ccdv-222',
+  topic: 'claude',
+  q: '[Prompt] A legal assistant answers questions about a 120-page contract. Users complain that answers are confident but sometimes cite clauses that do not exist. Which prompt design change most directly reduces fabricated citations?',
+  options: [
+    'Ask Claude to "be accurate" and to "never invent clauses".',
+    'Provide the contract text in context, enable citations, and instruct the model to answer only from the provided text and to say when the text does not cover the question.',
+    'Increase max_tokens so the model has more room to find the right clause.',
+    'Switch to the most expensive model, which does not fabricate citations.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Ba yếu tố cộng lại: (1) tài liệu có trong ngữ cảnh để mô hình có nguồn thật; (2) bật citations để mỗi khẳng định gắn với đoạn nguồn kiểm tra được; (3) cho phép mô hình nói "tài liệu không đề cập" — đây là "lối thoát" (escape hatch) quan trọng nhất để giảm bịa đặt.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ dặn "hãy chính xác":** không cho mô hình nguồn để bám vào và không cho phép từ chối; mô hình vẫn có thể tự tin bịa.
+- **Tăng max_tokens:** max_tokens chỉ là trần độ dài đầu ra, không thêm thông tin; bịa đặt không phải do thiếu chỗ.
+- **Model đắt nhất không bịa:** mọi mô hình đều có thể tạo trích dẫn sai; model mạnh hơn giảm nhẹ nhưng không loại bỏ, và không thay thế được việc có nguồn + trích dẫn.
+
+> Mẹo senior: hãy hiển thị trích dẫn cho người dùng kèm số trang; khi họ tự kiểm tra được, sai sót bị phát hiện sớm thay vì lan ra.`
+},
+{
+  id: 'qz-ccdv-223',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] Which statements about few-shot examples in the system prompt are correct? (Choose 2)',
+  options: [
+    'Examples placed in the system prompt before the cached prefix can be reused from cache on later requests.',
+    'Examples should be representative of real inputs and ordered from simple to complex.',
+    'More examples are always better, even if they are irrelevant to the task.',
+    'Examples must be placed at the very end of the user message to be effective.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Đặt ví dụ trong system prompt, trước tiền tố được cache, giúp chúng nằm trong phần dùng chung và được đọc lại từ cache ở các lượt sau. (2) Ví dụ nên đại diện cho đầu vào thật và sắp xếp từ đơn giản đến phức tạp để mô hình học được cả mẫu dễ và mẫu khó.
+
+### Vì sao các phương án còn lại sai
+- **Càng nhiều ví dụ càng tốt:** ví dụ không liên quan làm nhiễu và tốn token; chất lượng và độ phủ quan trọng hơn số lượng.
+- **Ví dụ phải ở cuối user message:** đặt ở đó thì mỗi lượt phải gửi lại, không được cache, và dễ bị che bởi nội dung mới.
+
+> Mẹo senior: giữ bộ ví dụ trong version control cùng prompt; khi thêm ví dụ mới, chạy lại eval để chắc chắn không làm hỏng các case cũ.`
+},
+{
+  id: 'qz-ccdv-224',
+  topic: 'claude',
+  q: '[Prompt] A team needs Claude to extract 12 fields from an invoice image and return JSON. They want the JSON to always match a fixed schema. Which configuration is the most robust?',
+  options: [
+    'Ask in the user message for JSON and parse whatever comes back.',
+    'Use structured output with a JSON Schema (Draft 2020-12) describing the 12 fields, and still validate business rules in application code.',
+    'Use a tool with no input_schema and hope Claude returns JSON.',
+    'Set temperature to 0 and rely on the model to produce valid JSON.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Structured output (output_format là json_schema) yêu cầu schema theo JSON Schema Draft 2020-12 và bảo đảm đầu ra là JSON hợp lệ khớp schema. Nhưng schema chỉ diễn tả cấu trúc và kiểu, không diễn tả được ràng buộc nghiệp vụ (ví dụ "tổng tiền phải bằng tổng các dòng"), nên vẫn phải validate ở tầng ứng dụng.
+
+### Vì sao các phương án còn lại sai
+- **Nhờ bằng lời và parse kết quả:** mô hình có thể thêm chữ dẫn nhập hoặc markdown; parser của bạn sẽ vỡ.
+- **Tool không có input_schema:** không có ràng buộc cấu trúc, Claude có thể truyền tham số tuỳ ý.
+- **temperature 0:** chỉ giảm ngẫu nhiên, không tạo ra bảo đảm cấu trúc; JSON vẫn có thể thiếu trường hoặc sai kiểu.
+
+> Mẹo senior: hãy log cả JSON thô và lỗi validate; nếu tỉ lệ lỗi schema cao, thường là do schema quá phức tạp hoặc thiếu mô tả cho từng trường.`
+},
+{
+  id: 'qz-ccdv-225',
+  topic: 'claude',
+  q: '[Prompt] A chatbot must answer in Vietnamese or English matching the user language, but the system prompt and product name must stay in English. Users report the bot sometimes translates the product name. Which prompt approach best prevents this?',
+  options: [
+    'Write the whole system prompt in both languages and hope the model picks correctly.',
+    'State the rule explicitly: reply in the language of the user message, keep the product name and code identifiers exactly as written, and give one short example of each language.',
+    'Remove the language rule and let the model decide every time.',
+    'Always answer in English to avoid mistakes.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Luật rõ ràng ("trả lời theo ngôn ngữ của tin nhắn người dùng; giữ nguyên tên sản phẩm và định danh code") cộng một ví dụ ngắn cho mỗi ngôn ngữ giúp mô hình hiểu cả hai ngoại lệ. Đây là dạng yêu cầu dễ trôi, nên ví dụ cụ thể quan trọng hơn câu chữ chung chung.
+
+### Vì sao các phương án còn lại sai
+- **Viết system prompt song ngữ:** không nói rõ luật nào áp dụng khi nào; mô hình có thể trộn ngôn ngữ.
+- **Bỏ luật ngôn ngữ:** hành vi trở nên ngẫu nhiên theo từng lượt.
+- **Luôn trả lời tiếng Anh:** vi phạm yêu cầu sản phẩm với người dùng không nói tiếng Anh.
+
+> Mẹo senior: đưa các "thuật ngữ không được dịch" vào một danh sách ngắn trong system prompt; danh sách tường minh dễ kiểm tra hơn mô tả khái niệm.`
+},
+{
+  id: 'qz-ccdv-226',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] Which statements about putting dynamic per-user data into the prompt are correct? (Choose 2)',
+  options: [
+    'Dynamic data such as the user name or account tier should be kept out of the cached prefix so the shared prefix stays stable.',
+    'Untrusted user-supplied text should be delimited and treated as data, not as instructions.',
+    'Dynamic data must always go into the system prompt so the model can cache it.',
+    'Placing secrets in the system prompt is acceptable if the prompt is cached.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Cache khoá theo nội dung tiền tố: nếu bạn nhét dữ liệu thay đổi mỗi lượt vào prefix, cache liên tục bị tạo lại và bạn mất phần tiết kiệm. (2) Nội dung người dùng đưa lên là dữ liệu không tin cậy; hãy đặt trong ranh giới rõ ràng và yêu cầu mô hình xử lý như dữ liệu.
+
+### Vì sao các phương án còn lại sai
+- **Dữ liệu động phải nằm trong system prompt để cache:** ngược lại — dữ liệu động phá cache; hãy để nó ở phần đuôi request.
+- **Được phép đặt secret trong system prompt nếu có cache:** không bao giờ; system prompt không phải nơi lưu bí mật và không có cơ chế nào bảo đảm nó không bị lộ.
+
+> Mẹo senior: hãy vẽ "bản đồ prefix" cho request của bạn: phần nào cố định (cache), phần nào thay đổi mỗi lượt (ngoài cache).`
+},
+
+
+
+
+
+
+{
+  id: 'qz-ccdv-233',
+  topic: 'claude',
+  q: '[Eval] A team ships a Claude support assistant and wants to know whether a prompt change made it better or worse. They have 300 real conversations with human-written ideal answers. Which evaluation design is most sound?',
+  options: [
+    'Eyeball ten conversations after the change and decide from impression.',
+    'Score the old and new prompt on the same 300 cases with a rubric, ideally with an LLM judge calibrated against the human answers, and compare pass rates plus cost and latency.',
+    'Ask the loudest customer whether the answers feel better.',
+    'Compare only the average response length, because shorter answers are better.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Đây là so sánh có kiểm soát (A/B trên cùng tập dữ liệu): cùng 300 case, cùng rubric, chấm cả hai phiên bản rồi so tỉ lệ đạt. Vì chấm tay 300 case mỗi lần là không khả thi, dùng LLM-as-a-judge nhưng phải hiệu chỉnh (calibrate) judge đó với chính câu trả lời mẫu do người viết, để biết judge có khớp với đánh giá của người hay không. Ngoài chất lượng, phải xem thêm chi phí và độ trễ: một prompt tốt hơn 2% nhưng chậm gấp ba lần có thể không đáng.
+
+### Vì sao các phương án còn lại sai
+- **Nhìn 10 hội thoại rồi kết luận:** mẫu quá nhỏ và thiên lệch; 10 case không phân biệt được chênh lệch 2–3%.
+- **Hỏi khách hàng to tiếng nhất:** phản hồi của một người không đại diện cho 300 case; thường chỉ phản ánh một trải nghiệm cá biệt.
+- **Chỉ so độ dài câu trả lời:** ngắn không đồng nghĩa với đúng; đây là proxy (đại lượng thay thế) dễ bị tối ưu giả tạo.
+
+> Mẹo senior: hãy chốt rubric và tập test TRƯỚC khi sửa prompt. Nếu bạn viết rubric sau khi thấy kết quả, bạn sẽ vô thức chọn rubric làm mình trông tốt hơn.`
+},
+{
+  id: 'qz-ccdv-234',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval] An agent books business trips: it can search flights, check the travel policy, and create a booking. Which evaluation practices give a trustworthy picture of quality? (Choose 2)',
+  options: [
+    'Measure only whether the final confirmation text looks polite.',
+    'Measure task success on a held-out set, tool-call correctness (right tool, right arguments), and cost per completed task.',
+    'Run each test case once because the agent is deterministic.',
+    'Check that the agent respected the policy, for example by refusing a business-class fare that policy forbids.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 4.** (2) Đo trên tập held-out (không dùng khi tinh chỉnh) với ba trục: hoàn thành task, gọi tool đúng (tên và tham số), và chi phí cho mỗi task thành công. (4) Với agent có rủi ro, phải có case kiểm tra ràng buộc: agent có từ chối đặt vé hạng thương gia khi policy cấm không — đây là tiêu chí an toàn nghiệp vụ, không chỉ là trả lời hay.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ đo văn phong câu xác nhận:** lịch sự không đồng nghĩa với đúng; agent có thể xác nhận một booking sai luật.
+- **Chạy mỗi case một lần:** agent dùng sampling nên không deterministic; một lần chạy không cho biết tỉ lệ thành công thật.
+
+> Mẹo senior: tách metric "task success" và "policy violation rate"; gộp chung sẽ che mất các vi phạm hiếm nhưng nghiêm trọng.`
+},
+{
+  id: 'qz-ccdv-235',
+  topic: 'claude',
+  q: '[Eval] A team uses an LLM judge to score 5000 answers, but the judge gives 20% higher scores than the human panel. What is the most appropriate response?',
+  options: [
+    'Trust the judge because it is a model too and is faster.',
+    'Investigate the disagreement: review a sample of mismatched cases, refine the judge prompt or rubric, and re-calibrate until the judge agrees with humans within an acceptable margin; report both numbers meanwhile.',
+    'Drop human review entirely to save money.',
+    'Average the judge score and the human score without investigating.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Chênh lệch 20% là dấu hiệu judge có bias (thiên lệch) — ví dụ judge thường cho điểm cao hơn với câu dài, tự tin. Cách xử lý: đọc một mẫu các case lệch để hiểu judge sai theo hướng nào, sửa rubric hoặc prompt của judge (thêm ví dụ, yêu cầu dẫn chứng), rồi đo lại độ khớp trên tập hiệu chỉnh. Trong lúc chưa tin cậy, vẫn báo cáo cả hai con số và ghi rõ độ lệch.
+
+### Vì sao các phương án còn lại sai
+- **Tin judge vì nhanh:** tốc độ không tạo ra độ chính xác; judge lệch 20% sẽ làm mọi so sánh phiên bản sai lệch theo cùng một hướng.
+- **Bỏ review của người:** mất mốc chuẩn (ground truth) duy nhất; không còn cách biết judge đúng hay sai.
+- **Lấy trung bình mà không điều tra:** che giấu vấn đề; con số trung bình không có ý nghĩa thống kê và vẫn sai.
+
+> Mẹo senior: theo dõi "agreement rate" giữa judge và người theo thời gian; nếu giảm sau khi đổi rubric, đó là hồi quy của chính hệ eval.`
+},
+{
+  id: 'qz-ccdv-236',
+  topic: 'claude',
+  q: '[Eval] A RAG assistant answers HR policy questions. The team sees a 12% answer-error rate in production but the offline eval says 2%. What is the most likely explanation and first step?',
+  options: [
+    'The offline eval set is unrepresentative or too easy (distribution shift); inspect real failing traffic, add those cases to the eval set, and re-measure.',
+    'The model got worse over time on its own.',
+    'The production users are asking wrong questions.',
+    'The eval harness is always right, so ignore production data.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Chênh lệch lớn giữa offline và production gần như luôn là vấn đề phân phối (distribution shift): tập eval của bạn không giống câu hỏi thật (dài hơn, nhiều viết tắt, hỏi về chính sách mới). Bước đầu tiên: lấy mẫu các hội thoại thất bại thật, phân loại nguyên nhân, thêm chúng vào tập eval rồi đo lại — lúc đó bạn mới biết cần sửa prompt, tài liệu hay model.
+
+### Vì sao các phương án còn lại sai
+- **Model tự xấu đi:** model không tự đổi; nếu bạn dùng alias "latest" thì có thể có point release mới, nhưng đó là giả thuyết phải kiểm chứng chứ không phải kết luận mặc định.
+- **Người dùng hỏi sai:** nếu người dùng thật hỏi theo cách đó, hệ thống phải xử lý được; đây chính là dữ liệu cần có trong eval.
+- **Harness luôn đúng:** harness chỉ đúng với dữ liệu bạn đưa vào; nó không biết gì về câu hỏi ngoài tập eval.
+
+> Mẹo senior: đặt một kênh thu hồi case lỗi từ production (ẩn danh, che PII) và đưa vào eval mỗi tuần; đây là cách nhanh nhất để eval bám sát thực tế.`
+},
+{
+  id: 'qz-ccdv-237',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] Which statements about giving an agent access to many tools are correct? (Choose 2)',
+  options: [
+    'A tool router that selects a small relevant subset per request usually beats sending every tool every time.',
+    'Grouping tools by domain behind separate MCP servers lets you load only the group the task needs.',
+    'Sending 200 tools at once improves accuracy because the model has more options.',
+    'Tool descriptions should be removed to save tokens.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Router lọc theo ý định giúp giảm nhầm lẫn và tiết kiệm token. (2) Nhóm tool theo miền trên các MCP server riêng cho phép nạp đúng nhóm cần dùng.
+
+### Vì sao các phương án còn lại sai
+- **200 tool cùng lúc:** tăng nhập nhằng và chi phí; tỉ lệ chọn đúng thường giảm.
+- **Bỏ mô tả tool:** mô tả là thứ giúp mô hình biết khi nào dùng tool nào; bỏ đi làm chọn sai nhiều hơn.
+
+> Mẹo senior: đo "tool selection accuracy" theo từng nhóm; nhóm nào chọn sai nhiều thì viết lại mô tả hoặc tách nhỏ hơn.`
+},
+{
+  id: 'qz-ccdv-238',
+  topic: 'claude',
+  q: '[Agents] A Claude agent is asked to close the sprint: it must move tasks, post a summary, and notify the team. It has tools for each step but sometimes stops after the first tool call. Which change most improves completion?',
+  options: [
+    'Increase max_tokens so the model has more room.',
+    'Give a clear end condition in the system prompt (for example: continue until the summary is posted and the team is notified, then stop), and keep the loop running while stop_reason is tool_use.',
+    'Remove two of the three tools so the task is smaller.',
+    'Set temperature to 1 so the model explores more.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Agent dừng sớm thường vì thiếu điều kiện kết thúc rõ ràng. Hãy nêu rõ thế nào là xong và để vòng lặp tiếp tục khi còn tool_use: cứ thực thi tool, gửi tool_result, gọi lại cho đến khi stop_reason là end_turn (không còn tool_use).
+
+### Vì sao các phương án còn lại sai
+- **Tăng max_tokens:** vấn đề không phải trần token mà là luật dừng; nếu mô hình chủ động dừng, thêm token không giúp.
+- **Bỏ tool:** task không hoàn thành được vì thiếu bước.
+- **temperature 1:** tăng ngẫu nhiên, không tạo thêm tính kiên trì.
+
+> Mẹo senior: viết "definition of done" cho mỗi agent ngay trong system prompt, dạng danh sách kiểm tra; đồng thời log số lượt tool để phát hiện agent dừng sớm.`
+},
+{
+  id: 'qz-ccdv-239',
+  topic: 'claude',
+  multi: true,
+  q: '[Agents] Which statements about agent loops and stop conditions are correct? (Choose 2)',
+  options: [
+    'The loop should continue while the response contains tool_use blocks and stop when stop_reason is end_turn.',
+    'A hard cap on the number of turns is a sensible guard against runaway loops.',
+    'The loop should stop after exactly one tool call to save tokens.',
+    'stop_reason pause_turn means the task failed and the agent must restart.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Điều kiện dừng tự nhiên: hết tool_use và stop_reason là end_turn. (2) Luôn có trần số lượt (ví dụ 15) và trần token hoặc chi phí để tránh vòng lặp vô hạn khi mô hình cứ gọi tool lặp lại.
+
+### Vì sao các phương án còn lại sai
+- **Dừng sau đúng một tool call:** nhiều task cần nhiều bước; dừng sớm làm task dở dang.
+- **pause_turn là thất bại:** pause_turn nghĩa là lượt hiện tại tạm dừng (thường do hết ngân sách token hoặc thời gian) và bạn tiếp tục bằng request mới, không phải khởi động lại.
+
+> Mẹo senior: khi chạm trần số lượt, hãy trả về một tool_result nêu rõ "đã đạt giới hạn" để mô hình tổng kết những gì đã làm, thay vì im lặng cắt ngang.`
+},
+{
+  id: 'qz-ccdv-240',
+  topic: 'claude',
+  q: '[Agents] A research agent reads 40 documents and then must write a report. Halfway through, the context is nearly full and the model starts forgetting the first documents. Which strategy is best?',
+  options: [
+    'Increase max_tokens to the model maximum.',
+    'Summarise earlier documents into a compact notes block, replace the raw documents with that summary, and keep the most relevant sources verbatim for citation.',
+    'Restart the agent and hope it reads faster this time.',
+    'Switch to a larger-context model and keep everything.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Đây là context compaction (nén ngữ cảnh): nén các tài liệu đã đọc thành ghi chú có cấu trúc (ý chính, số liệu, nguồn), thay thế phần thô bằng ghi chú, và giữ lại nguyên văn những nguồn sẽ trích dẫn. Cách này giữ được thông tin quan trọng mà không tràn context.
+
+### Vì sao các phương án còn lại sai
+- **Tăng max_tokens:** max_tokens là trần đầu ra, không mở rộng context; input vẫn bị cắt.
+- **Khởi động lại:** mất toàn bộ công việc đã làm và có thể lặp lại đúng chỗ tràn.
+- **Đổi sang model context lớn hơn:** chỉ trì hoãn vấn đề, tốn kém hơn, và với 40 tài liệu thì sớm muộn cũng đầy.
+
+> Mẹo senior: chuẩn hoá "ghi chú nghiên cứu" (claim, evidence, source) ngay từ đầu; việc tóm tắt về sau sẽ rẻ và chính xác hơn nhiều.`
+},
+{
+  id: 'qz-ccdv-241',
+  topic: 'claude',
+  q: '[Agents] A coding agent must edit three files, run tests, and fix failures. It has a budget of 20 tool calls. It often hits the cap with the task unfinished. What is the best first move?',
+  options: [
+    'Raise the cap to 200 and hope it finishes.',
+    'Analyse the trace to find repeated or low-value calls, then tighten the plan (fewer steps, better tool descriptions, or a router) before raising the cap.',
+    'Remove the cap entirely; budgets are harmful.',
+    'Switch to the cheapest model so each call costs less.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Chạm trần ngân sách là tín hiệu có vòng lặp lặp hoặc bước không cần thiết. Trước khi tăng ngân sách, hãy đọc trace: tool nào bị gọi lại nhiều lần, bước nào không tạo thêm thông tin. Sau đó giảm số bước, làm rõ mô tả tool, hoặc lọc tool bằng router.
+
+### Vì sao các phương án còn lại sai
+- **Nâng trần lên 200:** nếu nguyên nhân là lặp, bạn chỉ tốn gấp 10 lần mà vẫn không xong.
+- **Bỏ trần:** agent có thể chạy vô hạn, tốn tiền và không bao giờ trả lời.
+- **Dùng model rẻ nhất:** chi phí mỗi call giảm nhưng số call không giảm; vấn đề là số bước.
+
+> Mẹo senior: log "tool call histogram" theo tên tool và tham số; lặp cùng tham số 3 lần là dấu hiệu kết quả tool trước không thỏa mãn mô hình.`
+},
+{
+  id: 'qz-ccdv-227',
+  topic: 'claude',
+  q: '[Tools] A team defines a tool "get_invoice" whose input_schema marks invoice_id as required, and adds a description: "Invoice id, e.g. INV-2024-1". Claude sometimes sends an empty string. Which change best improves argument quality?',
+  options: [
+    'Remove the required list so Claude can omit the field.',
+    'Use a clear name and description, type invoice_id as string, keep it required, enable strict schema if available, and validate on the client returning is_error when invalid.',
+    'Add the example into the field name so Claude sees it more clearly.',
+    'Set tool_choice to none so Claude cannot call the tool incorrectly.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Chất lượng tham số đến từ: tên rõ ràng, mô tả ngắn có ý nghĩa, kiểu dữ liệu đúng trong input_schema, chỉ đánh dấu required cho trường thật sự bắt buộc, strict schema (nếu dùng) để chống thuộc tính thừa, và validate phía client — nếu sai thì trả tool_result với is_error: true kèm mô tả lỗi để Claude tự sửa.
+
+### Vì sao các phương án còn lại sai
+- **Bỏ required:** Claude có thể bỏ trống trường, và bạn vẫn phải xử lý invoice_id thiếu; không giải quyết gốc.
+- **Nhét ví dụ vào tên trường:** tên trường dài, khó đọc và không chuẩn; ví dụ nên nằm trong description.
+- **tool_choice none:** tắt hoàn toàn khả năng gọi tool, làm mất chức năng thay vì cải thiện tham số.
+
+> Mẹo senior: log các lần is_error theo tên trường; nếu một trường liên tục sai, hãy viết lại description của trường đó thay vì tăng temperature hay đổi model.`
+},
+{
+  id: 'qz-ccdv-228',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] A tool returns a 120 KB JSON payload that Claude must use in the next turn. Which practices keep the agent reliable? (Choose 2)',
+  options: [
+    'Trim or summarise the payload before sending it back, keeping only fields the task needs.',
+    'Send the full raw payload every time regardless of context size, because more data is always better.',
+    'Watch the context window: very long tool results can push earlier content out and cause truncation.',
+    'Split one tool_use into several tool_result blocks so each part is smaller.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) Chỉ gửi lại phần dữ liệu cần thiết (ví dụ 10 dòng đầu, các trường liên quan) để tiết kiệm token và giữ tín hiệu rõ ràng. (3) Theo dõi context window: tool_result quá lớn chiếm chỗ của system prompt và các lượt trước, dẫn tới cắt bớt ngữ cảnh và trả lời thiếu thông tin.
+
+### Vì sao các phương án còn lại sai
+- **Gửi toàn bộ payload thô mỗi lượt:** tốn token, làm loãng prompt và đẩy nhanh việc tràn context.
+- **Tách một tool_use thành nhiều tool_result:** mỗi tool_use chỉ ứng với một tool_result; nhiều tool_result cho cùng id không hợp lệ.
+
+> Mẹo senior: đặt ngân sách token cho mỗi tool_result (ví dụ 2000 token) và ghi rõ trong mô tả tool: "trả về tối đa N bản ghi".`
+},
+{
+  id: 'qz-ccdv-229',
+  topic: 'claude',
+  q: '[Tools] A coding agent must run tests after each edit. The test tool takes 4 minutes. The Messages API call blocks while the tool runs and often times out. What is the best pattern?',
+  options: [
+    'Increase the HTTP client timeout to 10 minutes and hope the Messages API waits too.',
+    'Run the tool asynchronously: start the test run, return an immediate tool_result saying it is running, then poll and send the real result in a later turn.',
+    'Remove the test tool so the agent never waits.',
+    'Ask the user to run the tests manually and paste the output.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Tool do bạn thực thi (client-side), nên đừng khoá request đang chờ. Mẫu bất đồng bộ: khởi động tiến trình test, trả về ngay một tool_result đánh dấu "đang chạy" (kèm id để theo dõi), hệ thống của bạn poll trạng thái, và khi xong thì gửi tool_result thật ở lượt sau. Agent tiếp tục làm việc khác trong lúc chờ.
+
+### Vì sao các phương án còn lại sai
+- **Tăng timeout HTTP client:** không giải quyết được giới hạn phía API; giữ kết nối mở 10 phút gây treo và tốn tài nguyên.
+- **Bỏ tool test:** mất vòng phản hồi cần thiết; agent không biết sửa của mình đúng hay sai.
+- **Nhờ người dùng chạy test tay:** phá vỡ tính tự động và không mở rộng được.
+
+> Mẹo senior: luôn có timeout và trạng thái thất bại rõ ràng cho job nền; nếu job treo, tool_result phải nói "timeout" để agent dừng chờ.`
+},
+{
+  id: 'qz-ccdv-230',
+  topic: 'claude',
+  q: '[Tools] A tool named "charge_card" performs an irreversible action. The team wants Claude to be able to prepare the charge but never execute it without a human. Which design is safest?',
+  options: [
+    'Describe the tool as "requires confirmation" and trust Claude to ask first.',
+    'Split it into "preview_charge" (read-only, returns the amount and customer) and "confirm_charge" (executes), and require human approval in your application between the two calls.',
+    'Set tool_choice to auto and hope Claude behaves.',
+    'Remove all confirmation and rely on the model safety training.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Với hành động bất đảo (irreversible), hãy tách thành bước xem trước (preview, chỉ đọc) và bước thực thi (confirm). Ứng dụng chặn ở giữa: hiển thị thông tin cho người dùng, chỉ khi họ bấm xác nhận thì mới gọi confirm_charge và gửi tool_result. Đây là human-in-the-loop ở tầng ứng dụng, không phụ thuộc vào việc mô hình có "nghe lời" hay không.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ mô tả "cần xác nhận":** mô tả là gợi ý mềm; mô hình có thể bỏ qua, và bạn không có chốt chặn thật.
+- **tool_choice auto:** không tạo ra bước duyệt người dùng; auto chỉ là để mô hình tự chọn.
+- **Bỏ xác nhận, dựa vào safety training:** safety training không thay thế được kiểm soát nghiệp vụ cho hành động tốn tiền.
+
+> Mẹo senior: mọi tool có tác động thật (hoàn tiền, gửi email, xoá dữ liệu) nên có một tool preview đi kèm; người dùng thấy trước, bạn log lại, và chỉ một đường duy nhất có thể thực thi.`
+},
+{
+  id: 'qz-ccdv-231',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] Which statements about tool descriptions and schemas are correct? (Choose 2)',
+  options: [
+    'A tool definition requires at least name and input_schema; description is strongly recommended.',
+    'Long, essay-style descriptions for every field improve Claude accuracy.',
+    'Clear, short descriptions plus typed properties and a minimal required list reduce malformed arguments.',
+    'Enum values should be hidden from the schema so Claude can be creative.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) name và input_schema là bắt buộc; description giúp mô hình chọn đúng thời điểm gọi. (3) Mô tả ngắn, kiểu dữ liệu rõ, chỉ required cho trường thật sự cần → ít lỗi tham số hơn.
+
+### Vì sao các phương án còn lại sai
+- **Mô tả dài cho mọi trường:** tốn token và làm loãng; mô tả nên ngắn, tập trung vào ý nghĩa và ràng buộc.
+- **Giấu giá trị enum:** khi enum có, hãy liệt kê; nếu không mô hình sẽ đoán và gửi giá trị ngoài danh sách.
+
+> Mẹo senior: viết description như viết docstring cho đồng nghiệp: nói rõ đơn vị, định dạng và ví dụ ngắn, không viết đoạn văn.`
+},
+{
+  id: 'qz-ccdv-232',
+  topic: 'claude',
+  q: '[Tools] A team exposes 40 tools in one request. Claude quality is mediocre and it often picks a plausible but wrong tool. Which change is most likely to help first?',
+  options: [
+    'Add all 40 tools again with longer descriptions.',
+    'Reduce the tool set per request to the handful relevant to the user intent (a tool router), or group tools behind MCP servers by domain.',
+    'Raise temperature to make Claude explore more tools.',
+    'Remove tool_choice so Claude is free to choose.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Nhiều tool làm tăng khả năng chọn nhầm và tốn token. Cách hiệu quả: lọc theo ý định (tool router) để mỗi request chỉ có vài tool liên quan, hoặc nhóm tool theo miền trên các MCP server và chỉ nạp nhóm cần thiết.
+
+### Vì sao các phương án còn lại sai
+- **Mô tả dài hơn cho cả 40 tool:** làm dài prompt thêm mà không giảm nhập nhằng giữa các tool.
+- **Tăng temperature:** ngẫu nhiên hơn không giúp chọn đúng; thường làm tệ hơn.
+- **Bỏ tool_choice:** không thay đổi tập tool quá lớn; vấn đề là số lượng lựa chọn.
+
+> Mẹo senior: hãy đo "tool selection accuracy" riêng với "task success"; đôi khi chọn đúng tool nhưng tham số sai, và ngược lại.`
+},
+{
+  id: 'qz-ccdv-242',
+  topic: 'claude',
+  q: '[Tools] A client tool "search_docs" sometimes returns 5000 results and blows the context. Claude then ignores the tool output. Which fix is best?',
+  options: [
+    'Ask Claude to be careful with large outputs.',
+    'Cap the result in the tool itself (for example top 10 with a total count), and document that cap in the tool description.',
+    'Return all results and increase max_tokens.',
+    'Split the results into many tool_result blocks with the same tool_use_id.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Giới hạn ngay trong tool: trả về top N kèm tổng số kết quả, và ghi rõ trong description để mô hình biết kết quả đã bị cắt và có thể gọi lại với bộ lọc. Đây là cách giữ ngữ cảnh sạch và hành vi dễ đoán.
+
+### Vì sao các phương án còn lại sai
+- **Nhờ mô hình cẩn thận:** không có cơ chế cưỡng chế; dữ liệu vẫn tràn vào ngữ cảnh.
+- **Trả hết và tăng max_tokens:** max_tokens là trần đầu ra, không mở rộng context; payload lớn vẫn đẩy nội dung khác ra.
+- **Nhiều tool_result cùng id:** không hợp lệ; mỗi tool_use chỉ có một tool_result.
+
+> Mẹo senior: luôn trả kèm "total" và "truncated: true" khi cắt; mô hình cần biết để quyết định có lọc tiếp hay không.`
+},
+{
+  id: 'qz-ccdv-244',
+  topic: 'claude',
+  q: '[Security] A startup stores its Anthropic API key in a public GitHub repository "because the repo is private". A contractor leaks the repo URL. What is the correct response and prevention?',
+  options: [
+    'Do nothing because the repository was private.',
+    'Revoke and rotate the key immediately, audit usage for abuse, move the key to a secrets manager or environment variables, and add a secret-scanning check to CI.',
+    'Rename the repository and keep the same key.',
+    'Add the key to .gitignore after the fact.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Khi key bị lộ, phải coi như đã compromised: thu hồi và quay vòng ngay, kiểm tra log sử dụng xem có request lạ, rồi đưa key vào secret manager (hoặc biến môi trường) và thêm quét secret vào CI để chặn tái diễn. "Private" không phải là bảo mật: một lần chia sẻ sai hoặc rò rỉ là mất key.
+
+### Vì sao các phương án còn lại sai
+- **Không làm gì vì repo private:** repo private vẫn có thể bị lộ; và key đã nằm trong lịch sử git.
+- **Đổi tên repo:** không vô hiệu hoá key; kẻ tấn công đã có key.
+- **Thêm vào .gitignore sau khi đã commit:** file vẫn còn trong lịch sử git; chỉ thu hồi key mới giải quyết được.
+
+> Mẹo senior: dùng hai lớp: secret manager cho lưu trữ, và quét pre-commit cộng CI (ví dụ phát hiện chuỗi dạng sk-ant-...) để chặn trước khi commit.`
+},
+{
+  id: 'qz-ccdv-245',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] A Claude feature sends user prompts to the API. Which practices reduce data-exposure risk? (Choose 2)',
+  options: [
+    'Apply data minimisation: redact or pseudonymise PII unless the task truly needs it.',
+    'Log full prompts and responses at INFO level in production for easier debugging.',
+    'Check contractual terms (data processing addendum, retention settings) and data residency before sending regulated data.',
+    'Encrypt the prompt with your own key before sending, since the API cannot read encrypted text but still works fine.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) Chỉ gửi dữ liệu cần thiết; che hoặc giả danh PII khi có thể. (3) Trước khi gửi dữ liệu có quy định (PCI, HIPAA, GDPR), kiểm tra điều khoản xử lý dữ liệu, thời gian lưu và vùng dữ liệu; dùng thoả thuận phù hợp (BAA hoặc DPA) nếu cần.
+
+### Vì sao các phương án còn lại sai
+- **Log đầy đủ prompt và response ở production:** log trở thành kho dữ liệu nhạy cảm thứ hai, thường bị bỏ quên trong kiểm soát truy cập.
+- **Tự mã hoá prompt:** API cần văn bản rõ để xử lý; mã hoá làm request vô nghĩa, không phải biện pháp bảo vệ.
+
+> Mẹo senior: đặt chính sách log rõ ràng: log metadata và id, không log nội dung; nếu cần debug, dùng chế độ redact có thời hạn.`
+},
+{
+  id: 'qz-ccdv-246',
+  topic: 'claude',
+  q: '[Security] An agent has tools read_file, write_file and run_shell. A prompt injection in a web page tells the agent to delete the repository. Which combination best limits the damage?',
+  options: [
+    'Trust the model safety training to refuse.',
+    'Run the agent in a sandboxed container with a restricted filesystem and no network, require human approval for write and shell actions, and scope credentials to least privilege.',
+    'Give the agent root access so it can finish the task faster.',
+    'Remove the system prompt so the injected instruction is the only instruction.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Ba lớp phòng thủ: (1) sandbox chặn thiệt hại lan ra ngoài; (2) human-in-the-loop cho hành động bất đảo; (3) least privilege cho credential (chỉ quyền đọc bucket cần thiết, không dùng tài khoản admin). Prompt injection không thể bị loại bỏ hoàn toàn, nên phải giới hạn phạm vi nổ (blast radius).
+
+### Vì sao các phương án còn lại sai
+- **Dựa vào safety training:** lớp này hữu ích nhưng không đủ trước injection có chủ đích.
+- **Root access:** một lệnh sai là mất cả máy; blast radius tối đa.
+- **Bỏ system prompt:** mất toàn bộ luật; injection càng dễ thành công.
+
+> Mẹo senior: hãy viết ra "hợp đồng thiệt hại tối đa": nếu agent bị chiếm hoàn toàn, kẻ tấn công làm được gì? Nếu câu trả lời là "mọi thứ", bạn chưa xong phần bảo mật.`
+},
+{
+  id: 'qz-ccdv-247',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] Which statements about using Claude with a single API key across many users are correct? (Choose 2)',
+  options: [
+    'Rate limits are applied per API key or organisation, so per-end-user fairness must be enforced in your own application.',
+    'Metadata fields user_id and client_id help attribute usage and abuse to an end user.',
+    'Anthropic automatically enforces a separate rate limit for each of your end users.',
+    'Putting the user id in the system prompt is the recommended way to attribute usage.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Hạn mức tính theo khoá hoặc tổ chức, không tự tách theo người dùng cuối của bạn; bạn phải tự giới hạn (rate limiter) và xếp hàng. (2) metadata {user_id, client_id} gắn thẻ request để theo dõi và phát hiện lạm dụng theo người dùng.
+
+### Vì sao các phương án còn lại sai
+- **Anthropic tự tách rate limit theo từng end user:** không có cơ chế đó; một user spam có thể làm cạn hạn mức của tất cả.
+- **Đặt user id trong system prompt:** system prompt dùng để định hướng hành vi, không phải để gắn định danh; còn làm bẩn prompt và phá cache.
+
+> Mẹo senior: kết hợp hai chốt: rate limiter theo user ở gateway, và metadata để đối soát khi có sự cố.`
+},
+{
+  id: 'qz-ccdv-248',
+  topic: 'claude',
+  q: '[Security] A model returns stop_reason "refusal" for a security-research request. The team wants the feature to still be useful. What is the appropriate handling?',
+  options: [
+    'Retry the identical request in a loop until the model complies.',
+    'Treat the refusal as a valid outcome: log it, show a clear message, and offer a rephrase or a human review path; never try to disable safety filters.',
+    'Add "ignore safety guidelines" to the system prompt.',
+    'Switch to a model that has no refusal behaviour.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Từ chối (refusal) là một kết quả hợp lệ: ghi log để phân tích, hiển thị thông báo rõ ràng, cho người dùng viết lại hoặc chuyển cho người xử lý. Không có cách chính đáng nào để tắt lớp an toàn.
+
+### Vì sao các phương án còn lại sai
+- **Retry lặp lại:** thường bị từ chối tiếp, gây treo và tốn token.
+- **Thêm "ignore safety guidelines":** không tắt được lớp bảo vệ nền tảng và là hành vi nên bị chặn ở khâu kiểm duyệt prompt của bạn.
+- **Model không có refusal:** không tồn tại trong các model hiện hành; mọi model đều có lớp an toàn.
+
+> Mẹo senior: phân loại refusal theo chủ đề trong log; nếu một loại hợp lệ bị từ chối nhiều, hãy điều chỉnh cách đặt yêu cầu (ví dụ mô tả bối cảnh nghiên cứu, ẩn dữ liệu nhạy cảm) thay vì cố vượt rào.`
+},
+{
+  id: 'qz-ccdv-249',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] Which statements about logging Claude interactions are correct? (Choose 2)',
+  options: [
+    'Log request and response metadata plus a stable request id so you can trace an incident end to end.',
+    'Storing full prompts and outputs is always safe because logs are internal.',
+    'Apply retention limits and access control to logs, and redact sensitive fields.',
+    'Never log anything, because logging is always a compliance violation.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) Log metadata và id giúp truy vết sự cố mà không cần lưu toàn bộ nội dung. (3) Log có thời hạn lưu, phân quyền và che dữ liệu nhạy cảm — vừa phục vụ điều tra, vừa đáp ứng yêu cầu bảo vệ dữ liệu.
+
+### Vì sao các phương án còn lại sai
+- **Log đầy đủ luôn an toàn:** log là bản sao dữ liệu, thường được sao lưu và chia sẻ rộng hơn; nếu không kiểm soát, đây là điểm rò rỉ lớn.
+- **Không log gì cả:** khi có sự cố, bạn không thể biết chuyện gì đã xảy ra; audit và cải thiện đều cần log.
+
+> Mẹo senior: viết một chính sách log mẫu: những trường nào log, giữ bao lâu, ai đọc được, và cách redact email hoặc số thẻ.`
+},
+{
+  id: 'qz-ccdv-250',
+  topic: 'claude',
+  q: '[Security] A prompt injection tells Claude to reveal the system prompt, and the model complies. The team is worried about leaked internal instructions. What is the most realistic conclusion?',
+  options: [
+    'There is no reliable way to guarantee the system prompt stays secret; treat it as potentially visible and keep secrets out of it.',
+    'Adding "do not reveal" to the system prompt fully prevents leakage.',
+    'A beta header encrypts the system prompt so it can never be read.',
+    'System prompts are never sent to the model, so they cannot leak.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Không có bảo đảm kỹ thuật tuyệt đối: prompt injection, hỏi trực tiếp hoặc kỹ thuật vòng vo đều có thể khiến mô hình tiết lộ. Vì vậy đừng đặt bí mật (khoá API, mật khẩu, logic giá nội bộ) vào system prompt; hãy coi nó như thông tin có thể bị đọc.
+
+### Vì sao các phương án còn lại sai
+- **Dặn "không được tiết lộ":** chỉ là gợi ý mềm, không phải ranh giới.
+- **Beta header mã hoá system prompt:** không tồn tại; system prompt vẫn là văn bản gửi cho mô hình.
+- **System prompt không gửi cho mô hình:** sai hoàn toàn; nó là một phần của request.
+
+> Mẹo senior: nếu cần bảo vệ logic nhạy cảm, đặt nó sau một tool hoặc service có kiểm soát truy cập, không đặt trong prompt.`
+},
+{
+  id: 'qz-ccdv-251',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] A healthcare app wants to use Claude to summarise clinical notes. Which safeguards are appropriate? (Choose 2)',
+  options: [
+    'De-identify notes (remove names, record numbers) before sending, keeping only what the summary needs.',
+    'Confirm a Business Associate Agreement or equivalent data processing terms are in place, and check data residency.',
+    'Send the notes as-is because the API is encrypted in transit.',
+    'Store the full notes inside the system prompt so they are cached and cheaper.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Giảm nhận dạng (de-identification) trước khi gửi là biện pháp giảm rủi ro mạnh nhất. (2) Với dữ liệu y tế, cần thoả thuận xử lý dữ liệu phù hợp (BAA hoặc DPA) và kiểm tra nơi dữ liệu được xử lý.
+
+### Vì sao các phương án còn lại sai
+- **Gửi nguyên bản vì có TLS:** TLS chỉ bảo vệ trên đường truyền, không giải quyết nghĩa vụ về lưu trữ và xử lý.
+- **Nhét notes vào system prompt để cache:** vừa vi phạm giảm thiểu dữ liệu, vừa đặt dữ liệu nhạy cảm vào phần được lưu đệm và dễ lộ.
+
+> Mẹo senior: viết quy trình "de-identify, gửi, log id" và kiểm tra định kỳ bằng mẫu; đừng dựa vào việc mô hình "sẽ không nhớ".`
 }
 );

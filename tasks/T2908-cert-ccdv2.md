@@ -1,6 +1,6 @@
 # T2908 — 40 câu luyện thi CCDV-F (exam id `claude`): tăng ngân hàng cho đề full
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/quiz-ccdv-1.js`
 
@@ -31,3 +31,10 @@ AGENTS.md mục "Câu trắc nghiệm" + mục 5 (không backtick, không ký hi
 Xong: `Status: DONE`, Notes ghi id + số câu theo domain.
 
 ## Notes
+- Thêm 40 câu `qz-ccdv-211` … `qz-ccdv-250` (id nối tiếp max cũ 210), giữ nguyên 210 câu cũ.
+- Phân bố theo domain (tag đầu `q`): Model Selection 8, Prompt 8, Tools 8, Security 8, Eval 4, Agents 4.
+- 14/40 câu `multi: true` (~35%) với "(Choose 2)" hoặc "(Choose 3)", answer mảng tăng dần; 26 câu còn lại 4 options answer 0..3 rải đều.
+- `q`/`options` tiếng Anh, tình huống 2–4 câu; `explain` tiếng Việt nêu vì sao đúng + vì sao từng phương án sai; không backtick, không `${`.
+- `node --check js/data/quiz-ccdv-1.js` → OK. `node scripts/validate.js` không báo lỗi nào cho `quiz-ccdv-1.js`.
+- Lưu ý: `node scripts/build-light-index.js` và `validate.js` đang fail vì file KHÁC (`js/data/quiz-cca-5.js` lỗi cú pháp + `quiz-cca-5.js.clean` không khai báo trong data-manifest) — ngoài phạm vi task này (không sở hữu), không tự sửa theo luật 3 AGENTS.md.
+Reviewed-by: kilo (T2908R)
