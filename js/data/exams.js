@@ -20,6 +20,15 @@ window.EXAMS = [
     count: 60, minutes: 120, passScore: 720,
   },
   {
+    id: 'ckad',
+    title: 'Certified Kubernetes Application Developer (CKAD)',
+    icon: '🚢',
+    desc: 'Phần lý thuyết tình huống CKAD (đề thật thi thực hành trên terminal, luyện thêm ở #/ckad). 5 domain CNCF theo trọng số, đậu 66%.',
+    topics: { devops: 1 },
+    domains: { 'Design & Build': 20, 'Deployment': 20, 'Observability': 15, 'Config & Security': 25, 'App Networking': 20 },
+    count: 40, minutes: 60, passPct: 66,
+  },
+  {
     id: 'claude',
     title: 'Chứng chỉ Claude (CCDV-F)',
     icon: '🤖',

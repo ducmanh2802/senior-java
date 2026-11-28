@@ -24,7 +24,7 @@
         'q-security.js', 'q-microservices.js', 'q-system-design.js', 'q-scenario.js', 'q-banking.js', 'q-aws.js', 'q-ai.js',
         'q-claude.js', 'q-primer.js', 'q-devops.js', 'q-soft.js', 'q-english.js', 'q-autotest.js', 'q-remote.js', 'q-frontend.js'],
       quiz: ['quiz.js', 'quiz-claude.js', 'quiz-java.js', 'quiz-spring.js', 'quiz-design.js', 'quiz-ops.js', 'quiz-gaps.js', 'quiz-autotest.js',
-        'quiz-cca-1.js', 'quiz-cca-2.js', 'quiz-cca-3.js', 'quiz-cca-4.js', 'quiz-cca-5.js', 'quiz-ccao-1.js', 'quiz-ccap-1.js', 'quiz-ccao-2.js', 'quiz-ccap-2.js', 'quiz-ccdv-1.js'],
+        'quiz-cca-1.js', 'quiz-cca-2.js', 'quiz-cca-3.js', 'quiz-cca-4.js', 'quiz-cca-5.js', 'quiz-ccao-1.js', 'quiz-ccap-1.js', 'quiz-ccao-2.js', 'quiz-ccap-2.js', 'quiz-ccdv-1.js', 'quiz-ckad-1.js', 'quiz-ckad-2.js'],
       // Per-file groups: one question file per topic, loaded only when the user opens that topic in #/bank or #/flash.
       // Named q:<file> (e.g. q:q-sql.js). The old 'questions' group is kept for routes that need the whole bank.
       'q:q-java.js': ['q-java.js'], 'q:q-kotlin.js': ['q-kotlin.js'],
@@ -50,6 +50,7 @@
       sdlc: ['sdlc.js'],                                      // #/sdlc end-to-end SDLC simulation (window.SDLC)
       bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
       toeic: ['toeic.js'],                                    // #/toeic TOEIC Speaking & Writing practice (window.TOEIC)
+      'toeic-lr': ['toeic-tips.js', 'toeic-lr-1a.js', 'toeic-lr-1b.js', 'toeic-lr-1c.js', 'toeic-lr-1d.js', 'toeic-lr-1e.js', 'toeic-lr-2a.js', 'toeic-lr-2b.js', 'toeic-lr-2c.js', 'toeic-lr-2d.js', 'toeic-lr-2e.js'],   // #/toeic tab L&R + tips (docs/TOEIC-LR.md)
       stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
