@@ -5,7 +5,7 @@
  * DATA_SHA to the content commit before every push. Local runs (localhost, file:) read the local files.
  */
 (function () {
-  window.DATA_SHA = '4360c6b2f1a41e01c05da9e34d8b85ad103bcc83';
+  window.DATA_SHA = '8373e9f6388720e149aa9c8e33bdd5670e31c06b';
   const h = location.hostname;
   const local = location.protocol === 'file:' || h === 'localhost' || h === '127.0.0.1' || h === '';
   const cdn = host => 'https://' + host + '/gh/ducmanh2802/senior-java@' + window.DATA_SHA + '/';
