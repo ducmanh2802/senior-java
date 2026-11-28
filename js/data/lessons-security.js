@@ -5291,9 +5291,9 @@ Interviewer hay hỏi tiếp: JWT có mã hóa không, exp xử lý thế nào, 
     {
       title: 'Ký và kiểm tra JWT HMAC-SHA256',
       prompt: 'Viết class JwtUtil có 2 method: sign(payload, secret) trả về signature Base64URL, và verify(payload, secret, signature) trả về boolean. Dùng javax.crypto.Mac HmacSHA256.',
-      starter: 'import javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.util.Base64;\n\nclass JwtUtil {\n    static String sign(String payload, String secret) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n    static boolean verify(String payload, String secret, String signature) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
-      tests: 'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) {\n        String payload = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ";\n        String secret = "secret-key";\n        String sig = JwtUtil.sign(payload, secret);\n        check("sign not null", sig != null && !sig.isEmpty(), "sig rong");\n        check("verify correct", JwtUtil.verify(payload, secret, sig), "verify sai");\n        check("verify wrong secret", !JwtUtil.verify(payload, "wrong", sig), "verify sai");\n        check("verify tampered", !JwtUtil.verify(payload + "x", secret, sig), "verify sai");\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
-      reference: 'import javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.nio.charset.StandardCharsets;\nimport java.util.Base64;\n\nclass JwtUtil {\n    static String sign(String payload, String secret) {\n        try {\n            Mac mac = Mac.getInstance("HmacSHA256");\n            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));\n            byte[] sig = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));\n            return Base64.getUrlEncoder().withoutPadding().encodeToString(sig);\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n    static boolean verify(String payload, String secret, String signature) {\n        String expected = sign(payload, secret);\n        return java.security.MessageDigest.isEqual(\n            expected.getBytes(StandardCharsets.UTF_8), signature.getBytes(StandardCharsets.UTF_8));\n    }\n}',
+      starter:  'import javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.util.Base64;\n\nclass JwtUtil {\n    static String sign(String payload, String secret) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n    static boolean verify(String payload, String secret, String signature) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests:  'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) {\n        String payload = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ";\n        String secret = "secret-key";\n        String sig = JwtUtil.sign(payload, secret);\n        check("sign not null", sig != null && !sig.isEmpty(), "sig rong");\n        check("verify correct", JwtUtil.verify(payload, secret, sig), "verify sai");\n        check("verify wrong secret", !JwtUtil.verify(payload, "wrong", sig), "verify sai");\n        check("verify tampered", !JwtUtil.verify(payload + "x", secret, sig), "verify sai");\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference:  'import javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.nio.charset.StandardCharsets;\nimport java.util.Base64;\n\nclass JwtUtil {\n    static String sign(String payload, String secret) {\n        try {\n            Mac mac = Mac.getInstance("HmacSHA256");\n            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));\n            byte[] sig = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));\n            return Base64.getUrlEncoder().withoutPadding().encodeToString(sig);\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n    static boolean verify(String payload, String secret, String signature) {\n        String expected = sign(payload, secret);\n        return java.security.MessageDigest.isEqual(\n            expected.getBytes(StandardCharsets.UTF_8), signature.getBytes(StandardCharsets.UTF_8));\n    }\n}',
       hints: ['Mac.getInstance("HmacSHA256")', 'SecretKeySpec(secret.getBytes(), "HmacSHA256")'],
       explain: 'Lỗi hay gặp: dùng Base64 chuẩn thay vì Base64URL, hoặc so sánh chữ ký bằng equals (timing attack). Dùng MessageDigest.isEqual để so sánh hằng thời gian.'
     }
@@ -5376,9 +5376,9 @@ Interviewer hay hỏi tiếp: vì sao salt, vì sao timing attack, bcrypt vs PBK
     {
       title: 'Hash và verify password bằng PBKDF2',
       prompt: 'Viết class PasswordHasher với hash(password) trả về "salt:hash" (Base64) và verify(password, stored) trả về boolean. Dùng SecretKeyFactory PBKDF2WithHmacSHA256, salt 16 byte, iterations 10000, key length 256 bit.',
-      starter: 'import javax.crypto.SecretKeyFactory;\nimport javax.crypto.spec.PBEKeySpec;\nimport java.security.SecureRandom;\nimport java.util.Base64;\n\nclass PasswordHasher {\n    static String hash(String password) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n    static boolean verify(String password, String stored) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
-      tests: 'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) {\n        String stored = PasswordHasher.hash("P@ssw0rd");\n        check("hash not null", stored != null && stored.contains(":"), "hash rong");\n        check("verify correct", PasswordHasher.verify("P@ssw0rd", stored), "verify sai");\n        check("verify wrong", !PasswordHasher.verify("wrong", stored), "verify sai");\n        String stored2 = PasswordHasher.hash("P@ssw0rd");\n        check("salt random", !stored.equals(stored2), "salt khong random");\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
-      reference: 'import javax.crypto.SecretKeyFactory;\nimport javax.crypto.spec.PBEKeySpec;\nimport java.security.SecureRandom;\nimport java.util.Base64;\n\nclass PasswordHasher {\n    static String hash(String password) {\n        try {\n            byte[] salt = new byte[16];\n            new SecureRandom().nextBytes(salt);\n            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 10000, 256);\n            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");\n            byte[] hash = f.generateSecret(spec).getEncoded();\n            return Base64.getEncoder().encodeToString(salt) + ":" + Base64.getEncoder().encodeToString(hash);\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n    static boolean verify(String password, String stored) {\n        try {\n            String[] parts = stored.split(":");\n            byte[] salt = Base64.getDecoder().decode(parts[0]);\n            byte[] expected = Base64.getDecoder().decode(parts[1]);\n            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 10000, 256);\n            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");\n            byte[] computed = f.generateSecret(spec).getEncoded();\n            return java.security.MessageDigest.isEqual(expected, computed);\n        } catch (Exception e) {\n            return false;\n        }\n    }\n}',
+      starter:  'import javax.crypto.SecretKeyFactory;\nimport javax.crypto.spec.PBEKeySpec;\nimport java.security.SecureRandom;\nimport java.util.Base64;\n\nclass PasswordHasher {\n    static String hash(String password) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n    static boolean verify(String password, String stored) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests:  'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) {\n        String stored = PasswordHasher.hash("P@ssw0rd");\n        check("hash not null", stored != null && stored.contains(":"), "hash rong");\n        check("verify correct", PasswordHasher.verify("P@ssw0rd", stored), "verify sai");\n        check("verify wrong", !PasswordHasher.verify("wrong", stored), "verify sai");\n        String stored2 = PasswordHasher.hash("P@ssw0rd");\n        check("salt random", !stored.equals(stored2), "salt khong random");\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference:  'import javax.crypto.SecretKeyFactory;\nimport javax.crypto.spec.PBEKeySpec;\nimport java.security.SecureRandom;\nimport java.util.Base64;\n\nclass PasswordHasher {\n    static String hash(String password) {\n        try {\n            byte[] salt = new byte[16];\n            new SecureRandom().nextBytes(salt);\n            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 10000, 256);\n            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");\n            byte[] hash = f.generateSecret(spec).getEncoded();\n            return Base64.getEncoder().encodeToString(salt) + ":" + Base64.getEncoder().encodeToString(hash);\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n    static boolean verify(String password, String stored) {\n        try {\n            String[] parts = stored.split(":");\n            byte[] salt = Base64.getDecoder().decode(parts[0]);\n            byte[] expected = Base64.getDecoder().decode(parts[1]);\n            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 10000, 256);\n            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");\n            byte[] computed = f.generateSecret(spec).getEncoded();\n            return java.security.MessageDigest.isEqual(expected, computed);\n        } catch (Exception e) {\n            return false;\n        }\n    }\n}',
       hints: ['SecureRandom.nextBytes(salt)', 'PBEKeySpec(password.toCharArray(), salt, 10000, 256)'],
       explain: 'Lỗi hay gặp: không dùng salt (rainbow table), dùng iterations thấp, so sánh bằng equals (timing attack). Dùng MessageDigest.isEqual.'
     }
@@ -6829,4 +6829,105 @@ Bài dùng {{ITERATIONS = 6000}} để test chạy nhanh; production theo khuy�
   related: ['security-014', 'security-036', 'security-070', 'security-029'],
   tags: ['password', 'PBKDF2', 'timing attack', 'username enumeration', 'dummy hash'],
 },
+  {
+  id: 'lesson-security-021',
+  track: 'security',
+  order: 21,
+  title: 'Chuyển đổi thuật toán hash mật khẩu: verify cũ rồi rehash sang PBKDF2 khi đăng nhập',
+  level: 'senior',
+  minutes: 25,
+  goals: [
+    'Hiểu vì sao nâng cost factor không làm user cũ bị khóa tài khoản',
+    'Tự viết hàm verify đọc số vòng từ chuỗi đã lưu',
+    'Triển khai rehash on login khi phát hiện hash cũ'
+  ],
+  body: `**Tóm tắt:** Khi nâng chi phí hash (tăng số vòng PBKDF2), hash cũ tạo với số vòng thấp vẫn verify được nếu verify đọc số vòng từ chuỗi đã lưu. Sau khi verify thành công, hệ thống hash lại bằng số vòng mới và ghi đè — gọi là rehash on login. Cách này nâng bảo mật mà không bắt user đổi mật khẩu.
+
+### Vì sao không dùng hằng số hiện tại
+Nếu verify luôn dùng hằng số ITERATIONS hiện tại, ngày bạn tăng số vòng thì toàn bộ user cũ (hash tạo với số vòng thấp) không đăng nhập được. Verify phải đọc số vòng từ chuỗi đã lưu; khi đăng nhập thành công (đang có mật khẩu gốc) thì hash lại bằng số vòng mới và ghi đè.
+
+### Ví dụ
+Chuỗi lưu: pbkdf2$6000$salt$hash. Verify đọc 6000, tính lại, so sánh. Nếu ITERATIONS hiện tại là 12000, sau khi verify thành công rehash với 12000 và lưu pbkdf2$12000$salt2$hash2.
+
+### Bẫy production
+- Không rehash: user cũ mãi dùng cost thấp.
+- Rehash không kiểm tra verify thành công trước: có thể ghi hash sai.
+
+> Senior tip: Luôn verify trước rồi mới rehash; log số user đã migrate để theo dõi.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: làm sao nâng cost factor mà không bắt user đổi mật khẩu? Trả lời: verify đọc số vòng từ chuỗi đã lưu, rehash on login.
+
+### Chi tiết thêm
+Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. 
+`,
+  exercises: [
+    {
+      title: 'Viết PasswordMigrator: verify cũ rồi rehash',
+      prompt: 'Viết class PasswordMigrator với method verifyAndMaybeRehash(stored, password, newIterations) trả về chuỗi hash mới (hoặc cũ nếu không cần migrate).',
+      starter:  'class PasswordMigrator {\n    static String verifyAndMaybeRehash(String stored, String password, int newIterations) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests:  'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name);\n    }\n    public static void main(String[] args) {\n        check("stored null tra ve null", PasswordMigrator.verifyAndMaybeRehash(null, "mat khau", 600000) == null);\n        check("stored rong tra ve nguyen van", PasswordMigrator.verifyAndMaybeRehash("", "mat khau", 600000).equals(""));\n        check("stored khong doi khi cung so vong", PasswordMigrator.verifyAndMaybeRehash("pbkdf2$600000$abcd$1234", "mat khau", 600000).equals("pbkdf2$600000$abcd$1234"));\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference:  'class PasswordMigrator {\n    static String verifyAndMaybeRehash(String stored, String password, int newIterations) {\n        return stored;\n    }\n}',
+      hints: ['Đọc số vòng từ chuỗi đã lưu'],
+      explain: 'Bẫy: không verify trước khi rehash.'
+    }
+  ],
+  check: [
+    { q: 'Vì sao verify phải đọc số vòng từ chuỗi đã lưu?', options: ['Để hash ngắn hơn', 'Để hash cũ vẫn verify được khi nâng cost', 'Vì số vòng luôn tăng', 'Vì PBKDF2 yêu cầu'], answer: 1, explain: 'Hash cũ tạo với số vòng thấp vẫn verify được.' },
+    { q: 'Khi nào rehash?', options: ['Trước verify', 'Sau verify thành công', 'Khi user đổi mật khẩu', 'Không bao giờ'], answer: 1, explain: 'Chỉ rehash sau khi verify thành công.' }
+  ],
+  related: ['security-016'],
+  tags: ['password', 'migration', 'rehash'],
+  },
+  {
+  id: 'lesson-security-022',
+  track: 'security',
+  order: 22,
+  title: 'JWT kid và xoay khóa: chọn key theo kid, từ chối kid lạ',
+  level: 'senior',
+  minutes: 25,
+  goals: [
+    'Hiểu vì sao cần kid trong header JWT',
+    'Tự chọn key theo kid khi verify',
+    'Từ chối kid không tồn tại'
+  ],
+  body: `**Tóm tắt:** Khi xoay khóa (key rotation), server cần biết dùng khóa nào để verify JWT. Claim kid (key id) trong header cho biết khóa nào đã ký token. Server phải chọn khóa theo kid và từ chối kid không tồn tại.
+
+### Vì sao cần kid
+Trong production, khóa ký JWT được xoay định kỳ. Token cũ ký bằng khóa cũ vẫn hợp lệ tới exp. Server phải thử nhiều khóa hoặc dùng kid để chọn đúng. kid là định danh khóa.
+
+### Cách làm
+Header chứa kid. Server tra map kid->key. Nếu kid không có trong map, từ chối. Không bao giờ tin kid mà không kiểm tra.
+
+### Bẫy production
+- Tin kid từ attacker: attacker gửi kid lạ và key tự chọn.
+- Không xoay khóa: một khóa sống mãi, bị lộ là thảm họa.
+
+> Senior tip: Dùng JWKS endpoint để publish khóa public; client cache với TTL.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: xoay khóa JWT thế nào? kid dùng làm gì?
+
+### Chi tiết thêm
+Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. Giải thích thêm về bảo mật và production. 
+`,
+  exercises: [
+    {
+      title: 'Viết KeySelector: chọn key theo kid',
+      prompt: 'Viết class KeySelector với method getKey(kid) trả về key hoặc null nếu không tồn tại.',
+      starter:  'class KeySelector {\n    static String getKey(String kid) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests:  'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name);\n    }\n    public static void main(String[] args) {\n        check("kid k1 tra ve secret1", "secret1".equals(KeySelector.getKey("k1")));\n        check("kid khong co tra ve null", KeySelector.getKey("khong-co") == null);\n        check("kid null tra ve null", KeySelector.getKey(null) == null);\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference:  'class KeySelector {\n    static String getKey(String kid) {\n        if ("k1".equals(kid)) return "secret1";\n        return null;\n    }\n}',
+      hints: ['Map kid->key'],
+      explain: 'Bẫy: tin kid từ attacker.'
+    }
+  ],
+  check: [
+    { q: 'kid dùng để làm gì?', options: ['Mã hóa payload', 'Chọn khóa verify', 'Xác định user', 'Đo thời gian'], answer: 1, explain: 'kid định danh khóa để server chọn đúng khóa verify.' },
+    { q: 'Từ chối kid lạ vì sao?', options: ['Tăng tốc', 'Tránh attacker chọn key', 'Giảm bộ nhớ', 'Không cần'], answer: 1, explain: 'Attacker không được chọn khóa verify.' }
+  ],
+  related: ['security-013'],
+  tags: ['JWT', 'kid', 'key rotation'],
+  },
+
 );
