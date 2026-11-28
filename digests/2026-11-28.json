@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-28",
+  "intro": "Cuối tuần tin ít, nhưng có hai bản phát hành lớn của Spring từ ngày 19/11 mà hôm nay mới được đưa vào bản tin: Spring Boot 4.2.0 (deprecate RestTemplate) và Spring Data 2026.1 (hỗ trợ Hibernate 8/JPA 4). Phía AWS có bản vá minor cho RDS PostgreSQL, Elastic Load Balancing for Envoy GA, và hai thay đổi về sandbox/observability.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring Boot 4.2.0 ra mắt: AMQP 1.0, OpenTelemetry semantic conventions, deprecate RestTemplate",
+      "title": "Spring Boot 4.2.0 available now",
+      "url": "https://spring.io/blog/2026/11/19/spring-boot-4-2-0-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Boot 4.2.0 GA đã có trên Maven Central. Điểm nổi bật theo bài: hỗ trợ AMQP 1.0 (chung và riêng cho RabbitMQ), tuỳ chọn bật OpenTelemetry semantic conventions, SSL bundle cho LDAP, build cache lưu trên registry cho Cloud Native Buildpacks, image buildpacks mặc định dựa trên Ubuntu 26.04 và executable jar khởi động nhanh hơn. Hai mục bị deprecate: {{RestTemplate}}/{{TestRestTemplate}} (chuyển sang {{RestClient}}/{{RestTestClient}}) và hỗ trợ Apache Pulsar. Bài không nêu baseline Java/Framework, cần xem release notes.",
+      "why": "Nếu codebase còn nhiều {{RestTemplate}}, đây là tín hiệu rõ ràng để lên kế hoạch chuyển sang {{RestClient}} trước khi bị gỡ ở bản sau. Thay đổi build cache và image base cũng ảnh hưởng pipeline CI/CD của team.",
+      "interview_q": "Team bạn có hàng trăm chỗ dùng RestTemplate và Spring Boot vừa deprecate nó. Bạn lên kế hoạch migrate sang RestClient thế nào để không gây regression, và test ra sao?",
+      "related": ["spring-001", "microservices-001"],
+      "tags": ["spring-boot", "restclient", "release"]
+    },
+    {
+      "title_vi": "Spring Data 2026.1 GA: hỗ trợ Hibernate 8 qua JPA 4.0 và Redis JSON",
+      "title": "Spring Data 2026.1.0 generally available",
+      "url": "https://spring.io/blog/2026/11/19/spring-data-2026-1-0-generally-available",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Data 2026.1 (release train mang số module 4.2) đã GA. Bài thông báo nêu hai tính năng mới: hỗ trợ Redis JSON và hỗ trợ Hibernate 8 thông qua JPA 4.0. Các module GA gồm JPA, Relational, Redis… ở 4.2, Cassandra/MongoDB/REST ở 5.2, Neo4j 8.2, Couchbase/Elasticsearch 6.2. Bài không liệt kê baseline, breaking change hay deprecation; muốn biết phải đọc release notes trên wiki và changelog từng module.",
+      "why": "Dev dùng Spring Data JPA nên theo dõi vì Hibernate 8/JPA 4.0 sẽ kéo theo thay đổi ở lớp persistence khi nâng Boot. Phải đọc release notes trước khi nâng chứ không nên chỉ đổi version.",
+      "interview_q": "Khi nâng Spring Data lên release train mới kéo theo major của Hibernate, bạn đánh giá rủi ro và kiểm thử lớp persistence thế nào trước khi lên production?",
+      "related": ["jpa-001", "spring-001"],
+      "tags": ["spring-data", "jpa", "hibernate"]
+    },
+    {
+      "title_vi": "Amazon RDS for PostgreSQL hỗ trợ minor 18.7, 17.12, 16.16, 15.20, 14.25",
+      "title": "Amazon RDS for PostgreSQL supports minor versions 18.7, 17.12, 16.16, 15.20, and 14.25",
+      "url": "https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-rds-postgresql-18-7-17-12-16-16-15-20-14-25/",
+      "source": "AWS What's New",
+      "category": "cloud",
+      "summary": "AWS đưa các minor version mới của PostgreSQL lên RDS cho các nhánh 14 đến 18 (18.7, 17.12, 16.16, 15.20, 14.25) và khuyên nâng cấp để vá các CVE của bản trước cùng các sửa lỗi từ cộng đồng. AWS gợi ý bật automatic minor version upgrade, dùng Upgrade Rollout Policy của AWS Organizations để nâng theo giai đoạn và dùng RDS Blue/Green để giảm downtime. Bài không nêu số CVE cụ thể hay thời gian downtime.",
+      "why": "Backend Java chạy trên RDS PostgreSQL nên có quy trình nâng minor đều đặn. Connection pool (HikariCP) và retry cần chịu được lúc failover khi bảo trì.",
+      "interview_q": "Bạn vận hành RDS PostgreSQL cho hệ thống thanh toán 24/7. Quy trình nâng minor version của bạn thế nào để giảm downtime, và ứng dụng Java cần xử lý gì lúc failover?",
+      "related": ["aws-001", "db-001"],
+      "tags": ["rds", "postgresql", "patching"]
+    },
+    {
+      "title_vi": "Elastic Load Balancing for Envoy GA: AWS vận hành Envoy proxy thay bạn",
+      "title": "Elastic Load Balancing for Envoy is now generally available",
+      "url": "https://aws.amazon.com/about-aws/whats-new/2026/11/elastic-load-balancing-for-envoy-generally-available",
+      "source": "AWS What's New",
+      "category": "cloud",
+      "summary": "ELB có thêm loại load balancer chạy Envoy mã nguồn mở, GA từ 25/11/2026. Mỗi load balancer chạy proxy trên EC2 riêng, cô lập bằng Nitro, AWS tự vá CVE của Envoy và hệ điều hành. Có thể mang cấu hình, extension và control plane Envoy sẵn có, mở rộng bằng WebAssembly, Lua hoặc external processing, và dùng ACM, WAF. Với Envoy Gateway trên Kubernetes cần cài thêm provider ELB for Envoy. Hiện có ở 14 Region; bài không nêu giá.",
+      "why": "Team tự vận hành Envoy/ingress cho các service Spring có thể giảm gánh nặng vá lỗi và nâng cấp. Cần so sánh với ALB và với service mesh trước khi quyết định.",
+      "interview_q": "So sánh ALB, Envoy tự vận hành và ELB for Envoy cho một hệ microservices Spring trên EKS: khi nào chọn cái nào và các trade-off về chi phí, kiểm soát và vận hành?",
+      "related": ["aws-001", "microservices-001", "devops-001"],
+      "tags": ["elb", "envoy", "kubernetes"]
+    },
+    {
+      "title_vi": "Lambda durable functions điều phối MicroVM (developer preview): sandbox cho code không tin cậy",
+      "title": "AWS Lambda now supports orchestrating MicroVMs with Lambda durable functions",
+      "url": "https://aws.amazon.com/about-aws/whats-new/2026/11/lambda-durable-microvm/",
+      "source": "AWS What's New",
+      "category": "cloud",
+      "summary": "AWS ra bản developer preview cho phép Lambda durable function quản lý vòng đời Lambda MicroVM và chạy từng task như một durable operation, có checkpoint, retry và làm mới token. Dùng được cho CI/CD hay trình quét bảo mật, đặc biệt khi chạy code không tin cậy hoặc do AI sinh ra trong sandbox cô lập. Một function điều phối được nhiều MicroVM song song, kích hoạt từ SQS hoặc EventBridge. Hiện qua SDK TypeScript và Python; AWS khuyên không dùng cho production.",
+      "why": "Dù chưa có SDK Java, mô hình durable execution cho thấy hướng đi cho workflow dài và agent chạy code. Dev Java nên hiểu khác biệt với Step Functions và saga để trả lời các câu thiết kế.",
+      "interview_q": "Bạn cần chạy code không tin cậy do người dùng gửi lên, có retry và theo dõi tiến trình. Bạn thiết kế cô lập và điều phối thế nào, và so sánh durable function với Step Functions ra sao?",
+      "related": ["aws-001", "architecture-001"],
+      "tags": ["lambda", "durable-functions", "sandbox"]
+    },
+    {
+      "title_vi": "CloudWatch làm giàu metric AWS theo OpenTelemetry, truy vấn bằng PromQL, không tính thêm phí",
+      "title": "Amazon CloudWatch announces basic OpenTelemetry enrichment at no additional cost",
+      "url": "https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-cloudwatch-opentelemetry-enrichment/",
+      "source": "AWS What's New",
+      "category": "devops",
+      "summary": "CloudWatch bổ sung thuộc tính tài nguyên (ARN, cloud provider, Region, account ID) và instrumentation scope cho các metric mà dịch vụ AWS tự đẩy lên, biến chúng thành data point OpenTelemetry truy vấn được bằng PromQL. Dimension cũ trở thành attribute. Mức cơ bản không tính thêm phí, bật mặc định khi dùng CloudWatch Omni; gắn thêm resource tag là mức trả phí riêng. Có ở mọi Region hỗ trợ OTel metrics.",
+      "why": "Nếu service Java đã xuất metric bằng Micrometer/OpenTelemetry, việc đưa metric hạ tầng AWS về cùng mô hình giúp dựng dashboard và alert thống nhất, tránh hai hệ query khác nhau.",
+      "interview_q": "Bạn muốn kết hợp metric ứng dụng Spring (Micrometer/OTel) với metric RDS, SQS trong cùng một dashboard và alert. Bạn thiết kế pipeline observability thế nào và cần chú ý cardinality gì?",
+      "related": ["devops-001", "aws-001"],
+      "tags": ["opentelemetry", "cloudwatch", "observability"]
+    }
+  ]
+}
