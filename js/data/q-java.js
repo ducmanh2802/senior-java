@@ -14639,6 +14639,185 @@ Audit log service trả 100 event mới nhất. Trước: copy list rồi Collec
   refs: [
     { type: 'doc', title: 'JEP 431: Sequenced Collections', url: 'https://openjdk.org/jeps/431' }
   ]
+},
+{
+  id: 'core-089',
+  topic: 'core',
+  level: 'senior',
+  q: 'String.intern() trong thực tế: StringTable là gì, intern() làm gì với bộ nhớ và hiệu năng, khi nào nên dùng, khi nào gây rò rỉ bộ nhớ, và cách sizing StringTable (-XX:StringTableSize)?',
+  a: `**Tóm tắt:** intern() đưa một String vào StringTable (bảng các String literal/shared) để các chuỗi cùng nội dung chia sẻ một object, giảm bộ nhớ và cho phép so sánh bằng ==. Chỉ intern các chuỗi lặp lại nhiều và sống lâu (tên cột, mã trạng thái, enum-like). Intern chuỗi động (request id, user input) gây rò rỉ bộ nhớ vì StringTable giữ strong reference và sống lâu, và tốn CPU hash. Sizing bằng -XX:StringTableSize.
+
+### StringTable là gì
+- Từ Java 7, string pool (StringTable) nằm trên heap, là bảng hash các String. Literal compile-time tự intern.
+- intern() trả về canonical instance cho nội dung đó; nếu chưa có thì thêm vào bảng và trả về.
+
+### Khi nào dùng
+- Chuỗi lặp lại nhiều và sống lâu: tên cột DB, mã trạng thái, header HTTP, enum-like. Intern giúp so sánh == nhanh và giảm GC.
+- Khi parse file lớn với nhiều giá trị lặp: intern các giá trị enum-like.
+
+### Rủi ro
+- Intern chuỗi động (user input, UUID, request id) -> bảng phình, GC không thu hồi (strong ref) -> rò rỉ bộ nhớ và pause GC.
+- intern() tốn CPU hash mỗi lần; gọi trên hot path không cần thiết làm chậm.
+- StringTable mặc định size nhỏ (65536 buckets) -> collision cao nếu nhiều intern.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+// Intern có chọn lọc cho giá trị lặp lại
+public class StatusCodes {
+    public static final String OK = "OK".intern();
+    public static final String ERROR = "ERROR".intern();
+    // parse response
+    public String normalize(String raw) {
+        return switch (raw) {
+            case "ok", "OK", "200" -> OK;
+            case "err", "ERROR", "500" -> ERROR;
+            default -> raw; // không intern chuỗi động
+        };
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Dịch vụ parse log 10 triệu dòng, mỗi dòng có status code trong 5 giá trị. Ban đầu intern() mọi status code và request id -> heap tăng, GC pause tăng. Sửa: chỉ intern 5 mã trạng thái (constant), request id không intern. Sizing -XX:StringTableSize=1000003. Kết quả: heap giảm, GC pause về mức bình thường.
+
+### Trả lời mẫu khi phỏng vấn
+"intern() đưa String vào StringTable để chia sẻ object cho chuỗi cùng nội dung, giúp == và giảm bộ nhớ. Em chỉ intern các chuỗi lặp lại nhiều và sống lâu như mã trạng thái, tên cột; không bao giờ intern chuỗi động như user input hay UUID vì StringTable giữ strong reference gây rò rỉ. Em cũng sizing StringTable bằng -XX:StringTableSize khi intern nhiều. Với secret, không intern vì sống lâu trong pool."
+
+> Senior tip: intern() là công cụ tối ưu có chọn lọc, không phải mặc định. Hot path nên tránh intern() cho chuỗi không lặp; đo bằng flag -XX:+PrintStringTableStatistics (JVM in thống kê bảng chuỗi).`,
+  follow: [
+    'StringTable nằm ở đâu trong JVM (Java 7+)?',
+    'Vì sao intern() chuỗi động gây rò rỉ bộ nhớ?',
+    'Cách đo hiệu quả intern bằng -XX:+PrintStringTableStatistics?'
+  ],
+  tags: ['String', 'intern', 'StringTable', 'memory', 'JVM', 'performance']
+},
+{
+  id: 'core-090',
+  topic: 'core',
+  level: 'lead',
+  q: '(Lead) Thiết kế exception hierarchy cho một domain service: root exception, error code enum, cause chain, mapping sang HTTP status, và logging. Khi nào dùng checked vs unchecked, và vì sao không nên dùng Exception làm type chung?',
+  a: `**Tóm tắt:** Thiết kế exception hierarchy với một root unchecked BusinessException chứa ErrorCode enum, cause gốc, và context (entity id, operation). Mapping sang HTTP status ở controller boundary. Checked chỉ cho lỗi caller phải xử lý (hiếm). Không dùng Exception chung vì mất type safety, khó mapping và logging không nhất quán.
+
+### Cấu trúc hierarchy
+- Root: BusinessException extends RuntimeException, chứa ErrorCode, message, cause, context map.
+- Subclass theo domain: NotFoundException, ValidationException, ConflictException, ExternalServiceException.
+- ErrorCode enum: NOT_FOUND, INVALID_INPUT, CONFLICT, UPSTREAM_TIMEOUT, ... với HTTP status và message template.
+
+### Cause chain
+- Luôn gán cause gốc (SQLException, IOException) khi wrap ở boundary.
+- Không swallow cause; log đầy đủ ở service/controller boundary.
+- Dùng try-with-resources cho resource để thêm suppressed exception.
+
+### Mapping HTTP
+- NotFoundException -> 404, ValidationException -> 400, ConflictException -> 409, ExternalServiceException -> 502/503.
+- ErrorResponse chứa code, message, traceId, timestamp.
+
+### Logging
+- Log error với cause ở boundary (controller/global handler), không log ở mỗi tầng.
+- Tránh log secret trong message/context.
+
+### Checked vs unchecked
+- Unchecked mặc định cho BusinessException (rollback Spring, chữ ký gọn).
+- Checked chỉ khi caller buộc phải handle (hiếm, ví dụ retry policy).
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+public enum ErrorCode {
+    NOT_FOUND(404), INVALID_INPUT(400), CONFLICT(409), UPSTREAM(502);
+    public final int http;
+    ErrorCode(int http) { this.http = http; }
+}
+public class BusinessException extends RuntimeException {
+    public final ErrorCode code;
+    public final Map<String, Object> context;
+    public BusinessException(ErrorCode code, String msg, Throwable cause, Map<String, Object> ctx) {
+        super(msg, cause); this.code = code; this.context = ctx == null ? Map.of() : ctx;
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Dịch vụ thanh toán có 3 loại lỗi: tài khoản không tồn tại (404), số dư không đủ (409), timeout đối tác (502). Ban đầu ném RuntimeException với message text -> controller phải parse string để mapping HTTP, dễ sai. Thiết kế lại: BusinessException + ErrorCode enum -> controller map theo code, log cause đầy đủ, traceId trả về client. Kết quả: mapping chính xác, test dễ, không parse string.
+
+### Trả lời mẫu khi phỏng vấn
+"Em thiết kế BusinessException root unchecked chứa ErrorCode enum, cause gốc và context. Subclass theo domain (NotFound, Validation, Conflict, External). Mapping HTTP ở controller boundary theo code. Log cause đầy đủ ở global handler, không log mỗi tầng. Checked chỉ khi caller buộc handle. Không dùng Exception chung vì mất type safety và mapping không nhất quán; ErrorCode enum cho phép i18n và test ổn định."
+
+> Senior tip: ErrorCode nên là enum với HTTP status và message key, không phải string tự do. Context map chứa entity id/operation để debug, nhưng không chứa secret. Cause chain giữ nguyên stack trace gốc.`,
+  follow: [
+    'Vì sao ErrorCode nên là enum thay vì string?',
+    'Checked exception khi nào hợp trong domain service?',
+    'Cách tránh log secret trong exception context?'
+  ],
+  tags: ['exception', 'hierarchy', 'ErrorCode', 'domain', 'lead', 'design'],
+  refs: [
+    { type: 'doc', title: 'Effective Java: Use checked exceptions for recoverable conditions', url: 'https://docs.oracle.com/javase/tutorial/essential/exceptions/' }
+  ]
+},
+{
+  id: 'core-091',
+  topic: 'core',
+  level: 'senior',
+  q: 'Array covariance vs generic invariance: vì sao {{String[]}} là subtype của {{Object[]}} nhưng {{List<String>}} không phải subtype của {{List<Object>}}, heap pollution là gì, {{@SafeVarargs}} dùng khi nào, và cách tránh unsafe generic array creation?',
+  a: `**Tóm tắt:** Array trong Java là covariant (String[] là Object[]) và kiểm tra type lúc runtime (ArrayStoreException). Generics là invariant (List<String> không phải List<Object>) và type bị xoá lúc runtime (erasure). Heap pollution xảy ra khi generic variable trỏ tới object có type khác (thường do varargs generic), gây ClassCastException ngầm. @SafeVarargs đánh dấu method không heap-pollute; tránh generic array creation bằng List thay vì T[].
+
+### Array covariance
+- String[] extends Object[] là hợp lệ lúc compile; nếu gán Object[] arr = new String[10]; arr[0] = Integer.valueOf(1) sẽ ném ArrayStoreException lúc runtime.
+- Array lưu type component trong object, nên JVM kiểm tra lúc gán phần tử.
+
+### Generic invariance
+- List<String> không phải subtype của List<Object> (compile error nếu gán). Vì generics không lưu type lúc runtime (erasure), JVM không thể kiểm tra phần tử.
+- Nếu cho phép covariance, có thể add Integer vào List<String> qua List<Object> reference -> ClassCastException lúc get.
+
+### Heap pollution
+- Xảy ra khi variable generic trỏ tới object có type khác, thường do varargs generic: method foo(List<String>... lists) nhận List[] raw.
+- Hậu quả: ClassCastException không rõ nguồn khi dùng phần tử.
+
+### @SafeVarargs
+- Đánh dấu method/varargs không heap-pollute (không lưu tham số vào cấu trúc generic).
+- Chỉ dùng cho method static/final/private và varargs generic.
+- Ví dụ: Arrays.asList(T... a) an toàn vì chỉ đọc varargs.
+
+### Tránh generic array creation
+- Không {{new T[]}}; dùng {{Array.newInstance}} (raw) hoặc ưu tiên List<T>.
+- Dùng {{@SuppressWarnings("unchecked")}} có kiểm soát khi unavoidable.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+import java.util.*;
+
+public class CovarianceDemo {
+    // Unsafe: generic varargs -> heap pollution risk
+    @SafeVarargs
+    static <T> List<T> asListSafe(T... items) {
+        return Arrays.asList(items); // không lưu vào generic structure
+    }
+
+    public static void main(String[] args) {
+        String[] strs = new String[]{"a", "b"};
+        Object[] objs = strs; // OK compile, runtime check
+        try { objs[0] = Integer.valueOf(1); } // ArrayStoreException
+        catch (ArrayStoreException e) { System.out.println("ArrayStoreException"); }
+        // List<String> list = new ArrayList<>(); List<Object> o = list; // compile error
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Một utility method {{merge(List<T>... lists)}} không @SafeVarargs và lưu varargs vào List<List<T>>. Caller truyền List<String> và List<Integer> -> heap pollution, sau đó get() ném ClassCastException ở chỗ xa. Sửa: đánh dấu @SafeVarargs (nếu method không lưu varargs) hoặc refactor nhận {{List<List<? extends T>>}}. Sau sửa, compiler cảnh báo biến mất, runtime an toàn.
+
+### Trả lời mẫu khi phỏng vấn
+"Array covariant và checked lúc runtime (ArrayStoreException); generics invariant và erased lúc runtime. Vì vậy List<String> không phải List<Object>, chặn thêm sai type. Heap pollution xảy ra khi generic variable trỏ object khác type, thường qua varargs generic; @SafeVarargs đánh dấu method an toàn khi không lưu varargs. Em tránh new T[] bằng List<T> hoặc Array.newInstance có kiểm soát, và không suppress unchecked bừa bãi."
+
+> Senior tip: covariance của array là legacy; generics invariant là an toàn hơn. @SafeVarargs chỉ cho method không lưu varargs vào cấu trúc generic; nếu lưu, refactor chữ ký thay vì suppress.`,
+  follow: [
+    'ArrayStoreException xảy ra trong tình huống nào?',
+    'Heap pollution là gì và tại sao varargs generic gây ra?',
+    'Khi nào @SafeVarargs không đủ, cần refactor chữ ký?'
+  ],
+  tags: ['generics', 'array', 'covariance', 'heap-pollution', 'SafeVarargs', 'erasure'],
+  refs: [
+    { type: 'doc', title: 'Java Generics: Heap Pollution', url: 'https://docs.oracle.com/javase/tutorial/java/generics/nonReifiableVarargsType.html' }
+  ]
 }
 );
 
