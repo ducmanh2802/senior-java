@@ -13987,5 +13987,96 @@ Em không tách theo cảm tính mà theo số liệu. Em đo churn bằng git l
     { type: 'doc', title: 'StranglerFigApplication (Martin Fowler)', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' },
     { type: 'doc', title: 'ArchUnit', url: 'https://www.archunit.org' }
   ]
+},
+{
+  id: 'design-083',
+  topic: 'design',
+  level: 'senior',
+  q: 'Đặt lịch khám: bệnh nhân retry confirm hold_token nhiều lần có thể tạo double booking — xử lý thế nào?',
+  a: `**Tóm tắt:** Confirm phải idempotent theo hold_token; DB constraint slot_id unique cho status BOOKED; retry trả cùng appointment_id; compensation khi hold hết hạn nhưng client retry muộn.
+
+### Cơ chế
+- hold_token là JWT chứa {{slot_id}}, {{patient_id}}, {{hold_expires_at}}.
+- Confirm: {{BEGIN; UPDATE appointment_slot SET status=BOOKED, patient_id=... WHERE slot_id=? AND status=HELD AND hold_expires_at>NOW() AND version=?}}; nếu 0 row thì kiểm tra đã BOOKED cùng patient → trả appointment cũ (idempotent).
+- Unique partial index: {{CREATE UNIQUE INDEX ON appointment_slot(slot_id) WHERE status IN ('HELD','BOOKED')}}.
+- Idempotency key client-generated hoặc hold_token làm key.
+- Nếu hold hết hạn trước confirm: trả {{409 SLOT_EXPIRED}}, client phải hold lại.
+- Audit log mọi confirm attempt.
+
+### Ví dụ đời thực
+50 phòng khám, giờ cao điểm 2000 confirm/phút. Client timeout 3s retry 2 lần. Trước fix: 0.3% double booking/ngày. Sau idempotent confirm + unique index: 0 double booking, retry trả appointment cũ trong 2ms.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi làm confirm idempotent theo hold_token. DB update có điều kiện status=HELD và hold_expires_at>NOW() và version. Nếu 0 row, kiểm tra slot đã BOOKED cùng patient thì trả appointment cũ. Unique partial index slot_id WHERE status IN HELD/BOOKED là phòng tuyến cuối. Client retry muộn sau khi hold hết hạn nhận 409 SLOT_EXPIRED phải hold lại. Audit log mọi attempt. Pitfall: clock skew dùng NOW() DB; version optimistic lock; partial failure giữa update slot và insert appointment.
+
+> Senior tip: Idempotency key + DB constraint là hai lớp phòng thủ. Không tin client retry an toàn nếu không có cả hai.`,
+  follow: [
+    'Làm sao xử lý khi payment capture thành công nhưng confirm booking thất bại?',
+    'So sánh idempotency key client-generated vs server-generated?',
+    'Thiết kế compensation khi hold hết hạn nhưng payment đã capture?'
+  ],
+  tags: ['booking', 'idempotency', 'double booking', 'retry', 'constraint']
+},
+{
+  id: 'design-084',
+  topic: 'design',
+  level: 'senior',
+  q: 'Import Excel 500.000 dòng: partial failure và data quality — xử lý thế nào?',
+  a: `**Tóm tắt:** Chia import thành validate + transform + load; lưu lỗi theo row; idempotent re-import bằng checksum; dead-letter queue; báo cáo tổng hợp; không fail toàn bộ job.
+
+### Cơ chế
+- Parse streaming (Apache POI event-based), mỗi row validate format ngay, ghi import_error(row_num, reason, raw).
+- FK validate batch 1000 query IN, đánh dấu row lỗi.
+- Transform: normalize date, trim, uppercase code; lưu mapping column header → field.
+- Load: upsert {{INSERT ON CONFLICT DO UPDATE}}; batch 1000; commit mỗi batch.
+- Checkpoint: processed_rows, last_success_row, checksum file.
+- Re-import idempotent: nếu checksum đã DONE thì skip; nếu partial thì resume từ checkpoint.
+- DLQ cho row lỗi sau retry; alert error_rate > 5%.
+- Report: total, success, failed, skipped, duration, error breakdown.
+
+### Ví dụ đời thực
+File 500k dòng, 12k row lỗi (date sai, FK không tồn tại). Trước: fail toàn job, user không biết row nào. Sau: job DONE với 488k success, 12k DLQ, report breakdown theo lý do; re-import cùng file skip; fix file partial re-import resume từ checkpoint.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi tách validate/transform/load. Validate format ngay mỗi row ghi import_error; FK batch 1000. Transform normalize. Load upsert batch 1000 commit mỗi batch. Checkpoint processed_rows + checksum. Re-import idempotent theo checksum; partial resume từ checkpoint. DLQ row lỗi; alert error_rate trên 5%. Report tổng hợp. Pitfall: header mismatch, merged cell, encoding, date format, duplicate primary key.
+
+> Senior tip: Import lớn không bao giờ all-or-nothing. Row-level error + checkpoint + idempotent re-import là bộ ba cứu production.`,
+  follow: [
+    'Làm sao xử lý file có column order khác nhau giữa các lần export?',
+    'So sánh batch commit vs single transaction cho import lớn?',
+    'Thiết kế rollback toàn bộ import nếu error_rate vượt ngưỡng?'
+  ],
+  tags: ['import', 'excel', 'data quality', 'partial failure', 'idempotent', 'dlq']
+},
+{
+  id: 'design-085',
+  topic: 'design',
+  level: 'lead',
+  q: 'Xuất hoá đơn điện tử: DLQ và reconciliation mismatch — xử lý thế nào?',
+  a: `**Tóm tắt:** DLQ có retry thủ công + phân loại lỗi; reconciliation hằng ngày so sánh local vs thuế; mismatch auto-retry nếu transient, manual nếu permanent; alert và dashboard; audit trail đầy đủ.
+
+### Cơ chế
+- DLQ lưu invoice_id, payload, error, retry_count, last_error_at, category (transient/permanent).
+- Retry thủ công: API retry-invoice(id) với idempotency key; exponential backoff nếu transient.
+- Reconciliation nightly: query batch/date-range invoice status từ thuế, so sánh local status.
+- Mismatch: nếu thuế accepted mà local pending → update local; nếu thuế rejected mà local accepted → mark mismatch + alert; nếu thuế không có invoice → resend.
+- Audit: mọi trạng thái change ghi invoice_audit(invoice_id, from, to, at, actor).
+- Dashboard: outbox age, DLQ size, mismatch count, retry rate.
+- Alert: mismatch > 0 hoặc DLQ size > threshold.
+
+### Ví dụ đời thực
+50k invoice/ngày, API thuế downtime 2h. Outbox retry exponential xử lý backlog trong 30 phút sau recovery. Reconciliation nightly phát hiện 5 mismatch do clock skew, auto-retry fix 4, 1 permanent (schema version cũ) cần manual fix + resend. Dashboard cho thấy outbox age peak 45 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi phân loại DLQ lỗi transient/permanent. Retry thủ công qua API với idempotency. Reconciliation nightly query batch/date-range so sánh local vs thuế: thuế accepted/local pending thì update local; thuế rejected/local accepted thì mark mismatch alert; thuế không có thì resend. Audit trail đầy đủ. Dashboard outbox age, DLQ size, mismatch count. Alert mismatch > 0 hoặc DLQ > threshold. Pitfall: clock skew, schema version thuế, partial response, rate limit API thuế.
+
+> Senior tip: Reconciliation là safety net cuối cùng cho tích hợp bên ngoài. Không có reconciliation thì mismatch âm thầm tích luỹ.`,
+  follow: [
+    'Làm sao xử lý khi thuế thay đổi schema XML giữa chừng?',
+    'So sánh reconciliation nightly vs realtime?',
+    'Thiết kế rate limit khi query batch invoice từ thuế?'
+  ],
+  tags: ['invoice', 'tax', 'dlq', 'reconciliation', 'audit', 'monitoring']
 }
+
 );
