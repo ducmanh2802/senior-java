@@ -3263,4 +3263,160 @@ Khi nào dùng for mảng primitive: tính toán số học đơn giản (tổng
   related: ['modern-001', 'modern-011'],
   tags: ['Stream', 'Collectors', 'groupingBy', 'partitioningBy', 'teeing', 'performance', 'vong for'],
 },
+{
+  id: 'lesson-modern-014',
+  track: 'modern',
+  order: 14,
+  title: 'Kết quả nghiệp vụ bằng sealed interface thay cho exception: thiết kế API không ném lỗi',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Mô hình hoá kết quả nghiệp vụ thành kiểu dữ liệu có hữu hạn biến thể',
+    'Dùng pattern matching exhaustive để xử lý mọi trường hợp tại compile-time',
+    'Phân biệt lỗi kỹ thuật (exception) với kết quả nghiệp vụ (Result)',
+  ],
+  body: `**Tóm tắt:** Exception nên dành cho lỗi kỹ thuật không mong đợi; kết quả nghiệp vụ có hữu hạn khả năng (thành công, từ chối, cần retry) nên là giá trị trả về kiểu sealed interface, để compiler bắt buộc xử lý hết.
+
+### Vì sao không ném exception cho mọi trường hợp
+Exception làm gián đoạn luồng điều khiển và tốn chi phí stack trace. Khi kết quả nghiệp vụ là một trong vài khả năng đã biết (ví dụ thanh toán: thành công, số dư không đủ, thẻ hết hạn), dùng exception là lạm dụng: caller phải catch, và compiler không nhắc nhở thiếu nhánh.
+
+### Sealed interface + record
+~~~java
+public sealed interface PaymentResult permits Success, InsufficientFunds, CardExpired {}
+public record Success(String txnId, long amount) implements PaymentResult {}
+public record InsufficientFunds(long balance, long required) implements PaymentResult {}
+public record CardExpired(LocalDate expiry) implements PaymentResult {}
+~~~
+Sealed interface giới hạn tập con; record tự sinh equals/hashCode/toString. Pattern matching switch (Java 21) phải xử lý mọi permit, nếu thiếu compiler báo lỗi.
+
+### Xử lý exhaustive
+~~~java
+String msg = switch (result) {
+  case Success s -> "OK " + s.txnId();
+  case InsufficientFunds i -> "Thiếu " + (i.required() - i.balance());
+  case CardExpired c -> "Hết hạn " + c.expiry();
+};
+~~~
+Thêm một permit mới (ví dụ FraudBlocked) khiến mọi switch phải cập nhật, an toàn refactor.
+
+### Lỗi hay gặp
+- Trả null thay vì Result: caller quên null-check.
+- Dùng exception cho nhánh thường gặp (ví dụ NotFoundException) rồi catch ở controller: làm luồng chính khó đọc.
+- Sealed interface không khai báo permits đầy đủ: mất exhaustiveness.
+- Pattern matching switch thiếu default khi interface không sealed: compiler không bắt buộc.
+
+### Ví dụ đời thực
+Dịch vụ thanh toán xử lý 10 triệu giao dịch/ngày. Trước: ném PaymentDeclinedException cho mỗi từ chối, CPU tốn stack trace. Sau: trả PaymentResult, controller map Success→200, InsufficientFunds→402, CardExpired→400. Latency p99 giảm 15%, log lỗi kỹ thuật sạch.
+
+### So sánh với exception
+Exception phù hợp cho lỗi kỹ thuật không mong đợi (IO, DB). Result phù hợp cho kết quả nghiệp vụ có hữu hạn khả năng. Kết hợp cả hai: service trả Result, adapter ném exception khi hạ tầng lỗi.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: khi nào dùng Result thay vì exception, làm sao đảm bảo exhaustiveness, và chi phí stack trace. Trả lời: Result cho nhánh nghiệp vụ đã biết, exception cho lỗi hạ tầng; sealed + pattern matching giúp compiler kiểm tra.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi phân biệt lỗi kỹ thuật và kết quả nghiệp vụ. Lỗi kỹ thuật (IO, DB timeout) ném exception và xử lý ở biên. Kết quả nghiệp vụ có hữu hạn khả năng thì là giá trị trả về sealed interface, để compiler bắt buộc xử lý hết và tránh catch lạm dụng. Pattern matching switch Java 21 cho code rõ ràng và an toàn khi thêm nhánh.
+
+> Senior tip: Sealed + record biến "kết quả" thành dữ liệu, giúp test dễ và log có cấu trúc; exception chỉ cho những gì thật sự bất ngờ.`,
+  exercises: [
+    {
+      title: 'Map PaymentResult sang HTTP status',
+      prompt: 'Viết hàm {{toStatus(PaymentResult)}} trả về mã HTTP: Success→200, InsufficientFunds→402, CardExpired→400. Dùng {{instanceof}} pattern (Java 16+).',
+      starter: 'sealed interface PaymentResult permits Success, InsufficientFunds, CardExpired {}\nrecord Success(String txnId) implements PaymentResult {}\nrecord InsufficientFunds() implements PaymentResult {}\nrecord CardExpired() implements PaymentResult {}\n\nclass Mapper {\n    static int toStatus(PaymentResult r) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String n, boolean ok){total++; if(ok){passed++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n);}\n    public static void main(String[] a){\n        check("success", Mapper.toStatus(new Success("x"))==200);\n        check("funds", Mapper.toStatus(new InsufficientFunds())==402);\n        check("card", Mapper.toStatus(new CardExpired())==400);\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'sealed interface PaymentResult permits Success, InsufficientFunds, CardExpired {}\nrecord Success(String txnId) implements PaymentResult {}\nrecord InsufficientFunds() implements PaymentResult {}\nrecord CardExpired() implements PaymentResult {}\n\nclass Mapper {\n    static int toStatus(PaymentResult r) {\n        if (r instanceof Success) return 200;\n        if (r instanceof InsufficientFunds) return 402;\n        if (r instanceof CardExpired) return 400;\n        throw new IllegalArgumentException("unknown: " + r);\n    }\n}',
+      hints: ['Dùng instanceof pattern: {{if (r instanceof Success)}}.',
+        'Sealed interface đảm bảo chỉ có 3 subtype, nên 3 nhánh instanceof đã đủ exhaustive.'],
+      explain: '{{instanceof}} pattern (Java 16+) kiểm tra kiểu; với sealed interface, compiler biết danh sách subtype nhưng bản thân instanceof không yêu cầu exhaustive. Khi thêm permit mới, các nhánh instanceof sẽ thiếu case mới — nên cân nhắc dùng switch pattern (Java 21) khi cần exhaustiveness tại compile-time.',
+    },
+  ],
+  check: [
+    { q: 'Khi nào nên dùng exception thay vì Result?', options: ['Mọi lỗi nghiệp vụ', 'Lỗi kỹ thuật không mong đợi', 'Kết quả có hữu hạn khả năng', 'Trả về cho client'], answer: 1, explain: 'Exception cho lỗi kỹ thuật; Result cho kết quả nghiệp vụ hữu hạn.' },
+    { q: 'Sealed interface giúp gì?', options: ['Tăng tốc runtime', 'Giới hạn tập con, exhaustiveness compile-time', 'Tự sinh equals', 'Cho phép null'], answer: 1, explain: 'Sealed giới hạn permit; compiler kiểm tra switch đầy đủ.' },
+  ],
+  related: ['modern-003', 'modern-008'],
+  tags: ['sealed', 'record', 'pattern matching', 'Result'],
+},
+{
+  id: 'lesson-modern-015',
+  track: 'modern',
+  order: 15,
+  title: 'Stream nâng cao: custom collector, parallel stream và khi nào stream chậm hơn vòng for',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Viết collector tùy chỉnh bằng Collector.of',
+    'Hiểu chi phí của parallel stream và khi nào không nên dùng',
+    'Đo lường để quyết định stream vs vòng for',
+  ],
+  body: `**Tóm tắt:** Stream tiện cho pipeline declarative nhưng có chi phí boxing/object; parallel stream chỉ nhanh khi dữ liệu lớn và thao tác độc lập; đo trước khi tối ưu.
+
+### Custom collector
+Collector.of(supplier, accumulator, combiner, finisher) cho phép gom dữ liệu theo logic riêng mà không cần tạo class implements Collector. Mỗi tham số là một hàm:
+- **supplier**: tạo container rỗng (mỗi luồng parallel một cái).
+- **accumulator**: nhét một phần tử vào container.
+- **combiner**: gộp hai container từ hai luồng.
+- **finisher**: biến container thành kết quả cuối (thường là identity).
+- **characteristics** (tuỳ chọn): gợi ý cho stream tối ưu, ví dụ {{IDENTITY_FINISH}} khi finisher không làm gì.
+
+Ví dụ gom thành {{Map<Long, String>}} từ stream of {{Person(id, name)}}:
+~~~java
+Collector.of(
+  HashMap::new,                           // supplier
+  (m, p) -> m.put(p.id(), p.name()),      // accumulator
+  (m1, m2) -> { m1.putAll(m2); return m1; }, // combiner
+  m -> m                                  // finisher (identity)
+);
+~~~
+Combiner cần merge hai map partial; finisher có thể identity nếu container chính là kết quả.
+
+### Parallel stream
+{{parallelStream()}} chia dữ liệu thành nhiều chunk qua {{Spliterator}}, xử lý các chunk trên {{ForkJoinPool.commonPool()}} rồi gộp kết quả bằng combiner. Pool này **dùng chung cho cả JVM** (kể cả {{CompletableFuture.supplyAsync}} không truyền executor). Số worker mặc định là số CPU khả dụng trừ một.
+
+Parallel **chỉ nhanh** khi đủ cả ba điều kiện:
+1. Dữ liệu lớn (thường > 100k phần tử) để bù chi phí chia/gộp.
+2. Thao tác **CPU-bound độc lập** (không block, không state chia sẻ).
+3. Nguồn **chia tốt**: {{ArrayList}}, mảng, {{IntStream.range}}. {{LinkedList}}, {{Stream.iterate}}, {{Stream.generate}} chia kém.
+
+Không dùng parallel khi: tác vụ block (DB, HTTP, file I/O) — vài worker bị treo làm nghẽn pool chung; nguồn chia kém; có state chia sẻ (ví dụ {{forEach(list::add)}} vào {{ArrayList}} thường — mất phần tử hoặc exception ngẫu nhiên).
+
+### Khi stream chậm hơn vòng for
+- **Boxing**: {{Stream<Integer>}} box mỗi {{int}} thành object {{Integer}}, mỗi phép cộng unbox → add → box lại.
+- **Object trung gian**: {{Spliterator}}, {{Sink}}, lambda wrapper — mỗi phần tử tạo thêm object rác, ép GC.
+- **Short-circuit khó**: {{findFirst}} trên parallel vẫn phải đồng bộ giữa các luồng để đảm bảo encounter order.
+- Vòng for trên {{int[]}}: không boxing, không object trung gian, biến cục bộ trong register, JIT vectorize (SIMD) và loop unrolling.
+
+Khi nào chọn vòng for: tính toán số học đơn giản (tổng, đếm, max, min) trên dữ liệu primitive lớn, gọi rất thường xuyên (hot path). Khi nào chọn Stream: logic phức tạp, cần báo cáo tổng hợp, dữ liệu đã là object, không phải hot path.
+
+### Đo lường
+Dùng **JMH** (Java Microbenchmark Harness) để đo throughput/latency. Không đoán bằng {{System.nanoTime()}} trong {{main}} — JIT tối ưu hoá code benchmark làm kết quả sai. Microbenchmark đúng cần: warm-up iterations, measurement iterations, tránh dead code elimination (dùng {{Blackhole}}), chạy trên JVM ổn định (tắt tiered compilation nếu cần).
+
+### Ví dụ đời thực
+Pipeline xử lý 5 triệu dòng log: stream sequential mất 2s; parallel với nguồn {{ArrayList}} và map stateless giảm còn 0.7s. Nhưng khi thêm {{synchronized}} counter, parallel chậm hơn sequential 3x do tranh chấp lock. Team đo bằng JMH mới biết nên chuyển sang {{LongAdder}} hoặc bỏ parallel.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: khi nào stream chậm, parallel stream có luôn nhanh không, cách đo. Trả lời: boxing và object trung gian; parallel chỉ nhanh khi dữ liệu lớn và thao tác độc lập; đo bằng JMH.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi dùng stream cho pipeline rõ ràng; với dữ liệu lớn và thao tác độc lập thì parallel stream có thể nhanh, nhưng phải đo bằng JMH. Tránh boxing bằng {{IntStream}}/{{LongStream}}; tránh state chia sẻ. Nếu chỉ cần tổng/đếm đơn giản, vòng for trên primitive thường nhanh hơn.
+
+> Senior tip: Đo bằng JMH trước khi đổi; micro-optimization không có số liệu là đoán mò.`,
+  exercises: [
+    {
+      title: 'Collector gom tên theo id',
+      prompt: 'Viết collector trả Map<Long,String> từ stream of Person(id,name) bằng Collector.of.',
+      starter: 'record Person(long id, String name) {}\n\nclass CollectorUtil {\n    static java.util.stream.Collector<Person, ?, java.util.Map<Long,String>> toIdNameMap() {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String n, boolean ok){total++; if(ok){passed++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n);}\n    public static void main(String[] a){\n        var list = java.util.List.of(new Person(1,"A"), new Person(2,"B"));\n        var m = list.stream().collect(CollectorUtil.toIdNameMap());\n        check("size", m.size()==2);\n        check("value", "A".equals(m.get(1L)));\n        var m2 = java.util.List.of(new Person(1,"A"), new Person(2,"B"), new Person(3,"C")).stream().collect(CollectorUtil.toIdNameMap());\n        check("three elements", m2.size()==3 && "C".equals(m2.get(3L)));\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'record Person(long id, String name) {}\n\nclass CollectorUtil {\n    static java.util.stream.Collector<Person, ?, java.util.Map<Long,String>> toIdNameMap() {\n        return java.util.stream.Collector.of(\n            () -> new java.util.HashMap<Long, String>(),\n            (m, p) -> m.put(p.id(), p.name()),\n            (m1, m2) -> { m1.putAll(m2); return m1; },\n            m -> m\n        );\n    }\n}',
+      hints: ['Collector.of(supplier, accumulator, combiner, finisher).'],
+      explain: 'Combiner cần merge hai map partial; finisher có thể identity.',
+    },
+  ],
+  check: [
+    { q: 'Parallel stream nhanh khi nào?', options: ['Luôn luôn', 'Dữ liệu lớn và thao tác độc lập', 'Nguồn là LinkedList', 'Có state chia sẻ'], answer: 1, explain: 'Cần dữ liệu lớn, thao tác CPU-bound độc lập, nguồn chia được.' },
+    { q: 'Vì sao Stream<Integer> chậm hơn vòng for int[]?', options: ['Boxing và object trung gian', 'Vòng for bị cấm', 'Stream dùng double', 'Tràn số'], answer: 0, explain: 'Boxing và object trung gian.' },
+  ],
+  related: ['modern-001', 'modern-006'],
+  tags: ['Stream', 'parallel', 'Collector', 'performance'],
+},
 );

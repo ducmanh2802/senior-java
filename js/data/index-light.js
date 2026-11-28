@@ -3032,6 +3032,8 @@ window.DATA_INDEX = {
     {"id":"lesson-modern-011","track":"modern","order":11,"title":"Collectors chuyên sâu: collectingAndThen, mapping/filtering, reducing variants, teeing + groupingBy, stream vs for trong hot path thực tế","level":"senior","minutes":40},
     {"id":"lesson-modern-012","track":"modern","order":12,"title":"Record pattern lồng, switch expression exhaustive và guard: kết quả kiểm tra đơn hàng hàng loạt thay cho exception","level":"senior","minutes":35},
     {"id":"lesson-modern-013","track":"modern","order":13,"title":"Stream pipeline hiệu quả: antipattern hay gặp, báo cáo đa chiều với groupingBy/partitioningBy/teeing, và chọn stream vs for bằng số liệu","level":"senior","minutes":40},
+    {"id":"lesson-modern-014","track":"modern","order":14,"title":"Kết quả nghiệp vụ bằng sealed interface thay cho exception: thiết kế API không ném lỗi","level":"senior","minutes":30},
+    {"id":"lesson-modern-015","track":"modern","order":15,"title":"Stream nâng cao: custom collector, parallel stream và khi nào stream chậm hơn vòng for","level":"senior","minutes":30},
     {"id":"lesson-concurrency-001","track":"concurrency","order":1,"title":"Java Memory Model: visibility, volatile và happens-before","level":"mid","minutes":30},
     {"id":"lesson-concurrency-002","track":"concurrency","order":2,"title":"synchronized, ReentrantLock và Atomic: chọn đúng công cụ, tránh deadlock","level":"senior","minutes":35},
     {"id":"lesson-concurrency-003","track":"concurrency","order":3,"title":"ExecutorService và ThreadPoolExecutor: thứ tự core → queue → max → reject, sizing và shutdown","level":"senior","minutes":35},
