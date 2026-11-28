@@ -5161,4 +5161,397 @@ Interviewer hỏi: vì sao static cache leak, cách detect qua heap dump/MAT, v�
   related: ['jvm-001', 'jvm-004'],
   tags: ['memory leak', 'cache', 'LRU', 'Caffeine', 'heap dump']
 },
+{
+  id: 'lesson-jvm-021',
+  track: 'jvm', order: 21,
+  title: 'Phân tích nhiều thread dump: timeline trạng thái, top contended lock và deadlock chắc chắn',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Đọc trạng thái thread (RUNNABLE, BLOCKED, WAITING, TIMED_WAITING) từ thread dump và biết ý nghĩa từng trạng thái',
+    'Vẽ lock owner chain từ các thread BLOCKED: ai chờ lock nào, ai nắm lock đó',
+    'Tìm top contended lock (nhiều thread BLOCKED nhất) trong mỗi dump và theo dõi sự thay đổi qua các dump',
+    'Xác nhận deadlock: cùng nhóm thread BLOCKED trên cùng lock trong ≥2 dump liên tiếp là dấu hiệu nghi ngờ; xác định chắc chắn bằng vẽ chain owner và tìm chu trình chờ lock'
+  ],
+  body: `**Tóm tắt:** Phân tích nhiều thread dump theo chuỗi thời gian: mỗi dump là chụp trạng thái tất cả thread ({{RUNNABLE}}, {{BLOCKED}}, {{WAITING}}, {{TIMED_WAITING}}) cùng lock đang chờ/nắm. Dùng timeline trạng thái qua các dump để phân biệt "tạm thời chờ" và "kẹt vĩnh viễn", tìm lock bị tranh chấp nhất (nhiều thread {{BLOCKED}} nhất), và xác định deadlock chắc chắn khi cùng nhóm thread bị {{BLOCKED}} trên cùng lock trong ít nhất 2 dump liên tiếp.
+
+### Mỗi dump là một chụp, không phải phim
+Thread dump (jstack, jcmd, hoặc khi JVM crash) chụp toàn bộ thread tại một thời điểm: tên thread, trạng thái, stack trace, lock đang chờ và lock đang nắm. Một dump đơn lẻ chỉ mô tả tình huống tại thời điểm chụp — thread {{BLOCKED}} lúc này có thể đã {{RUNNABLE}} giây sau. Do đó **phải xem nhiều dump cách nhau vài giây** để phân biệt chờ tạm thời và kẹt vĩnh viễn.
+
+### Ý nghĩa từng trạng thái thread
+- {{RUNNABLE}}: đang chạy hoặc sẵn sàng chạy (đợi CPU, hoặc đang đọc/ghi socket ở mức OS; không phải đợi khoá).
+- {{BLOCKED}}: đang chờ vào một monitor/synchronized block. Thread này bị **chặn bởi lock** mà thread khác đang nắm — dấu hiệu đơm sínt nhất về tranh chấp khoá.
+- {{WAITING}}: đợi vô thời hạn ({{Object.wait()}}, {{Thread.join()}}, {{LockSupport.park()}}) để nhận tín hiệu từ thread khác.
+- {{TIMED_WAITING}}: đợi có giới hạn thời gian ({{Thread.sleep()}}, {{Object.wait(long)}}, {{parkNanos}}).
+
+{{WAITING}}/{{TIMED_WAITING}} không nhất thiết là lỗi — có thể là thread pool đang idle. {{BLOCKED}} mới là dấu hiệu tranh chấp khoá nghiêm trọng.
+
+### Lock owner chain: ai nắm khoá, ai đang chờ
+Một thread {{BLOCKED}} luôn chờ một lock, và lock đó được nắm bởi một thread khác (lock owner). Chuỗi: T1 {{BLOCKED}} chờ lock L (nắm bởi T2), T2 {{BLOCKED}} chờ lock M (nắm bởi T3), ..., quay lại T1 → **deadlock cycle**.
+
+Trong jstack, tìm:
+- {{waiting to lock <0x...>}}: lock thread đang chờ
+- {{locked <0x...>}}: lock thread đang nắm
+
+Dùng địa chỉ {{<0x...>}} để nối các thread thành chuỗi sở hữu lock.
+
+### Top contended lock mỗi dump
+Đếm số thread {{BLOCKED}} đang waiting to lock cùng địa chỉ {{<0x...>}} (cùng lock). Lock có số thread chờ nhiều nhất là **top contended lock** — điểm nóng cần sửa đầu tiên. Nếu top lock thay đổi giữa các dump, tranh chấp dịch chuyển; nếu không đổi, đó là bottleneck cố định.
+
+### Deadlock chắc chắn cần ≥2 dump
+Một thread {{BLOCKED}} trong dump 1 có thể chỉ chờ tạm thời (critical section dài). Nếu **cùng thread** vẫn {{BLOCKED}} trên **cùng lock** trong dump 2 và dump 3 (cách nhau vài giây), đó là dấu hiệu nghi ngờ deadlock/hang chặt, chưa chắc chắn. Xác định chắc chắn bằng vẽ lock owner chain: từ thread {{BLOCKED}} đi theo lock nó đang chờ → thread nắm lock đó → thread đó đang chờ lock nào tiếp. Nếu chuỗi quay về thread bắt đầu (chu trình wait-for), đó là deadlock xác định. Không có chu trình → thread nắm lock đang xử lý dài hoặc gọi I/O đồng bộ, không phải deadlock.
+
+### Ví dụ đời thực
+Hệ thống xử lý thanh toán: dump 1 có 5 thread {{BLOCKED}} chờ lock trên {{PaymentService.lock}}, dump 2 (3 giây sau) vẫn 5 thread cùng chờ cùng lock, dump 3 vẫn vậy. Lock owner là thread "reconciliation" đang {{WAITING}} trên DB connection. Nguyên nhân: reconciliation thread nắm {{PaymentService.lock}} rồi gọi DB sync bên trong synchronized block → chặn mọi thread thanh toán. Sửa: tách lock, không gọi I/O bên trong synchronized block.
+
+### Trả lời mẫu khi phỏng vấn
+Khi được cho nhiều thread dump và hỏi "tìm vấn đề", tôi sẽ: (1) đọc trạng thái mỗi thread, (2) vẽ lock owner chain từ các thread {{BLOCKED}}, (3) tìm top contended lock, (4) so sánh qua ≥2 dump để phân biệt tạm thời vs vĩnh viễn, (5) nếu cùng chuỗi xuất hiện nhiều lần → deadlock, đề xuất tách lock và tránh gọi I/O bên trong synchronized block.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: khác biệt {{BLOCKED}} vs {{WAITING}}, cách đọc jstack {{waiting to lock}} / {{locked}}, vì sao cần ≥2 dump để chắc deadlock, và top contended lock là gì. Trả lời ngắn gọn, có ví dụ chain thread A→B→C→A.`,
+  exercises: [
+    {
+      title: 'DumpAnalyzer: top contended lock và thread BLOCKED trong mọi dump',
+      prompt: `Phân tích thread dump. Lớp {{DumpEntry}} mô tả một thread trong dump: tên thread, trạng thái ({{RUNNABLE}}, {{BLOCKED}}, {{WAITING}}, {{TIMED_WAITING}}), lock đang chờ, thread nắm lock. Hoàn thiện {{DumpAnalyzer}}:
+
+- {{topContendedLock(dump)}}: trả về tên lock có nhiều thread {{BLOCKED}} đang chờ nhất. Trả về null nếu không có thread {{BLOCKED}} nào hoặc nếu nhiều lock cùng số lượng chờ nhiều nhất.
+- {{threadsBlockedInAll(dumps)}}: trả về danh sách tên thread bị {{BLOCKED}} trong **tất cả** các dump, sắp xếp theo thứ tự bảng chữ cái. Trả về danh sách rỗng nếu không có thread chung.
+
+{{DumpEntry}} đã có sẵn (constructor 4 tham số). Không được thêm field mới vào {{DumpEntry}}.`,
+      starter: `import java.util.*;
+class DumpEntry {
+    final String thread;
+    final String state;
+    final String lock;
+    final String owner;
+    DumpEntry(String thread, String state, String lock, String owner) {
+        this.thread = thread;
+        this.state = state;
+        this.lock = lock;
+        this.owner = owner;
+    }
+}
+class DumpAnalyzer {
+    String topContendedLock(List<DumpEntry> dump) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    List<String> threadsBlockedInAll(List<List<DumpEntry>> dumps) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        DumpAnalyzer a = new DumpAnalyzer();
+        List<DumpEntry> d1 = Arrays.asList(
+            new DumpEntry("T1", "BLOCKED", "L1", "T3"),
+            new DumpEntry("T2", "BLOCKED", "L1", "T3"),
+            new DumpEntry("T3", "RUNNABLE", null, null),
+            new DumpEntry("T4", "BLOCKED", "L2", "T3"),
+            new DumpEntry("T5", "WAITING", null, null)
+        );
+        check("top contended lock is L1 (2 waiters)", "L1".equals(a.topContendedLock(d1)), "got " + a.topContendedLock(d1));
+        List<DumpEntry> d2 = Arrays.asList(
+            new DumpEntry("T1", "RUNNABLE", null, null),
+            new DumpEntry("T2", "BLOCKED", "L2", "T1"),
+            new DumpEntry("T3", "BLOCKED", "L2", "T1"),
+            new DumpEntry("T4", "WAITING", null, null)
+        );
+        check("top contended lock is L2 (2 waiters)", "L2".equals(a.topContendedLock(d2)), "got " + a.topContendedLock(d2));
+        List<DumpEntry> d3 = Arrays.asList(
+            new DumpEntry("T1", "RUNNABLE", null, null),
+            new DumpEntry("T2", "RUNNABLE", null, null)
+        );
+        check("no blocked threads returns null", a.topContendedLock(d3) == null, "got " + a.topContendedLock(d3));
+        List<DumpEntry> d4 = Arrays.asList(
+            new DumpEntry("T1", "BLOCKED", "L1", "T3"),
+            new DumpEntry("T2", "BLOCKED", "L1", "T3"),
+            new DumpEntry("T3", "BLOCKED", "L2", "T4"),
+            new DumpEntry("T4", "BLOCKED", "L2", "T3")
+        );
+        check("tie between L1 and L2 returns null", a.topContendedLock(d4) == null, "got " + a.topContendedLock(d4));
+        List<List<DumpEntry>> seq = Arrays.asList(d1, d2);
+        List<String> blocked = a.threadsBlockedInAll(seq);
+        check("T2 blocked in both dumps", blocked.contains("T2") && blocked.size() == 1, "got " + blocked);
+        List<List<DumpEntry>> seq2 = Arrays.asList(d3, d4);
+        List<String> blocked2 = a.threadsBlockedInAll(seq2);
+        check("no common blocked thread", blocked2.isEmpty(), "got " + blocked2);
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+class DumpEntry {
+    final String thread;
+    final String state;
+    final String lock;
+    final String owner;
+    DumpEntry(String thread, String state, String lock, String owner) {
+        this.thread = thread;
+        this.state = state;
+        this.lock = lock;
+        this.owner = owner;
+    }
+}
+class DumpAnalyzer {
+    String topContendedLock(List<DumpEntry> dump) {
+        Map<String, Integer> count = new HashMap<>();
+        for (DumpEntry e : dump) {
+            if ("BLOCKED".equals(e.state) && e.lock != null) {
+                count.merge(e.lock, 1, Integer::sum);
+            }
+        }
+        String best = null;
+        int bestCount = 0;
+        boolean tie = false;
+        for (Map.Entry<String, Integer> en : count.entrySet()) {
+            if (en.getValue() > bestCount) {
+                bestCount = en.getValue();
+                best = en.getKey();
+                tie = false;
+            } else if (en.getValue() == bestCount) {
+                tie = true;
+            }
+        }
+        return tie || best == null ? null : best;
+    }
+    List<String> threadsBlockedInAll(List<List<DumpEntry>> dumps) {
+        if (dumps.isEmpty()) return Collections.emptyList();
+        Set<String> common = new HashSet<>();
+        for (DumpEntry e : dumps.get(0)) {
+            if ("BLOCKED".equals(e.state)) common.add(e.thread);
+        }
+        for (int i = 1; i < dumps.size(); i++) {
+            Set<String> blocked = new HashSet<>();
+            for (DumpEntry e : dumps.get(i)) {
+                if ("BLOCKED".equals(e.state)) blocked.add(e.thread);
+            }
+            common.retainAll(blocked);
+        }
+        List<String> result = new ArrayList<>(common);
+        Collections.sort(result);
+        return result;
+    }
+}`,
+      hints: [
+        'Chỉ đếm thread có state bằng "{{BLOCKED}}" và lock khác null.',
+        'Dùng {{HashMap<String, Integer>}} để đếm số lần mỗi lock xuất hiện; tìm lock có số đếm lớn nhất, trả null nếu có nhiều lock cùng số.',
+        'threadsBlockedInAll: lấy tập thread BLOCKED của dump đầu, dùng {{Set.retainAll}} với từng dump kế tiếp, rồi {{Collections.sort}} kết quả.'
+      ],
+      explain: `{{topContendedLock}}: duyệt tất cả entry, chỉ đếm những thread có {{state}} bằng "{{BLOCKED}}" và {{lock}} khác null. Dùng {{HashMap<String, Integer>}} để đếm số lần mỗi lock xuất hiện. Tìm lock có số đếm lớn nhất; nếu có nhiều lock cùng số đếm lớn nhất (hoặc không có entry nào) thì trả về null.
+
+{{threadsBlockedInAll}}: lấy tập thread {{BLOCKED}} của dump đầu tiên, rồi duyệt qua các dump kế tiếp và giữ lại chỉ những thread còn xuất hiện (dùng {{Set.retainAll}}). Cuối cùng sắp xếp kết quả theo thứ tự bảng chữ cái bằng {{Collections.sort}}.
+
+Ví dụ: dump 1 có T1, T2 BLOCKED trên L1; dump 2 có T1 BLOCKED trên L2, T2 RUNNABLE. threadsBlockedInAll = [T1] vì chỉ T1 bị BLOCKED trong cả hai dump.`,
+    }
+  ],
+  check: [
+    {
+      q: 'Trạng thái thread nào trong thread dump cho thấy thread đang chờ vào một lock (monitor/synchronized block)?',
+      options: ['RUNNABLE', 'BLOCKED', 'WAITING', 'TIMED_WAITING'],
+      answer: 1,
+      explain: 'BLOCKED là trạng thái đang chờ vào monitor lock. RUNNABLE đang chạy hoặc sẵn sàng chạy; WAITING/TIMED_WAITING đợi tín hiệu hoặc thời gian, không nhất thiết chờ lock.'
+    },
+    {
+      q: 'Vì sao cần phân tích ≥2 thread dump cách nhau vài giây thay vì chỉ 1 dump?',
+      options: ['Dump đầu luôn sai', 'Để phân biệt chờ tạm thời và kẹt vĩnh viễn (deadlock)', 'JStack chỉ đọc được dump thứ 2', 'Dump thứ 2 có nhiều thông tin hơn'],
+      answer: 1,
+      explain: 'Một dump là chụp tại một thời điểm. Cùng thread BLOCKED trong ≥2 dump liên tiếp là dấu hiệu nghi ngờ deadlock/hang chặt; cần vẽ chain owner (thread → lock chờ → thread nắm lock) và tìm chu trình để xác định deadlock.'
+    },
+    {
+      q: 'Lock nào được gọi là top contended lock trong một thread dump?',
+      options: ['Lock mà nhiều thread nhất đang waiting to lock', 'Lock được nắm bởi thread chính', 'Lock có địa chỉ 0x nhỏ nhất', 'Lock được nhắc đến nhiều nhất trong stack trace'],
+      answer: 0,
+      explain: 'Top contended lock là lock có số thread BLOCKED đang waiting to lock nhiều nhất — đây là điểm nóng tranh chấp khoá cần xử lý đầu tiên.'
+    },
+    {
+      q: 'Trong jstack, trường nào cho biết thread đang chờ vào lock nào?',
+      options: ['locked <0x...>', 'waiting to lock <0x...>', 'java.lang.Thread.State', 'tên thread'],
+      answer: 1,
+      explain: '{{waiting to lock <0x...>}} chỉ ra lock thread đang chờ; {{locked <0x...>}} chỉ ra lock thread đang nắm. Dùng địa chỉ <0x...> để nối các thread thành chuỗi sở hữu lock.'
+    }
+  ],
+  related: ['jvm-004', 'jvm-013', 'jvm-017'],
+  tags: ['thread dump', 'deadlock', 'contention', 'jstack']
+},
+{
+  id: 'lesson-jvm-022',
+  track: 'jvm', order: 22,
+  title: 'Cache static có bound và TTL: đồng hồ thủ công nowMs để kiểm thử TTL xác định',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Nhận diện static cache không giới hạn là memory leak và biết cách sửa bằng bound + TTL',
+    'Viết cache có số lượng entry tối đa và eviction LRU khi vượt capacity',
+    'Viết cache có TTL: mỗi entry có expireAt, get loại bỏ entry hết hạn',
+    'Dùng trường static nowMs để kiểm thử TTL xác định, không dựa vào thời gian hệ thống thực'
+  ],
+  body: `**Tóm tắt:** Cache static không giới hạn là memory leak kinh điển. Cách sửa là cache có bound (số lượng entry tối đa) và TTL (thời gian tồn tại), đồng thời dùng đồng hồ thủ công ({{nowMs}}) để kiểm thử TTL một cách xác định, không dựa vào thời gian thực.
+
+### Vì sao static cache không bound vẫn là leak
+Static field sống theo classloader → là GC root. Map static giữ mọi key/value đã từng put → không bị thu hồi dù nghiệp vụ đã xong. Heap tăng đều qua các lần full GC, cuối cùng OOM. Sửa không phải dùng weak reference (hit rate không ổn định cho cache chính), mà là cache có bound và TTL.
+
+### Cache có bound: số lượng entry tối đa
+Cache chỉ được chứa tối đa {{capacity}} entry. Khi put vượt quá giới hạn, loại entry cũ nhất (LRU — least recently used) để tetap trong giới hạn bộ nhớ. Mọi thao tác get/put vẫn O(1).
+
+### TTL: thời gian tồn tại của entry
+Mỗi entry được gán thời gian hết hạn khi put: {{expireAt = nowMs + ttlMs}}. Khi get, nếu {{nowMs >= expireAt}} thì entry đã hết hạn → trả về null và loại khỏi cache. Điều này đảm bảo dữ liệu cũ không được giữ mãi mà không ai truy cập.
+
+### Đồng hồ thủ công ({{nowMs}}) để kiểm thử xác định
+Không thể dựa vào {{System.currentTimeMillis()}} trong kiểm thử tự động vì thời gian trôi qua không kiểm soát được. Lớp cache cung cấp trường {{static long nowMs}} (mặc định là {{System.currentTimeMillis()}}), kiểm thử gán {{nowMs}} theo ý muốn để mô phỏng thời gian trôi qua. Tất cả get/put/size đều dùng {{nowMs}} thay vì gọi đồng hồ hệ thống.
+
+### Kết hợp bound và TTL
+- get: nếu entry hết hạn → loại bỏ, trả về null.
+- put: thêm/cập nhật entry với {{expireAt}} mới; {{removeEldestEntry}} loại entry cũ nhất (LRU) khi vượt {{capacity}}.
+- size: dọn hết hạn trước, sau đó trả về số entry còn lại.
+
+### Ví dụ đời thực
+Dịch vụ giá (cache) lưu giá theo mã sản phẩm trong static Map. Mỗi giá tồn tại 5 phút thì cũ. Không có TTL → giá cũ được giữ mãi, heap tăng. Sửa: TimedBoundedCache với {{capacity=10_000}}, {{ttlMs=300_000}} (5 phút), nowMs dùng đồng hồ thủ công khi kiểm thử. Heap ổn định, giá luôn mới.
+
+### Trả lời mẫu khi phỏng vấn
+Cache static không bound là leak vì static field là GC root. Tôi sửa bằng cache có bound và TTL: mỗi entry có expireAt, get loại bỏ entry hết hạn, put thêm entry và LRU nếu vượt capacity. Để kiểm thử TTL xác định, tôi dùng trường nowMs tĩnh thay vì {{System.currentTimeMillis()}}. Weak reference không đủ cho cache chính vì hit rate không ổn định.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: cache leak detect ra sao, tại sao cần TTL ngoài bound, cách kiểm thử TTL không dựa thời gian thực, và LRU eviction hoạt động thế nào. Trả lời: heap dump/MAT để thấy retained size; TTL để tự dọn dữ liệu cũ; nowMs tĩnh để kiểm thử xác định; LinkedHashMap access-order cho LRU.`,
+  exercises: [
+    {
+      title: 'TimedBoundedCache: bound + TTL với đồng hồ nowMs',
+      prompt: `Hoàn thiện {{TimedBoundedCache<K, V>}}: cache có bound (số lượng entry tối đa) và TTL (thời gian tồn tại), dùng đồng hồ thủ công {{nowMs}} để kiểm thử xác định.
+
+- {{get(key)}}: trả về value nếu entry chưa hết hạn; nếu hết hạn ({{nowMs >= expireAt}}) thì loại bỏ và trả về null.
+- {{put(key, value, ttlMs)}}: thêm/cập nhật entry với {{expireAt = nowMs + ttlMs}}. Sau put, nếu vượt capacity thì loại entry cũ nhất (LRU, theo thứ tự truy cập).
+- {{size()}}: dọn entry hết hạn trước, rồi trả về số entry còn lại.
+- Trường {{static long nowMs}}: đồng hồ thủ công (mặc định {{System.currentTimeMillis()}}). Kiểm thử gán {{nowMs}} theo ý muốn.
+
+Constructor nhận {{capacity}}. Không được thêm field public mới.`,
+      starter: `class TimedBoundedCache<K, V> {
+    static long nowMs = System.currentTimeMillis();
+    private final int capacity;
+    TimedBoundedCache(int capacity) { this.capacity = capacity; }
+    V get(K key) { throw new UnsupportedOperationException("TODO"); }
+    void put(K key, V value, long ttlMs) { throw new UnsupportedOperationException("TODO"); }
+    int size() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.util.*;
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        TimedBoundedCache.nowMs = 0;
+        TimedBoundedCache<String, Integer> c = new TimedBoundedCache<>(2);
+        c.put("a", 1, 100);
+        check("get before expiry returns value", c.get("a") == 1, "got " + c.get("a"));
+        TimedBoundedCache.nowMs = 150;
+        check("get after expiry returns null", c.get("a") == null, "got " + c.get("a"));
+        check("expired entry removed from size", c.size() == 0, "size = " + c.size());
+        TimedBoundedCache.nowMs = 0;
+        c.put("a", 1, 100);
+        c.put("b", 2, 100);
+        c.put("c", 3, 100);
+        check("size bounded to capacity", c.size() == 2, "size = " + c.size());
+        TimedBoundedCache.nowMs = 0;
+        c.put("a", 1, 100);
+        TimedBoundedCache.nowMs = 80;
+        c.put("a", 10, 100);
+        TimedBoundedCache.nowMs = 150;
+        check("update resets TTL", c.get("a") == 10, "got " + c.get("a"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+class TimedBoundedCache<K, V> {
+    static long nowMs = System.currentTimeMillis();
+    private final int capacity;
+    private final LinkedHashMap<K, CacheEntry<V>> map;
+    static class CacheEntry<V> {
+        final V value;
+        long expireAt;
+        CacheEntry(V value, long expireAt) {
+            this.value = value;
+            this.expireAt = expireAt;
+        }
+    }
+    TimedBoundedCache(int capacity) {
+        this.capacity = capacity;
+        this.map = new LinkedHashMap<K, CacheEntry<V>>(16, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
+                return size() > capacity;
+            }
+        };
+    }
+    V get(K key) {
+        CacheEntry<V> e = map.get(key);
+        if (e == null) return null;
+        if (nowMs >= e.expireAt) {
+            map.remove(key);
+            return null;
+        }
+        return e.value;
+    }
+    void put(K key, V value, long ttlMs) {
+        map.put(key, new CacheEntry<>(value, nowMs + ttlMs));
+    }
+    int size() {
+        Iterator<Map.Entry<K, CacheEntry<V>>> it = map.entrySet().iterator();
+        while (it.hasNext()) {
+            if (nowMs >= it.next().getValue().expireAt) it.remove();
+        }
+        return map.size();
+    }
+}`,
+      hints: [
+        'Dùng LinkedHashMap với accessOrder=true và override removeEldestEntry: trả true khi size() > capacity.',
+        'get: nếu nowMs >= e.expireAt thì map.remove(key) và trả về null.',
+        'size: lặp qua map, loại entry hết hạn (nowMs >= expireAt), rồi trả về map.size().',
+        'nowMs là static, tất cả instances chia sẻ cùng đồng hồ; kiểm thử gán nowMs để mô phỏng thời gian.'
+      ],
+      explain: `{{get}}: lấy entry từ map. Nếu null thì trả về null. Nếu {{nowMs >= expireAt}} thì entry hết hạn → loại khỏi map và trả về null. Nếu chưa hết hạn thì trả về value. Lưu ý: với LinkedHashMap access-order, {{get}} cũng đưa entry về cuối (cập nhật thứ tự truy cập).
+
+{{put}}: tạo {{CacheEntry}} với {{expireAt = nowMs + ttlMs}} rồi put vào map. Access-order LinkedHashMap đặt entry mới/cập nhật vào cuối. {{removeEldestEntry}} được gọi tự động sau put: nếu {{size() > capacity}} thì loại entry đầu (lâu nhất không dùng).
+
+{{size}}: lặp qua map, loại mọi entry có {{nowMs >= expireAt}}, rồi trả về số entry còn lại. Điều này đảm bảo entry hết hạn không bị tính vào size.
+
+Đồng hồ {{nowMs}} là static, nên tất cả instances chia sẻ cùng một đồng hồ. Kiểm thử gán {{nowMs}} để mô phỏng thời gian trôi qua mà không cần đợi thật.
+
+Ví dụ: capacity=2, put "a" và "b" tại nowMs=0, put "c" → "a" bị loại (LRU eldest), size=2. TTL: put "a" với ttl=100 tại nowMs=0 (expireAt=100), nowMs=150 → get("a") trả về null và loại "a".`,
+    }
+  ],
+  check: [
+    {
+      q: 'Vì sao static cache không giới hạn là memory leak?',
+      options: ['GC không quét static field', 'Static field là GC root, giữ mọi entry reachable', 'HashMap tự sao chép dữ liệu', 'Weak reference không hoạt động'],
+      answer: 1,
+      explain: 'Static field sống theo classloader → GC root. Map static giữ mọi key/value → không bị thu hồi dù nghiệp vụ xong.'
+    },
+    {
+      q: 'TTL trong cache giúp điều gì?',
+      options: ['Tăng kích thước cache', 'Tự động loại entry đã hết hạn thời gian', 'Biến cache thành weak reference', 'Không giúp gì'],
+      answer: 1,
+      explain: 'Mỗi entry có expireAt = nowMs + ttlMs. Get kiểm tra expiry: hết hạn → loại bỏ, trả về null. Dữ liệu cũ không được giữ mãi.'
+    },
+    {
+      q: 'Trường {{static long nowMs}} trong cache dùng để làm gì?',
+      options: ['Lưu thời gian hệ thống thực', 'Đồng hồ thủ công để kiểm thử TTL xác định', 'Đếm số lần put', 'Lưu TTL mặc định'],
+      answer: 1,
+      explain: 'Kiểm thử gán nowMs theo ý muốn để mô phỏng thời gian trôi qua, không cần đợi thật. Mặc định là System.currentTimeMillis().'
+    },
+    {
+      q: 'Khi get một entry đã hết hạn, cache làm gì?',
+      options: ['Trả về value cũ', 'Loại bỏ entry và trả về null', 'Tự gia hạn TTL', 'Ném NullPointerException'],
+      answer: 1,
+      explain: 'Get kiểm tra nowMs >= expireAt: nếu đúng, loại entry khỏi map và trả về null.'
+    }
+  ],
+  related: ['jvm-001', 'jvm-004'],
+  tags: ['memory leak', 'cache', 'TTL', 'bounded', 'LRU']
+},
 );
