@@ -57,7 +57,7 @@ function check() {
   const lrFiles = fs.readdirSync(DATA).filter(f => /^toeic-lr-\d+[a-e]\.js$/.test(f)).sort();
   const src = {};
   const byFile = {};
-  const tipFiles = fs.readdirSync(DATA).filter(x => /^toeic-tips(-[a-z]+)?.js$/.test(x)).sort();   // toeic-tips.js (L/R/overall) + toeic-tips-sw.js (S/W)
+  const tipFiles = fs.readdirSync(DATA).filter(x => /^toeic-tips(-[a-z]+)?\.js$/.test(x)).sort();   // toeic-tips.js (L/R/overall) + toeic-tips-sw.js (S/W)
   for (const f of lrFiles.concat(tipFiles)) {
     src[f] = fs.readFileSync(path.join(DATA, f), 'utf8');
     const before = (ctx.window.TOEIC_LR || []).length;
