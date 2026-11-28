@@ -3197,6 +3197,288 @@ class RetryService {
   check:[{q:'Bulk JPQL UPDATE có tự tăng @Version không?',options:['Có, Hibernate tự tăng','Không, bypass dirty checking; phải SET version = version + 1','Tùy database','Chỉ khi có @Modifying'],answer:1,explain:'Bulk JPQL UPDATE đi thẳng DB, không đi qua persistence context nên @Version không tự tăng. Phải viết SET version = version + 1 hoặc dùng HQL VERSIONED.'},{q:'Khi nào nên trả 409 thay vì retry?',options:['Xung đột do tải cao tạm thời','Dữ liệu nghiệp vụ đã đổi (giá mới) cần người dùng xem lại','Lần thử đầu tiên fail','Khi dùng pessimistic lock'],answer:1,explain:'Retry chỉ hợp xung đột tạm thời do tranh chấp. Nếu dữ liệu nghiệp vụ đã thay đổi (ví dụ giá mới), retry mù sẽ ghi đè ý định người dùng → nên trả 409 để họ xem lại và quyết định.'},{q:'Idempotency trong retry nghĩa là gì?',options:['Retry vô hạn','Áp dụng lại ý định cho kết quả đúng dù chạy nhiều lần','Không retry','Dùng cùng transaction'],answer:1,explain:'Operation idempotent: áp dụng lại ý định (cộng delta) cho kết quả đúng dù chạy nhiều lần. Ghi lại giá trị cũ (đặt balance=200) không idempotent và sai nghiệp vụ.'}],
   related:['jpa-024','jpa-011'],
   tags:['optimistic locking','bulk update','retry','backoff','409']
+},
+{
+  id:'lesson-jpa-021',track:'jpa',order:21,title:'Persistence context: identity map, snapshot và dirty checking theo trường',level:'mid',minutes:25,
+  goals:['Hiểu identity map: cùng id trong một transaction trả về cùng instance','Hiểu snapshot là bản sao giá trị, không phải tham chiếu, và tại sao điều đó quan trọng','Hiểu flush so sánh từng trường với snapshot và sinh UPDATE chỉ cho trường đã đổi','Biết commit xóa context, entity thành detached, setter bị bỏ qua lặng; biết refresh nạp lại từ DB'],
+  body:`**Tóm tắt:** Persistence context (EntityManager của JPA, Hibernate gọi là Session) là "bàn làm việc" gắn với một transaction: entity load vào đây được theo dõi, Hibernate tự sinh SQL khi flush hoặc commit. Hibernate lưu snapshot (bản sao giá trị) lúc load; flush so sánh từng trường với snapshot, trường đã đổi mới vào câu UPDATE. Commit xóa context, entity trở thành detached, setter sau đó bị bỏ qua lặng; refresh() nạp lại từ database để hủy thay đổi chưa flush.
+
+### Persistence context là "bàn làm việc" của một transaction
+Khi gọi {{em.find(KhachHang.class, 7L)}}, Hibernate tra identity map (bản đồ khoá chính → entity đang được quản lý). Đã có: trả về đúng instance đó, không chạy SQL. Chưa có: chạy SELECT, tạo object, đưa vào map, lưu snapshot, trả về.
+
+### Identity map: cùng id, cùng instance
+Trong một transaction, hai lần {{find}} cùng id trả về **cùng một instance** ({{a1 == a2}} là true). Nhờ đó không có hai object khác nhau đại diện cho cùng một hàng rồi ghi đè lẫn nhau. Identity map chỉ sống trong một persistence context; transaction khác có map riêng, nên cùng id sẽ cho instance khác nhau — đây là thiết kế đúng vì mỗi transaction cần cô lập.
+
+### Snapshot là bản sao giá trị, không phải tham chiếu
+Khi nạp entity, Hibernate lưu **snapshot**: bản sao giá trị từng trường (String, int, Long...), **không phải tham chiếu** tới object entity. Lý do mấu chốt: nếu snapshot trỏ tới chính object, setter đổi object thì "snapshot" cũng đổi theo, dirty checking sẽ không bao giờ phát hiện thay đổi. Hibernate luôn sao chép giá trị vào vùng nhớ riêng. Khi tự mô phỏng persistence context, hãy luôn lưu snapshot dưới dạng bản sao giá trị (ví dụ mảng String), không phải tham chiếu tới entity.
+
+### Dirty checking theo field: UPDATE chỉ trường đã đổi
+Khi flush (tự động trước commit, trước câu query JPQL có thể bị ảnh hưởng bởi thay đổi đang chờ, hoặc khi gọi {{em.flush()}}), Hibernate duyệt identity map, so sánh giá trị hiện tại của mỗi trường với snapshot. Trường nào khác mới đưa vào câu UPDATE; trường không đổi thì không xuất hiện trong SQL:
+
+~~~sql
+UPDATE khach_hang SET email = 'c@x.com' WHERE id = 1
+~~~
+
+Sau flush, Hibernate **ghi đè snapshot bằng giá trị hiện tại** để flush lần sau không lặp lại câu SQL. Giá trị đã đổi rồi đổi lại như cũ cũng không được coi là dirty: dirty checking so sánh giá trị, không đếm số lần gọi setter.
+
+~~~java
+a.setName("B"); a.setName("A"); // quay về giá trị cũ → flush không sinh UPDATE
+~~~
+
+### Flush khác commit; commit làm entity thành detached
+**Flush** gửi các câu SQL đang chờ xuống database, nhưng transaction vẫn còn mở (vẫn rollback được). **Commit** kết thúc transaction: dữ liệu bền vững, transaction khác mới nhìn thấy, và persistence context thường bị xóa. Mọi entity bạn đang giữ trong biến trở thành **detached**. Gọi setter trên entity detached chỉ đổi object trong RAM, không sinh SQL, và Hibernate cũng không báo lỗi — đây là bẫy "sửa xong mà không có gì xảy ra".
+
+### reload lại từ database bằng {{em.refresh()}}
+Nếu bạn sửa entity trong transaction rồi thay đổi ý định, {{em.refresh(entity)}} nạp lại trạng thái từ database, ghi đè cả object lẫn snapshot, hủy mọi thay đổi chưa flush. Sau khi refresh, flush sẽ không sinh câu SQL nào.
+
+### Ví dụ đời thực: endpoint PATCH cập nhật một vài trường
+Hệ thống CRM có bảng khách hàng 45 cột. Endpoint {{PATCH /customers/1}} cho khách sửa email và trạng thái (2 cột). Không tối ưu: Hibernate sinh UPDATE 45 cột, database phải ghi index/trigger cho 43 cột không đổi; ở 1.000 req/s tốn hàng giây CPU DB cho công việc vô nghĩa. Với dirty checking theo field (hoặc {{@DynamicUpdate}}), câu UPDATE chỉ chứa 2 cột đã đổi, CPU DB giảm khoảng 85%, p99 latency từ 45 ms xuống 28 ms (số liệu đo trên môi trường thử nghiệm, thực tế tuỳ bảng và trigger).
+
+Kịch bản sai: controller nhận entity từ service sau khi transaction commit (entity đã detached), sửa field rồi hy vọng lưu → log SQL trống, response 200 nhưng database không đổi. Cách đúng: load lại entity trong transaction mới, hoặc dùng instance managed mà {{save()}}/{{merge()}} trả về.
+
+### Trả lời mẫu khi phỏng vấn
+"Persistence context là unit of work gắn với transaction: có identity map (cùng id trong một transaction trả về cùng instance) và snapshot (bản sao giá trị lúc load). Sửa entity managed chỉ đổi RAM; flush so sánh từng trường với snapshot, trường khác mới sinh UPDATE cho cột đó, rồi cập nhật snapshot. Commit kết thúc transaction và xóa context, entity trở thành detached — setter sau đó bị Hibernate bỏ qua lặng. Muốn hủy thay đổi chưa flush thì gọi {{em.refresh()}} để nạp lại từ database."
+
+### Liên hệ phỏng vấn
+1. "Vì sao snapshot phải là bản sao giá trị, không phải tham chiếu?" — Nếu snapshot trỏ object, setter đổi object thì snapshot tự đổi theo, dirty checking không bao giờ phát hiện thay đổi. Hibernate sao chép giá trị ra vùng riêng.
+2. "Flush khác commit ở đâu?" — Flush gửi SQL xuống database nhưng transaction vẫn mở (rollback được). Commit kết thúc transaction, dữ liệu bền vững, context thường bị xóa, entity thành detached.
+3. "Sửa entity sau khi transaction kết thúc có sinh UPDATE không?" — Không. Entity đã detached, setter bị Hibernate bỏ qua lặng, không báo lỗi. Phải load lại trong transaction mới hoặc dùng instance mà save()/merge() trả về.
+4. "{{em.refresh()}} làm gì?" — Nạp lại trạng thái từ database, ghi đè object và snapshot, hủy thay đổi chưa flush. Sau đó flush sẽ không sinh câu SQL nào.
+> **Senior tip:** Khi debug "sửa xong mà không thấy UPDATE", trước hết kiểm tra entity còn được quản lý hay không — sau commit/clear/close, entity là detached và setter bị bỏ qua. Luôn dùng giá trị trả về của {{save()}}/{{merge()}}. Với bảng rất nhiều cột, chỉ bật {{@DynamicUpdate}} sau khi đo bằng statistics thấy lợi ích thực (giảm CPU database và I/O), không bật cho mọi entity.`,
+  exercises:[{title:'Mô phỏng persistence context: snapshot, dirty theo trường, refresh, commit, detach',prompt:`Cài {{AccountCtxt}} mô phỏng persistence context quản lý entity {{Account}} (có {{id}}, {{name}}, {{email}}, {{status}}):
+- {{load(id, name, email, status)}}: nếu id đã có trong identity map thì trả về **cùng object** cũ (bỏ qua các giá trị truyền vào); nếu chưa thì tạo {{Account}}, đưa vào identity map, lưu vào "database" nội bộ và lưu snapshot (bản sao ba giá trị).
+- {{setField(id, field, value)}}: nếu entity đang được quản lý thì đặt trường ({{name}}/{{email}}/{{status}}) trong RAM; nếu không (đã detach) thì không làm gì cả.
+- {{flush()}}: với mỗi entity đang quản lý (theo thứ tự load), so sánh từng trường với snapshot; trường đã đổi đưa vào câu {{"UPDATE account SET <cột>='<giá trị>' WHERE id=<id>"}} (các cột theo thứ tự {{name}}, {{email}}, {{status}}); entity không đổi thì không có câu SQL. Sau flush, cập nhật snapshot cho entity đã đổi.
+- {{refresh(id)}}: nếu entity đang được quản lý thì nạp lại ba giá trị từ "database" nội bộ, ghi đè object và snapshot, hủy mọi thay đổi chưa flush.
+- {{commit()}}: xóa toàn bộ identity map và snapshot (mọi entity thành detached).
+- {{detach(id)}}: gỡ một entity ra khỏi context.`,starter:`class Account {long id;String name,email,status;Account(long i,String n,String e,String s){id=i;name=n;email=e;status=s;}}
+class AccountCtxt {
+    Account load(long id,String name,String email,String status){throw new UnsupportedOperationException("TODO");}
+    void setField(long id,String field,String value){throw new UnsupportedOperationException("TODO");}
+    List<String> flush(){throw new UnsupportedOperationException("TODO");}
+    void refresh(long id){throw new UnsupportedOperationException("TODO");}
+    void commit(){throw new UnsupportedOperationException("TODO");}
+    void detach(long id){throw new UnsupportedOperationException("TODO");}}`,tests:`public class Main {
+    static int passed=0,total=0;
+    static void check(String name,boolean ok,String detail){total++;if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+detail);}
+    public static void main(String[] args){
+        AccountCtxt c=new AccountCtxt();
+        Account a=c.load(1,"A","a@x","ACTIVE");
+        check("cung id tra ve cung instance",c.load(1,"Z","z@z","NEW")==a,"khac instance");
+        check("giu gia tri luc dau","A".equals(a.name),"name="+a.name);
+        List<String>s=c.flush();
+        check("flush khong sua tro trong",s.isEmpty(),"sql="+s);
+        c.setField(1,"name","B");
+        s=c.flush();
+        check("chi cot name",s.equals(List.of("UPDATE account SET name='B' WHERE id=1")),"sql="+s);
+        s=c.flush();
+        check("sau flush trong roi",s.isEmpty(),"sql="+s);
+        c.setField(1,"name","C");c.setField(1,"email","c@x");
+        s=c.flush();
+        check("nhieu cot thu tu name email",s.equals(List.of("UPDATE account SET name='C', email='c@x' WHERE id=1")),"sql="+s);
+        c.load(2,"P","p@x","NEW");
+        c.setField(2,"status","ACTIVE");
+        s=c.flush();
+        check("entity khong sua bo qua",s.equals(List.of("UPDATE account SET status='ACTIVE' WHERE id=2")),"sql="+s);
+        c.setField(1,"name","C");c.setField(1,"email","c@x");c.setField(1,"status","ACTIVE");
+        s=c.flush();
+        check("doi lai gia tri cu khong dirty",s.isEmpty(),"sql="+s);
+        c.detach(1);c.setField(1,"name","D");
+        s=c.flush();
+        check("da detach bo qua lang",s.isEmpty(),"sql="+s);
+        c.commit();c.setField(2,"name","E");
+        s=c.flush();
+        check("sau commit bo qua lang",s.isEmpty(),"sql="+s);
+        AccountCtxt c2=new AccountCtxt();
+        c2.load(3,"M","m@x","NEW");
+        c2.setField(3,"name","N");
+        s=c2.flush();
+        check("update chua flush",s.equals(List.of("UPDATE account SET name='N' WHERE id=3")),"sql="+s);
+        c2.refresh(3);
+        s=c2.flush();
+        check("refresh huy sua chua chua flush",s.isEmpty(),"sql="+s);
+        check("refresh lay gia tri tu db","M".equals(c2.load(3,"Q","q@q","OLD").name),"name="+c2.load(3,"Q","q@q","OLD").name);
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,reference:`class Account {long id;String name,email,status;Account(long i,String n,String e,String s){id=i;name=n;email=e;status=s;}}
+class AccountCtxt {
+    Map<Long,Account> managed=new LinkedHashMap<>();
+    Map<Long,String[]> snapshot=new HashMap<>();
+    Map<Long,String[]> db=new HashMap<>();
+    Account load(long id,String name,String email,String status){
+        Account a=managed.get(id);
+        if(a!=null)return a;
+        a=new Account(id,name,email,status);
+        managed.put(id,a);
+        String[]v={name,email,status};
+        db.put(id,v.clone());snapshot.put(id,v.clone());return a;
+    }
+    void setField(long id,String field,String value){
+        Account a=managed.get(id);
+        if(a==null)return;
+        switch(field){
+            case "name":a.name=value;break;
+            case "email":a.email=value;break;
+            case "status":a.status=value;break;
+        }
+    }
+    List<String> flush(){
+        List<String> sql=new ArrayList<>();
+        for(Account a:managed.values()){
+            String[]snap=snapshot.get(a.id);
+            List<String> dirty=new ArrayList<>();
+            if(!Objects.equals(snap[0],a.name))dirty.add("name='"+a.name+"'");
+            if(!Objects.equals(snap[1],a.email))dirty.add("email='"+a.email+"'");
+            if(!Objects.equals(snap[2],a.status))dirty.add("status='"+a.status+"'");
+            if(!dirty.isEmpty()){
+                sql.add("UPDATE account SET "+String.join(", ",dirty)+" WHERE id="+a.id);
+                snapshot.put(a.id,new String[]{a.name,a.email,a.status});
+            }
+        }
+        return sql;
+    }
+    void refresh(long id){
+        Account a=managed.get(id);
+        if(a==null)return;
+        String[]cur=db.get(id);
+        a.name=cur[0];a.email=cur[1];a.status=cur[2];
+        snapshot.put(id,new String[]{cur[0],cur[1],cur[2]});
+    }
+    void commit(){managed.clear();snapshot.clear();}
+    void detach(long id){managed.remove(id);snapshot.remove(id);}
+}`,hints:['Dung LinkedHashMap lam identity map giu thu tu load.','Snapshot luu mang String ba gia tri, khong phai tham chieu den Account.','flush so tung field voi snapshot, them cot dich vao UPDATE theo thu tu name, email, status, sau do cap nhat snapshot.','refresh ghi lai ba field tu db va cap nhat snapshot.','commit xoa managed va snapshot; detach chi xoa mot entity; setField bo qua neu entity khong o trong managed.'],explain:`Bai tap buoc phan biet ba nhiem vu cua persistence context: load/theo doi (identity map), so sanh de biet field nao doi (snapshot), sinh SQL (flush). Loi hay gap: luu snapshot la tham chieu den Account (thi setter cung doi snapshot, khong bao phat hien doi); quen cap nhat snapshot sau flush (thi flush lan sau lap lai UPDATE); setField sau detach/commit van chay nhung khong sinh SQL (bat "sua xong mat mat"); refresh phai cap nhat ca object va snapshot neu khong flush sau van coi nhu van doi. O Hibernate thong thuong, @DynamicUpdate la tinh nang tuong tu: sinh UPDATE chi cot doi, chi bat sau khi do co loi thuc.`,}],check:[{q:'Dirty checking cua Hibernate sinh UPDATE cho cot nao?',options:['Tat ca cot cua entity','Chi cot da doi so voi snapshot','Chi cot co @Version','Chi cot not-null'],answer:1,explain:'Flush so tung field/entity voi snapshot; field khac moi duoc dua vao UPDATE (mac dinh Hibernate van cung cot tat ca de tai dung prepared statement, @DynamicUpdate biet thi chi cot doi).'},{q:'Sau khi transaction commit, ban goi setter sua field tren entity da duoc load. Luc commit tiep theo, Hibernate co sinh UPDATE khong?',options:['Co, luon ghi entity da duoc load','Khong; entity da thanh detached sau commit, setter bo qua lang, khong sinh SQL','Co neu co cascade','Chua biet, thuoc database'],answer:1,explain:'Commit xoa persistence context (thuong), entity thanh detached. Setter tren doi tuong detached chi doi RAM, khong sinh SQL, khong bao loi. Phai load lai trong transaction moi hoac dung instance cua save()/merge().'},{q:'{{em.refresh(entity)}} tac dong nhu the nao?',options:['Dong bo entity len database (gui UPDATE)','Nap lai trang thai tu database, ghi de object va snapshot, huy thay doi chua flush','Xoa khoi persistence context','Tang version neu co @Version'],answer:1,explain:'Refresh lay du lieu tu database ve entity, cap nhat ca object cua cung va snapshot; cac thay doi chua flush bi bo. Khong gui SQL, khong xoa khoi context, khong lien quan @Version.'},{q:'Gia tri cua mot field duoc doi roi doi lai lai nhu cu. Luc flush, cot do co xuat hien trong UPDATE khong?',options:['Co, vi da goi setter','Khong, dirty checking so gia tri hien tai voi snapshot, bang nhau thi khong doi','Co chi neu field la @Version','Chua biet'],answer:1,explain:'Dirty checking so sanh gia tri hien tai voi snapshot luu khi load. Quay ve gia tri cu thi khac biet bang zero, khong co cot nao duoc dua vao UPDATE.'}],related:['jpa-001'],tags:['persistence context','identity map','snapshot','dirty checking','refresh']
+  },
+  {
+  id:'lesson-jpa-022',track:'jpa',order:22,title:'Optimistic locking voi @Version: hai request sua cung ban ghi, phat hien xung dot va retry',level:'senior',minutes:30,
+  goals:['Giai thich lost update giua hai request HTTP va tai sao isolation mac dinh khong chan duoc','Hieu @Version them cot version va sinh cau UPDATE WHERE version = ?, xu ly khi 0 hang bi anh huong','Biet retry dung cach: transaction moi, doc version moi, ap dung lai y dinh (cong delta), khong ghi gia tri cu, gioi han so lan','Biet khi nao tra 409 thay vi retry, va @Version duoc kiem tra khi merge entity detached'],
+  body:`**Tóm tắt:** Hai request cùng mở form sửa sản phẩm, cả hai đọc version = 5. Request A lưu trước → version 6. Request B lưu với version cũ 5 → câu UPDATE ... WHERE version = 5 ảnh hưởng 0 hàng, Hibernate ném OptimisticLockException (Spring dịch thành ObjectOptimisticLockingFailureException). Cách xử lý: trả 409 cho người dùng xem lại, hoặc retry bằng transaction mới, đọc version mới, áp dụng lại ý định (cộng delta) không ghi giá trị cũ, giới hạn số lần thử.
+
+### Lost update giữa hai request HTTP: cả hai đọc cùng version
+Kịch bản: form sửa sản phẩm, tồn kho 10, version 5. Nhân viên A mở form lúc 9:00 đọc v5. Nhân viên B cũng mở form, đọc v5 (chưa ai lưu). A đổi giá thành 100, lưu lúc 9:05 → UPDATE ... WHERE version = 5 khớp 1 hàng → version 6, thành công. B đổi tồn kho thành 200, lưu lúc 9:06 với version 5 → UPDATE ... WHERE version = 5 ảnh hưởng 0 hàng (database đã là version 6) → Hibernate ném StaleObjectStateException, JPA bọc thành OptimisticLockException, Spring dịch thành ObjectOptimisticLockingFailureException. Database ở mức isolation mặc định (READ COMMITTED) không báo lỗi vì hai câu UPDATE đều hợp lệ về mặt cú pháp — mất cập nhật (lost update) bị ngăn chặn nhờ version.
+
+### @Version và câu UPDATE có điều kiện version
+Thêm một cột version vào entity, Hibernate tự quản (ứng dụng không tự tăng):
+
+~~~java
+@Entity
+class SanPham {
+    @Id Long id;
+    int gia;
+    @Version int version;
 }
+~~~
+
+Khi flush một thay đổi, Hibernate sinh:
+
+~~~sql
+UPDATE san_pham SET gia = ?, version = 6 WHERE id = ? AND version = 5
+~~~
+
+Câu này là compare-and-set nguyên tử ở database: kiểm tra version và ghi trong cùng một câu lệnh, không có khe hở giữa "kiểm tra" và "ghi". Nếu ảnh hưởng 0 hàng (version trong database đã khác, hoặc hàng bị xóa) → Hibernate ném exception. Cách gọi là "optimistic" vì không giữ khóa database trong lúc tính toán, chỉ phát hiện xung đột lúc ghi.
+
+### Hai request, hai transaction, đối tượng detached
+Mỗi request là một transaction riêng. Request A commit xong, context của A bị xóa, đối tượng A giữ trở thành detached. Request B gửi form kèm đối tượng deserialize từ JSON — đây là detached entity, giữ phiên bản cũ (v5). Khi service gọi {{save()}} hoặc {{merge()}}, Hibernate flush: đối tượng detached có version 5, database hiện version 6 → câu UPDATE ... WHERE version = 5 ảnh hưởng 0 hàng → exception. Nên luôn dùng instance managed mà {{save()}}/{{merge()}} trả về; đối tượng truyền vào vẫn là detached.
+
+### Retry đúng cách: transaction mới, đọc version mới, áp dụng lại ý định
+Không thể gửi lại câu UPDATE với version cũ — sẽ fail mãi. Retry đúng nghĩa là:
+1. Mở **transaction mới** (transaction cũ đã bị đánh dấu rollback-only, không dùng tiếp được).
+2. Đọc lại entity từ database (version mới nhất).
+3. Áp dụng lại **ý định**, ví dụ "cộng 50 vào tồn kho", không ghi lại giá trị đã tính từ bản đọc cũ (200 sẽ ghi đè thay đổi của A).
+4. Giới hạn số lần (ví dụ 3), có backoff nhỏ và jitter khi tải cao.
+
+Retry nằm **ngoài** method {{@Transactional}}: một bean ngoài gọi vào bean có {{@Transactional}}. Dữ liệu do người dùng đã thấy và quyết định (giá mới) → trả HTTP 409 để họ xem lại, không retry mù.
+
+### Ví dụ đời thực: hệ thống đặt phòng khám
+Hệ thống có 30.000 lượt khám/ngày. Giờ cao điểm, 3 nhân viên vien phi cùng mở form sửa phòng khám 42 (version 11). A lưu trước (version 12 thành công). B lưu sau với version 11 → 0 hàng ảnh hưởng → API trả 409 kèm version 12, giao diện hỏi "Phòng vừa được người khác cập nhật, bạn có muốn tải lại không?". B tải lại, thấy giá mới, chỉ áp dụng thay đổi của mình (sửa ghi chú), lưu thành công (version 13). Kết quả: 0 ca mất cập nhật, tỷ lệ 409 dưới 1%, và các trường hợp 409 được ghi log để phát hiện UI cache quá lâu.
+
+### Trả lời mẫu khi phỏng vấn
+"Em xac dinh lost update: hai transaction doc cung version, tinh toan trong ung dung, ghi de nhau; database o READ COMMITTED khong bao loi. Em giai quyet ưu tien: neu phep tinh bieu dien bang SQL (tru ton kho) thi dung cau UPDATE nguyen tu co dieu kien; neu sua qua form, em dung @Version. Sau OptimisticLockException, em mo transaction moi, doc lai entity (version moi), ap dung lai y dinh (cong delta), khong ghi gia tri cu, gioi han 3 lan co backoff. Khong retry trong cung transaction. Neu du lieu la do nguoi dung da xem, tra 409 thay vi retry mu."
+
+### Liên hệ phỏng vấn
+1. "Cau UPDATE co dieu kien version chong lost update the nao?" — Hibernate them cot version vao thanh ghi; flush sinh UPDATE them WHERE version = ? voi version ban doc. Neu nguoi khac da sua, version DB da doi, UPDATE anh huong 0 hang, ném OptimisticLockException. No la compare-and-set nguyen tu o cap database.
+2. "Retry sau ObjectOptimisticLockingFailureException phai lam gi?" — Mo transaction moi, doc lai entity (version moi), ap dung lai y dinh (cong delta), khong ghi gia tri cu. Gioi han 3 lan co backoff. Khong retry trong cung transaction (da rollback-only).
+3. "Khi nao tra 409 thay vi retry?" — Du lieu do nguoi dung da xem va ra quyet duoc (sua form) -> tra 409 de ho xem lai. He tu tu tinh (cong diem, tru ton kho) -> retry an toan.
+4. "@Version duoc kiem tra khi merge entity detached co the su dung cho form web mo lau khong?" — Co. Version cu cua object detached bi tu choi, rat co ich cho form web mo lau (nguoi dung sua form 10 phut roi submit).
+> **Senior tip:** Xung dot version tan cao tren mot hang "nong" (bo dem, dat ve) la dau hieu can thay thiet ke, khong tang so lan retry: dung hang doi, khoi pessimistic, hoac tach bo dem. Luon co buoc doi soat de sua du lieu da sai va ghi log ty le 409 theo thoi gian.`,
+  exercises:[{title:'Hai request sua cung san pham: version check, xung dot va retry',prompt:`Mô phỏng optimistic locking cho hai request HTTP sửa cùng sản phẩm. {{Product}} có {{id}}, {{giá}} (price) và {{version}}. {{EmSim}} mô phỏng EntityManager:
+- {{seed(id, price, version)}}: tạo sản phẩm trong "database" nội bộ.
+- {{find(id)}}: đọc sản phẩm từ database, trả về **một đối tượng mới** (mỗi request đọc một lần, giống detached entity mới).
+- {{save(detached)}}: nếu version của đối tượng truyền vào **khác** version trong database thì trả {{false}} và **không** đổi gì (giống UPDATE ... WHERE version = ? ảnh hưởng 0 hàng); nếu khớp thì áp dụng giá trị, tăng version thêm 1 và trả {{true}}.
+- {{Svc.reprice(em, id, delta)}}: thử tối đa **3 lần**; mỗi lần tạo đối tượng mới bằng {{find(id)}} (đọc version mới), cộng {{delta}} vào giá, gọi {{save}}. Thành công thì dừng. Sau 3 lần thất bại ném {{IllegalStateException}}.`,starter:`class Product {long id;int price;int version;Product(long i,int p,int v){id=i;price=p;version=v;}}
+class EmSim {
+    Map<Long,int[]> db=new HashMap<>();
+    void seed(long id,int price,int version){db.put(id,new int[]{price,version});}
+    Product find(long id){throw new UnsupportedOperationException("TODO");}
+    boolean save(Product detached){throw new UnsupportedOperationException("TODO");}}
+class Svc {
+    boolean reprice(EmSim em,long id,int delta){throw new UnsupportedOperationException("TODO");}}`,tests:`public class Main {
+    static int passed=0,total=0;
+    static void check(String name,boolean ok,String detail){total++;if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+detail);}
+    public static void main(String[] args){
+        EmSim em=new EmSim();
+        em.seed(1,100,0);
+        Product pA=em.find(1);   // request A doc version 0
+        Product pB=em.find(1);   // request B doc version 0 (mo form truoc khi A luu)
+        check("hai request doc doi tuong moi",pA!=pB,"cung instance");
+        pA.price=160;
+        check("A luu thanh cong version tang",em.save(pA)&&pA.version==1,"version="+pA.version);
+        Product cur=em.find(1);
+        check("db sau A",cur.price==160&&cur.version==1,"price="+cur.price+" v="+cur.version);
+        pB.price=200;   // y dinh cu B tai du lieu cu
+        check("B that bo vi version cu",!em.save(pB),"save stale tra true");
+        check("db khong bi B ghi de",em.find(1).price==160&&em.find(1).version==1,"da bi ghi de");
+        // B retry: doc lai version moi, ap dung lai y dinh (+40)
+        Product pC=em.find(1);
+        pC.price=pC.price+40;
+        check("retry ap dung y dinh thanh cong",em.save(pC)&&pC.version==2,"version="+pC.version);
+        check("cuoi cung price 200 version 2",em.find(1).price==200&&em.find(1).version==2,"price="+em.find(1).price+" v="+em.find(1).version);
+        // service retry
+        EmSim em2=new EmSim();em2.seed(2,100,0);
+        Svc svc=new Svc();
+        check("service cong delta",svc.reprice(em2,2,50)&&em2.find(2).price==150&&em2.find(2).version==1,"price="+em2.find(2).price+" v="+em2.find(2).version);
+        // flaky: mot writer chen vao giua hai lan thu
+        class FlakyEm extends EmSim {
+            int calls;
+            boolean save(Product p){
+                if(calls++==0){int[]r=db.get(p.id);r[1]++;}   // writer khac tang version
+                return super.save(p);
+            }
+        }
+        FlakyEm flaky=new FlakyEm();flaky.seed(3,10,0);
+        boolean okF=svc.reprice(flaky,3,25);
+        check("flaky retry sau xung dot",okF&&flaky.find(3).price==35&&flaky.find(3).version==2&&flaky.calls==2,"ok="+okF+" price="+flaky.find(3).price+" v="+flaky.find(3).version+" calls="+flaky.calls);
+        // busy: save luu that bai
+        class BusyEm extends EmSim {
+            int attempts;
+            boolean save(Product p){attempts++;return false;}
+        }
+        BusyEm busy=new BusyEm();busy.seed(4,100,0);
+        boolean thrown=false;
+        try{svc.reprice(busy,4,5);}catch(IllegalStateException e){thrown=true;}
+        check("thu 3 lan roi nem exception",thrown&&busy.attempts==3,"thrown="+thrown+" attempts="+busy.attempts);
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,reference:`class Product {long id;int price;int version;Product(long i,int p,int v){id=i;price=p;version=v;}}
+class EmSim {
+    Map<Long,int[]> db=new HashMap<>();
+    void seed(long id,int price,int version){db.put(id,new int[]{price,version});}
+    Product find(long id){int[]r=db.get(id);return new Product(id,r[0],r[1]);}
+    boolean save(Product detached){
+        int[]r=db.get(detached.id);
+        if(r==null||r[1]!=detached.version)return false;
+        r[0]=detached.price;r[1]=detached.version+1;detached.version=r[1];return true;
+    }
+}
+class Svc {
+    boolean reprice(EmSim em,long id,int delta){
+        for(int i=0;i<3;i++){
+            Product p=em.find(id);      // doc version moi moi lan thu
+            p.price=p.price+delta;      // ap dung lai y dinh (cong delta), khong ghi gia tri cu
+            if(em.save(p))return true;
+        }
+        throw new IllegalStateException("conflict after 3 attempts");
+    }
+}`,hints:['save so version cua doi tuong truyen voi version trong db; khong khop thi return false ngay, khong doi gi.','reprice moi lan thu: find(id) doc version moi, cong delta, save; het 3 lan thi throw new IllegalStateException(...).','FlakyEm: lan goi save dau tien tang version trong db (mo phong writer khac), lan thu hai doc version moi qua find thi thanh cong.','BusyEm: save luu tra false, sau 3 lan throw IllegalStateException.'],explain:`Bai tap mo phong compare-and-set version o cap database. Loi hay gap: doc version mot lan truoc vong lap (thi sau xung dot lan thu sau van dung version cu, fail mai); ghi gia tri cu (dat gia=200) thay cong delta (ghi de thay doi cua A); retry trong cung transaction (da rollback-only). O ung dung thong thuong, moi lan thu la transaction moi (doc entity moi tu DB), vong retry o bean ngoai @Transactional, gioi han 3 lan co backoff + jitter.`,}],check:[{q:'Hai request cung doc version=5, A luu thanh cong (version=6), B luu voi version=5. Dieu xay ra?',options:['B thanh cong vi sua cot khac','B bi OptimisticLockException vi UPDATE WHERE version=5 anh huong 0 hang','B tu dong retry','B ghi de A'],answer:1,explain:'@Version them dieu kien WHERE version=? vao UPDATE. Khi A da tang version len 6, cau UPDATE cua B voi version=5 khong khop hang nao, 0 row affected, Hibernate nem OptimisticLockException.'},{q:'Retry sau ObjectOptimisticLockingFailureException (Spring dich tu OptimisticLockException) phai lam gi?',options:['Gui lai UPDATE voi version cu','Mo transaction moi, doc entity (version moi), ap dung lai y dinh, gioi han so lan','Xoa cot version de het loi','Bat exception va thu lai trong cung transaction'],answer:1,explain:'Version cu chac chan fail. Transaction hien da rollback-only khong the tiep tuc. Phai mo transaction moi, doc state moi, ap dung lai y dinh, co gioi han. Xoa version quay lai lost update.'},{q:'Khi nao tra 409 thay vi retry?',options:['Xung dot tai cao tam thoi','Du lieu da doi can nguoi dung xem lai (sua form)','Lan thu dau that bai','Khi dung pessimistic lock'],answer:1,explain:'Retry chi hop cho xung dot tam thoi do tranh chap. Neu du lieu da doi (gia moi), retry mu ghi de y dinh nguoi dung -> tra 409 de ho xem lai va quyet duan.'},{q:'@Version duoc kiem tra khi merge entity detached co the su dung cho form web mo lau khong?',options:['Khong, merge khong kiem tra version','Co; version cu cua object detached bi tu choi, co ich cho form web mo lau','Chi khi co cascade','Chi tren PostgreSQL'],answer:1,explain:'Khi merge, Hibernate so sanh version cua object truyen vao voi DB. Neu object co version cu hon DB, merge bi tu choi bang OptimisticLockException. Form web mo 10 phut roi submit la truong hop kinh dien.'}],related:['jpa-003'],tags:['optimistic locking','@Version','lost update','retry','detached','409']
+  }
 );
 

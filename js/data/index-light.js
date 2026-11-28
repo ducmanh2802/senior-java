@@ -3106,6 +3106,8 @@ window.DATA_INDEX = {
     {"id":"lesson-jpa-018","track":"jpa","order":18,"title":"Optimistic locking với @Version: hai transaction xen kẽ, xung đột và retry","level":"senior","minutes":30},
     {"id":"lesson-jpa-019","track":"jpa","order":19,"title":"Dirty checking theo field: snapshot và UPDATE chỉ cột đã đổi","level":"senior","minutes":30},
     {"id":"lesson-jpa-020","track":"jpa","order":20,"title":"Optimistic locking: bulk update và retry có giới hạn với backoff","level":"senior","minutes":30},
+    {"id":"lesson-jpa-021","track":"jpa","order":21,"title":"Persistence context: identity map, snapshot và dirty checking theo trường","level":"mid","minutes":25},
+    {"id":"lesson-jpa-022","track":"jpa","order":22,"title":"Optimistic locking voi @Version: hai request sua cung ban ghi, phat hien xung dot va retry","level":"senior","minutes":30},
     {"id":"lesson-design-001","track":"design","order":1,"title":"Rate limiter: token bucket và sliding window log","level":"mid","minutes":30},
     {"id":"lesson-design-002","track":"design","order":2,"title":"Cache eviction: LRU và LFU","level":"mid","minutes":30},
     {"id":"lesson-design-003","track":"design","order":3,"title":"Consistent hashing và virtual nodes","level":"senior","minutes":30},
