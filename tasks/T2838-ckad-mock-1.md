@@ -1,6 +1,6 @@
 # T2838 — Đề thi thử CKAD thực hành số 1 (16–17 bài, độ khó như đề thật) + tạo file và group
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/ckad-mock-1.js`, `js/data/ckad-mock-2.js`, `js/data/ckad-mock-3.js`, `js/data/ckad-labs-1.js`, `js/data/ckad-labs-2.js`, `js/data/ckad-labs-3.js`, `js/core/data-manifest.js`
 After: T2834
@@ -27,6 +27,15 @@ Gợi ý phủ bài: multi-container + emptyDir, init container, CronJob, Job pa
 Xong: sửa dòng `Status:` thành `Status: DONE`, Notes ghi id/số bài và phân bố domain.
 
 ## Notes
+Đã điền `js/data/ckad-mock-1.js`: đề `ckad-1` "Đề thi thử CKAD số 1", 120 phút, pass 66%, **17 bài**, tổng weight = 100, tổng minutes = 117 (≤120).
+Phân bố domain (đúng trọng số ±7):
+- Design & Build: 20% (bài 1–3: sidecar+emptyDir, init container, CronJob)
+- Deployment: 20% (bài 4–6: rollback revision 1, canary theo replica, Helm upgrade --set)
+- Observability & Maintenance: 15% (bài 7–9: sửa readiness probe, kubectl debug ephemeral, logs --previous)
+- Environment, Config & Security: 25% (bài 10–13: ConfigMap volume, Secret env, SecurityContext, ResourceQuota chặn pod)
+- Services & Networking: 20% (bài 14–17: sửa Service selector, Ingress path, NetworkPolicy Calico, Service NodePort)
+Mỗi bài có setup idempotent, verify in PASS/FAIL + RESULT (kiểm hành vi), solution có lệnh + vì sao + mẹo. Không sửa data-manifest (group `ckad` đã có sẵn). `node --check`, `node scripts/check-ckad.js`, `node scripts/build-light-index.js`, `node scripts/validate.js` đều OK.
 
 ## Cập nhật 2026-11-28
 Placeholder `ckad-mock-1..3.js`, `ckad-labs-1..3.js` và group `ckad` trong data-manifest ĐÃ có sẵn (view #/ckad đã chạy). Bỏ bước 2–3: chỉ điền nội dung vào `js/data/ckad-mock-1.js` (thay dòng placeholder), không sửa data-manifest.
+Reviewed-by: verify-only (code/UI task)
