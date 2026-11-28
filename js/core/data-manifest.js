@@ -51,7 +51,7 @@
       bugs: ['bugs.js'],                                      // #/bugs bug hunt: buggy project code + tests (window.BUGS)
       toeic: ['toeic.js'],                                    // #/toeic TOEIC Speaking & Writing practice (window.TOEIC)
       ckad: ['ckad-mock-1.js', 'ckad-mock-2.js', 'ckad-mock-3.js', 'ckad-labs-1.js', 'ckad-labs-2.js', 'ckad-labs-3.js'],   // #/ckad đề thực hành + lab CKAD (docs/CKAD-MOCK.md)
-      'toeic-lr': ['toeic-tips.js', 'toeic-lr-1a.js', 'toeic-lr-1b.js', 'toeic-lr-1c.js', 'toeic-lr-1d.js', 'toeic-lr-1e.js', 'toeic-lr-2a.js', 'toeic-lr-2b.js', 'toeic-lr-2c.js', 'toeic-lr-2d.js', 'toeic-lr-2e.js'],   // #/toeic tab L&R + tips (docs/TOEIC-LR.md)
+      'toeic-lr': ['toeic-tips.js', 'toeic-tips-sw.js', 'toeic-lr-1a.js', 'toeic-lr-1b.js', 'toeic-lr-1c.js', 'toeic-lr-1d.js', 'toeic-lr-1e.js', 'toeic-lr-2a.js', 'toeic-lr-2b.js', 'toeic-lr-2c.js', 'toeic-lr-2d.js', 'toeic-lr-2e.js'],   // #/toeic tab L&R + tips (docs/TOEIC-LR.md)
       stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
