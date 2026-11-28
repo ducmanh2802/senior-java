@@ -10881,4 +10881,285 @@ note Installment Service: reconciliation so khớp provider, mismatch -> alert
   ],
   related: ['design-005', 'sd-046']
 }
+,
+{
+  id: 'sd-070',
+  title: 'Chấm công đa khu nhà máy: ca xoay chuyển, làm thêm và tích hợp bảng lương',
+  kind: 'enterprise',
+  level: 'lead',
+  prompt: `Thiết kế hệ thống chấm công cho tập đoàn 5 khu nhà máy, mỗi khu có nhiều ca (sáng, chiều, đêm, xoay tuần, đêm qua ngày). Công nhân chấm vào/ra bằng máy vân tay/khuôn mặt (lưu offline khi mất mạng, đồng bộ khi có mạng); nhân viên ngoài khu chấm qua app di động kèm geofence và selfie chống chấm hộ. Hệ thống tính giờ công theo ca, tính giờ làm thêm OT theo quy định lao động, xuất dữ liệu sang bảng lương, và xử lý khiếu nại điều chỉnh giờ công. Quy mô: 30.000 công nhân, peak 8.000 lượt chấm/giây, lưu dữ liệu 3 năm. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: chấm vào/ra offline/online, đồng bộ idempotent, định nghĩa ca (fixed, rotating, crosses midnight), tính giờ công và OT, xuất bảng lương, khiếu nại điều chỉnh, geofence/selfie cho ngoài khu. Non-functional: 8.000 lượt/giây peak, không mất punch, sync dưới 5 phút, tính OT đúng theo luật lao động. Hỏi: ca xoay chuyển quy định thế nào, OT tính theo ngày hay theo tuần, geofence bán kính bao nhiêu, có làm ca đêm nhiều ngày liên tiếp không. Out-of-scope: thanh toán lương thực tế (chỉ xuất file), điểm danh phòng ban văn phòng.` },
+    { name: 'Estimation', minutes: 5, guide: `30.000 x 2 lượt/ngày = 60.000 lượt/ngày, peak 8.000 lượt/giây (flash check-in lúc 6h30 sáng). 60.000 x 365 = 21,9 triệu punch/năm, 3 năm ~ 65 triệu dòng, partition theo tháng và khu nhà máy. Mỗi punch ~ 200 byte ~ 4,4 GB/năm, 3 năm ~ 13 GB. Đồng bộ batch từ máy chấm công: mỗi máy gửi vài trăm punch/lần, vài nghìn máy -> vài triệu sự kiện đồng bộ/ngày.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /punches {employeeId, deviceId, ts, type, offlineId}; GET /attendance/{employeeId}?from=&to=; POST /shifts (quản lý ca); POST /adjustments {employeeId, date, hours, reason, approvedBy}; GET /payroll/export?month=. Bảng punch(id, employee_id, device_id, ts, type, offline_id UNIQUE, synced_at, device_ts, skew_ms); shift(id, name, start_time, end_time, crosses_midnight, ot_rule); roster(employee_id, shift_id, date, effective_from, effective_to); attendance_day(employee_id, work_date, shift_id, in_time, out_time, ot_hours, status); adjustment(id, employee_id, date, hours, status PENDING/APPROVED/REJECTED, approved_by, created_at); geofence_zone(id, name, lat, lng, radius_m).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Máy chấm công lưu punch offline vào flash, gửi batch qua Sync service khi có mạng (idempotent theo offlineId); App di động chấm geofence + selfie -> Auth service -> punch. Attendance service ghi punch, tính attendance_day theo shift (ca đêm crosses_midnight), tính OT. Payroll export đọc attendance_day đã khóa tháng. Khiếu nại qua adjustment, duyệt rồi cập nhật attendance_day (không sửa punch raw). Giải thích vì sao punch raw không sửa và vì sao partition theo employee_id + tháng.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: idempotency theo offlineId tránh punch trùng; clock skew giữa máy và server (lưu device_ts + synced_at); ca xoay chuyển và roster hiệu lực theo ngày; ca đêm qua nhiều ngày tính giờ về đúng ca; OT theo quy định lao động (ngày thường, cuối tuần, ngày lễ); khiếu nại có audit trail, duyệt rồi cập nhật attendance_day; xuất bảng lương khóa tháng để không đổi sau khi đã tính lương; failure modes (máy mất mạng lâu, flash đầy, clock sai, chấm hộ, punch thiếu).` }
+  ],
+  rubric: [
+    'Máy chấm công lưu offline và đồng bộ idempotent theo offlineId',
+    'Clock skew xử lý bằng device_ts + synced_at, đánh dấu punch cần xem xét nếu lệch lớn',
+    'Ca xoay chuyển: roster hiệu lực theo ngày, shift crosses_midnight cho ca đêm',
+    'Tính giờ công theo ca: punch đầu IN, punch cuối OUT, trừ giờ nghỉ, trạng thái OK/MISSING_IN/MISSING_OUT',
+    'Tính OT theo quy định lao động (ngày thường, cuối tuần, ngày lễ, ca đêm)',
+    'Khiếu nại qua adjustment, duyệt rồi cập nhật attendance_day, không sửa punch raw',
+    'Xuất bảng lương khóa tháng, immutable sau khi đã tính lương',
+    'Geofence + selfie cho ngoài khu, chống chấm hộ',
+    'Partition punch theo employee_id + tháng, chỉ đọc attendance_day cho báo cáo',
+    'Giám sát punch chưa đồng bộ, độ trễ sync, ca thiếu punch, skew theo thiết bị'
+  ],
+  reference: `**Tóm tắt:** Chấm công đa khu là bài toán **không mất punch, tính đúng ca kể cả ca xoay và ca đêm qua nhiều ngày, và điều chỉnh có dấu vết cho bảng lương**. Ba trụ cột: (1) máy lưu punch offline, đồng bộ idempotent theo offlineId; (2) shift có crosses_midnight + roster hiệu lực theo ngày để tính giờ đúng ca; (3) adjustment duyệt có audit trail, xuất bảng lương khóa tháng, punch raw không bao giờ sửa. Tính OT và xuất lương là phần quan trọng nhất cho nhà máy vì liên trực tiếp đến tiền lương công nhân.
+
+### 1. Yêu cầu và quy mô
+- 5 khu nhà máy, 30.000 công nhân, nhiều ca (sáng, chiều, đêm, xoay tuần).
+- Chấm vào/ra bằng máy vân tay/khuôn mặt (offline khi mất mạng) và app di động (geofence + selfie).
+- Tính giờ công theo ca, tính OT theo luật lao động, xuất bảng lương, khiếu nại điều chỉnh.
+- Peak 8.000 lượt chấm/giây, lưu dữ liệu 3 năm.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Punch/ngày | 30.000 x 2 | 60.000 lượt |
+| Peak | - | 8.000 lượt/giây |
+| Punch/năm | 60.000 x 365 | 21,9 triệu |
+| Dung lượng 3 năm | 21,9M x 200 byte x 3 | ~13 GB |
+| Đồng bộ batch | vài nghìn máy x vài trăm punch | vài triệu sự kiện/ngày |
+
+Kết luận: lưu lượng punch vừa phải, nhưng **đồng bộ batch từ nhiều máy** và **tính OT theo ca phức tạp** là điểm mấu chốt.
+
+### 3. Mô hình dữ liệu
+~~~sql
+CREATE TABLE punch (
+  id            BIGSERIAL PRIMARY KEY,
+  employee_id   BIGINT NOT NULL,
+  device_id     BIGINT NOT NULL,
+  ts            TIMESTAMPTZ NOT NULL,          -- thời gian máy chấm
+  type          VARCHAR(10) NOT NULL,          -- IN / OUT
+  offline_id    VARCHAR(64) NOT NULL UNIQUE,   -- mã punch của máy, chống trùng
+  synced_at     TIMESTAMPTZ,                   -- thời gian server nhận
+  device_ts     TIMESTAMPTZ,                   -- thời gian máy (dùng để tính skew)
+  skew_ms       BIGINT,                        -- device_ts - server_receive_ms
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE shift (
+  id            INT PRIMARY KEY,
+  name          VARCHAR(40) NOT NULL,
+  start_time    TIME NOT NULL,
+  end_time      TIME NOT NULL,
+  crosses_midnight BOOLEAN NOT NULL DEFAULT FALSE,
+  ot_rule       VARCHAR(20) NOT NULL           -- quy định OT của ca này
+);
+CREATE TABLE roster (
+  employee_id   BIGINT NOT NULL,
+  shift_id      INT NOT NULL,
+  work_date     DATE NOT NULL,
+  effective_from DATE NOT NULL,
+  effective_to  DATE,
+  PRIMARY KEY (employee_id, work_date)
+);
+CREATE TABLE attendance_day (
+  employee_id   BIGINT NOT NULL,
+  work_date     DATE NOT NULL,
+  shift_id      INT,
+  in_time       TIMESTAMPTZ,
+  out_time      TIMESTAMPTZ,
+  ot_hours      NUMERIC(5,2) NOT NULL DEFAULT 0,
+  status        VARCHAR(20) NOT NULL,          -- OK, MISSING_IN, MISSING_OUT, LATE, EARLY_LEAVE
+  PRIMARY KEY (employee_id, work_date)
+);
+CREATE TABLE adjustment (
+  id            BIGSERIAL PRIMARY KEY,
+  employee_id   BIGINT NOT NULL,
+  work_date     DATE NOT NULL,
+  hours         NUMERIC(5,2) NOT NULL,
+  reason        TEXT NOT NULL,
+  status        VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  approved_by   BIGINT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE geofence_zone (
+  id            BIGSERIAL PRIMARY KEY,
+  name          VARCHAR(100) NOT NULL,
+  lat           DOUBLE PRECISION NOT NULL,
+  lng           DOUBLE PRECISION NOT NULL,
+  radius_m      INT NOT NULL CHECK (radius_m > 0)
+);
+~~~
+- punch.raw không bao giờ sửa; điều chỉnh giờ công ghi vào adjustment, duyệt rồi cập nhật attendance_day.
+- UNIQUE(offline_id) chống punch trùng khi máy gửi lại do mạng chập chờn.
+
+### 4. Đồng bộ offline và clock skew
+Máy chấm công mất mạng vẫn nhận punch, lưu vào flash. Khi có mạng gửi batch lên Sync service. Nếu gửi lại cùng punch, server không tạo trùng nhờ UNIQUE offline_id. Đây là idempotency.
+Máy clock có thể sai vài phút. Server lưu cả ts (thời gian máy) và synced_at (thời gian server nhận). Khi tính công dùng ts máy nếu lệch dưới 10 phút; nếu lệch lớn hơn dùng synced_at và đánh dấu punch cần xem xét.
+
+### 5. Ca xoay chuyển và ca đêm qua nhiều ngày
+Roster gán shift cho mỗi nhân viên theo ngày (effective_from/to). Shift có cờ crosses_midnight cho ca đêm (ví dụ 22:00 đến 06:00 hôm sau). Punch IN lúc 22:30 ngày D và punch OUT lúc 05:45 ngày D+1 đều thuộc ca đêm của ngày D. Giờ làm = từ 22:00 đến 06:00.
+
+### 6. Tính giờ công theo ca
+in_time, out_time lấy từ punch đầu tiên IN và punch cuối cùng OUT trong khoảng ca. hours = out_time - in_time trừ thời gian nghỉ. status: OK, MISSING_IN, MISSING_OUT, LATE, EARLY_LEAVE. Nếu punch OUT thiếu, đánh MISSING_OUT và chờ điều chỉnh.
+
+### 7. Tính giờ làm thêm OT
+OT theo quy định lao động: ngày thường, cuối tuần, ngày lễ, ca đêm có hệ số khác nhau. shift.ot_rule quy định hệ số OT của ca. Tính ot_hours trên attendance_day, lưu để xuất bảng lương.
+
+### 8. Khiếu nại và điều chỉnh
+Công nhân/phòng nhân sự tạo adjustment với lý do, ở PENDING. Quản lý duyệt. Khi approve, cập nhật attendance_day và ghi audit trail. Không sửa punch raw.
+
+### 9. Xuất bảng lương
+Payroll export đọc attendance_day đã khóa tháng. Sau khi đã tính lương cho tháng, attendance_day của tháng đó immutable, không được sửa. Điều này bảo vệ audit trail và tránh tranh chấp tiền lương.
+
+### 10. Geofence và selfie cho ngoài khu
+Nhân viên kỹ thuật, giao hàng chấm qua app di động. Kiểm tra geofence (vị trí trong bán kính radius_m của khu nhà máy) + selfie để chống chấm hộ. Nếu ngoài geofence hoặc selfie không khớp -> đánh dấu cần xem xét, chuyển vào hàng đợi duyệt thủ công.
+
+### 11. Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Máy mất mạng lâu, flash đầy | Punch bị mất | Máy lưu vào flash, ưu tiên đồng bộ punch cũ nhất; alert khi flash > 80% |
+| Clock máy sai | Tính giờ sai | Lưu device_ts + synced_at, đánh dấu skew lớn, dùng synced_at nếu lệch > 10 phút |
+| Punch trùng gửi lại | Công bị tính hai lần | UNIQUE offline_id, server bỏ qua punch trùng |
+| Chấm hộ | Sai dữ liệu công nhân | Geofence + selfie, duyệt thủ công cho trường hợp nghi ngờ |
+| Punch OUT thiếu | Không tính được giờ | Đánh MISSING_OUT, chờ adjustment |
+
+### 12. Giám sát
+Số punch chưa đồng bộ, độ trễ sync, ca thiếu punch, độ lệch clock theo thiết bị, số adjustment pending, tỷ lệ chấm hộ nghi ngờ.
+
+### 13. Trả lời mẫu khi phỏng vấn
+Tôi làm máy chấm công lưu punch offline và đồng bộ idempotent theo offlineId. Ca được mô tả bằng shift có cờ crosses_midnight và roster hiệu lực theo ngày để ca đêm qua nhiều ngày tính giờ về đúng ca. Tính công theo punch đầu IN và punch cuối OUT, thiếu punch đánh MISSING và chờ điều chỉnh. OT tính theo quy định lao động (ngày thường, cuối tuần, ngày lễ). Mọi điều chỉnh qua adjustment table với duyệt và audit trail, không sửa punch raw. Xuất bảng lương khóa tháng để immutable sau khi đã tính lương. Ngoài khu dùng geofence + selfie chống chấm hộ. Giám sát punch chưa đồng bộ, độ trễ sync, ca thiếu punch, skew theo thiết bị.
+
+> Senior tip: interviewer hay hỏi "máy chấm công clock sai 5 phút, bạn làm gì". Câu trả lời tốt là lưu cả thời gian máy và thời gian server nhận, kiểm tra độ lệch, nếu lệch lớn dùng thời gian server nhận và đánh dấu punch cần xem xét. Và đừng bao giờ sửa punch raw — điều chỉnh giờ công phải qua adjustment có duyệt và audit trail, vì punch raw là bằng chứng để tính lương và giải quyết khiếu nại sau này.`,
+  followups: ['Máy chấm công mất mạng 3 ngày: flash đầy, bạn xử lý thế nào?','Ca đêm làm 3 ngày liên tiếp (22h-6h), tính OT vào ngày nào?','Hai máy gửi punch trùng: bạn xử lý thế nào?','Làm sao phát hiện chấm hộ (buddy punching)?','Khu nhà máy mới tham gia, roster và shift migration như thế nào?'],
+  related: ['sd-059']
+},
+{
+  id: 'sd-071',
+  title: 'QR thanh toán merchant đa nhà cung cấp: qui chiếu, hoàn tiền, soát đối ngân hàng',
+  kind: 'enterprise',
+  level: 'lead',
+  prompt: `Thiết kế hệ thống QR thanh toán cho merchant hoạt động với nhiều ngân hàng/PSP (VietQR, Napas, ví điện tử): sinh QR tĩnh (quầy bán lẻ, không chứa số tiền) và QR động (đơn hàng online, chứa số tiền + mã đơn theo chuẩn EMVCo); khách quét bằng app ngân hàng; hệ thống nhận webhook biến động số dư từ nhiều nguồn, verify chữ ký HMAC, idempotent theo bank_txn_id, khớp giao dịch với đơn, xử lý chuyển thiếu/thừa/sai nội dung, hoàn tiền (reversal/refund), và soát đối cuối ngày với sao kê từng ngân hàng. Quy mô: 100.000 merchant, peak 3.000 giao dịch/giây, khớp dưới 5 giây. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: sinh QR tĩnh/động, nhận webhook từ nhiều ngân hàng, verify chữ ký, khớp đơn (amount, mã đơn trong addInfo), xử lý thiếu/thừa/sai nội dung, hoàn tiền, soát đối cuối ngày. Non-functional: 3.000 giao dịch/giây peak, khớp dưới 5 giây, không mất giao dịch, idempotent, availability 99,9%. Hỏi: ai chịu phí giao dịch, refund partial hay toàn bộ, webhook từ ngân hàng sync hay async, thời gian chờ webhook trước khi đánh unmatched. Out-of-scope: ví điện tử nội bộ, thẻ tín dụng.` },
+    { name: 'Estimation', minutes: 5, guide: `100.000 merchant x 30 đơn/ngày = 3 triệu đơn/ngày ~ 35 đơn/giây trung bình, peak 3.000 giao dịch/giây. Webhook từ ngân hàng ~ 3.000/giây peak. 3 triệu x 365 = 1,1 tỷ đơn/năm, lưu 1 năm, partition theo tháng. Mỗi transaction ~ 300 byte ~ 330 GB/năm. Quét QR (xem QR) nhiều gấp 10 lần giao dịch, phục vụ từ cache/CDN.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /qr/dynamic {merchantId, amount, orderId, expiresIn}; GET /qr/static/{merchantId}; POST /webhooks/bank {bankCode, accountNo, amount, addInfo, transactionId, timestamp, signature}; GET /transactions/{id}; POST /refunds {transactionId, amount, reason}; GET /orders/{id}/status. Bảng qr_code(id, merchant_id, type STATIC/DYNAMIC, amount, order_id, status, expires_at, bank_code); transaction(id, bank_txn_id UNIQUE, merchant_id, amount, add_info, bank_code, matched_order_id, status MATCHED/PARTIAL/OVERPAID/UNMATCHED/AMBIGUOUS/REFUNDED); refund(id, transaction_id, amount, status, reason); order(id, merchant_id, amount, status); webhook_log(id, bank_txn_id, raw_payload, signature_ok, processed_at).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Merchant app -> QR service sinh QR động theo chuẩn EMVCo -> khách quét qua app ngân hàng -> ngân hàng xử lý -> webhook bank -> webhook receiver verify HMAC -> Kafka -> Matching service -> Order service -> Notification. Khớp: parse addInfo lấy mã đơn, kiểm tra amount. Hoàn tiền: reversal qua ngân hàng hoặc refund nội bộ. Soát đối: job cuối ngày tải sao kê từng ngân hàng, so khớp với transaction. Giải thích vì sao verify HMAC bắt buộc và vì sao idempotent theo bank_txn_id.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: QR động theo chuẩn EMVCo/VietQR chứa amount + addInfo (mã đơn) + CRC; QR tĩnh không chứa số tiền, khách nhập, dễ sai; webhook verify HMAC, idempotent theo bank_txn_id (UNIQUE), retry + DLQ; matching phân loại MATCHED/PARTIAL/OVERPAID/UNMATCHED/AMBIGUOUS; fuzzy match amount + thời gian cho sai nội dung; hoàn tiền reversal/refund idempotent; soát đối cuối ngày với sao kê từng ngân hàng; failure modes (webhook trễ, signature sai, chuyển thiếu, đơn bị hai giao dịch khớp).` }
+  ],
+  rubric: [
+    'QR tĩnh vs QR động: động chứa amount + mã đơn theo EMVCo, tĩnh khách nhập số tiền',
+    'Sinh QR động chuẩn EMVCo/VietQR: merchant account, amount, addInfo, CRC checksum',
+    'Webhook verify signature HMAC bắt buộc, idempotent theo bank_txn_id',
+    'Matching parse addInfo, kiểm tra amount: đủ MATCHED, thiếu PARTIAL, thừa OVERPAID, sai nội dung UNMATCHED/AMBIGUOUS',
+    'Fuzzy match amount + thời gian cho sai nội dung, merchant xác nhận AMBIGUOUS',
+    'Hoàn tiền reversal/refund idempotent theo transaction_id',
+    'Soát đối cuối ngày với sao kê từng ngân hàng, mismatch alert',
+    'QR động hết hạn, QR tĩnh khớp theo amount + thời gian',
+    'Retry webhook, dead letter queue, không mất giao dịch',
+    'Giám sát UNMATCHED/AMBIGUOUS, độ trễ khớp, tỷ lệ partial/overpaid, webhook signature sai'
+  ],
+  reference: `**Tóm tắt:** QR thanh toán merchant đa nhà cung cấp là bài toán **sinh QR đúng chuẩn, nhận webhook đáng tin cậy từ nhiều nguồn, và khớp giao dịch với đơn kể cả khi chuyển thiếu/thừa/sai nội dung**. Ba trụ cột: (1) QR động chứa amount và mã đơn theo chuẩn EMVCo/VietQR, QR tĩnh khách nhập số tiền; (2) webhook verify chữ ký HMAC và idempotent theo bank_txn_id, retry + DLQ để không mất giao dịch; (3) matching service phân loại giao dịch và xử lý thiếu/thừa/sai nội dung, hoàn tiền idempotent, soát đối cuối ngày với sao kê từng ngân hàng. Vì làm việc với nhiều ngân hàng nên độ tin cậy của webhook và việc đối soát là chìa khóa.
+
+### 1. Yêu cầu và quy mô
+- 100.000 merchant, nhiều ngân hàng/PSP (VietQR, Napas, ví điện tử).
+- Sinh QR tĩnh (quầy bán lẻ) và QR động (đơn hàng online, chứa số tiền + mã đơn).
+- Nhận webhook từ nhiều ngân hàng, verify chữ ký, idempotent theo bank_txn_id.
+- Khớp giao dịch với đơn, xử lý thiếu/thừa/sai nội dung, hoàn tiền.
+- Soát đối cuối ngày với sao kê từng ngân hàng.
+- Peak 3.000 giao dịch/giây, khớp dưới 5 giây.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Đơn/ngày | 100.000 x 30 | 3 triệu |
+| Trung bình | 3 triệu / 86.400 | ~35 đơn/giây |
+| Peak | - | 3.000 giao dịch/giây |
+| Webhook peak | - | ~3.000/giây |
+| Đơn/năm | 3 triệu x 365 | 1,1 tỷ |
+| Dung lượng 1 năm | 1,1 tỷ x 300 byte | ~330 GB |
+
+Kết luận: lưu lượng giao dịch vừa phải, nhưng **webhook từ nhiều ngân hàng** và **soát đối cuối ngày** đòi hỏi độ tin cậy cao.
+
+### 3. Mô hình dữ liệu
+~~~sql
+CREATE TABLE qr_code (
+  id            BIGSERIAL PRIMARY KEY,
+  merchant_id   BIGINT NOT NULL,
+  type          VARCHAR(16) NOT NULL,  -- STATIC / DYNAMIC
+  amount        BIGINT,                -- null nếu static (khách nhập)
+  order_id      VARCHAR(64),
+  status        VARCHAR(16) NOT NULL,  -- ACTIVE / EXPIRED / USED
+  expires_at    TIMESTAMPTZ,
+  bank_code     VARCHAR(16) NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE transaction (
+  id            BIGSERIAL PRIMARY KEY,
+  bank_txn_id   VARCHAR(64) NOT NULL UNIQUE,
+  merchant_id   BIGINT NOT NULL,
+  amount        BIGINT NOT NULL,
+  add_info      VARCHAR(255),          -- nội dung chuyển khoản, chứa mã đơn
+  bank_code     VARCHAR(16) NOT NULL,
+  matched_order_id VARCHAR(64),
+  status        VARCHAR(20) NOT NULL,  -- MATCHED / PARTIAL / OVERPAID / UNMATCHED / AMBIGUOUS / REFUNDED
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE refund (
+  id            BIGSERIAL PRIMARY KEY,
+  transaction_id BIGINT NOT NULL REFERENCES transaction(id),
+  amount        BIGINT NOT NULL,
+  status        VARCHAR(16) NOT NULL,  -- PENDING / COMPLETED / FAILED
+  reason        VARCHAR(100),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE "order" (
+  id            VARCHAR(64) PRIMARY KEY,
+  merchant_id   BIGINT NOT NULL,
+  amount        BIGINT NOT NULL,
+  status        VARCHAR(16) NOT NULL,  -- PENDING / PAID / PARTIAL_PAID / CANCELLED / REFUNDED
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE webhook_log (
+  id            BIGSERIAL PRIMARY KEY,
+  bank_txn_id   VARCHAR(64) NOT NULL,
+  raw_payload   TEXT NOT NULL,
+  signature_ok  BOOLEAN NOT NULL DEFAULT FALSE,
+  processed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+- transaction.idempotent theo bank_txn_id (UNIQUE) chống webhook trùng.
+- order là đơn hàng của merchant, transaction là giao dịch thực tế từ ngân hàng.
+
+### 4. QR tĩnh vs QR động
+QR tĩnh không chứa số tiền, khách tự nhập số tiền khi quét -> dễ sai số tiền, dùng cho quầy bán lẻ nhỏ. QR động chứa số tiền và mã đơn (addInfo), khách chỉ quét và xác nhận -> dùng cho đơn hàng online. VietQR dựa trên chuẩn EMVCo.
+QR động chứa: merchant account (số tài khoản + mã ngân hàng), amount, addInfo (chứa mã đơn), CRC checksum. QR động hết hạn sau 15 phút.
+
+### 5. Nhận webhook
+Ngân hàng gửi webhook khi có biến động số dư. Verify signature bằng HMAC với secret key; nếu sai, từ chối. Idempotent theo bank_txn_id: ngân hàng có thể gửi lại; server UNIQUE bank_txn_id. Nếu verify OK, ghi transaction PENDING và đẩy vào Kafka. Webhook lỗi/timeout retry theo exponential backoff, sau nhiều lần đẩy DLQ.
+
+### 6. Khớp giao dịch
+Matching service parse addInfo lấy mã đơn. amount == order.amount: MATCHED. amount < order.amount: PARTIAL. amount > order.amount: OVERPAID. addInfo không parse được: UNMATCHED/AMBIGUOUS.
+Cho sai nội dung (quên ghi mã đơn): fuzzy match theo amount + thời gian + merchant; nếu chỉ một đơn khớp, tự động khớp và đánh dấu AMBIGUOUS để merchant xác nhận.
+
+### 7. Hoàn tiền (reversal / refund)
+Hoàn tiền idempotent theo transaction_id: gọi lại nhiều lần chỉ hoàn một lần. Reversal gửi yêu cầu hủy giao dịch qua ngân hàng (nếu chưa kết toán), refund nội bộ nếu đã kết toán. Ghi bảng refund với status PENDING/COMPLETED/FAILED.
+
+### 8. Soát đối cuối ngày
+Job cuối ngày tải sao kê từng ngân hàng, so khớp với transaction theo bank_txn_id và amount. Mismatch (giao dịch ở sao kê không có trong hệ thống, hoặc ngược lại) ghi vào mismatch_detail, alert ngay. Không tự sửa mù, điều tra thủ công.
+
+### 9. Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Webhook trùng | Mạng chập chờn | Idempotent theo bank_txn_id, UNIQUE bỏ qua trùng |
+| Webhook signature sai | Giả mạo | Verify HMAC bắt buộc, từ chối |
+| Khách chuyển thiếu | Nhập sai số tiền | PARTIAL, thông báo merchant và khách |
+| Sai nội dung | Quên ghi mã đơn | Fuzzy match amount + thời gian, merchant xác nhận AMBIGUOUS |
+| Webhook trễ | Merchant huỷ đơn | Giao dịch vẫn khớp sau khi webhook đến, refund nếu đã huỷ |
+| Một mã đơn hai giao dịch khớp | Đánh AMBIGUOUS | Merchant xác nhận, không tự động hoàn |
+
+### 10. Giám sát
+Số transaction UNMATCHED/AMBIGUOUS, độ trễ khớp, tỷ lệ partial/overpaid, số webhook signature sai, số giao dịch trong DLQ.
+
+### 11. Trả lời mẫu khi phỏng vấn
+Tôi làm QR động chứa amount và mã đơn theo chuẩn EMVCo/VietQR. Ngân hàng gửi webhook; webhook receiver verify signature HMAC và idempotent theo bank_txn_id, đẩy transaction vào Kafka. Matching service parse addInfo, kiểm tra amount: đủ thì MATCHED, thiếu thì PARTIAL, thừa thì OVERPAID, sai nội dung thì UNMATCHED/AMBIGUOUS. Fuzzy match amount + thời gian cho sai nội dung, merchant xác nhận AMBIGUOUS. Hoàn tiền idempotent theo transaction_id. Soát đối cuối ngày với sao kê từng ngân hàng, mismatch alert. Dead letter queue và retry để không mất giao dịch.
+
+> Senior tip: interviewer hay hỏi "khách chuyển tiền nhưng quên ghi mã đơn, bạn khớp thế nào". Câu trả lời tốt là fuzzy match theo amount + thời gian + merchant; nếu chỉ một đơn khớp, tự động khớp và đánh dấu AMBIGUOUS để merchant xác nhận. Và webhook signature là bắt buộc. Với nhiều ngân hàng, mỗi ngân hàng có secret HMAC riêng, webhook receiver phải tra secret theo bank_code trước khi verify.`,
+  followups: ['Khách quét QR tĩnh và nhập số tiền sai: bạn xử lý thế nào?','Ngân hàng gửi webhook trễ 10 phút: merchant đã huỷ đơn, bạn xử lý thế nào?','Một mã đơn bị hai giao dịch khớp: bạn xử lý thế nào?','Làm sao đối soát giao dịch với sao kê ngân hàng cuối ngày?'],
+  related: ['sd-060']
+}
 ];

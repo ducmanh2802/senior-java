@@ -3761,6 +3761,8 @@ window.DATA_INDEX = {
     {"id":"sd-069","title":"Hệ thống eKYC mở tài khoản online: CCCD + selfie + NFC, hàng đợi duyệt thủ công, lưu ảnh an toàn, 50.000 hồ sơ/ngày"},
     {"id":"sd-053","title":"Hệ thống loyalty đa thương hiệu (coalition loyalty): gộp điểm chéo giữa chuỗi bán lẻ, F&B, du lịch"},
     {"id":"sd-054","title":"Hệ thống thanh toán hoá đơn trả góp (BNPL cho bill): chia trả điện, nước, học phí 3-12 kỳ"},
+    {"id":"sd-070","title":"Chấm công đa khu nhà máy: ca xoay chuyển, làm thêm và tích hợp bảng lương"},
+    {"id":"sd-071","title":"QR thanh toán merchant đa nhà cung cấp: qui chiếu, hoàn tiền, soát đối ngân hàng"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
