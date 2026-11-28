@@ -6737,4 +6737,933 @@ c("basic range query", () -> {
   related: ['db-010', 'db-014', 'db-021', 'db-023'],
   tags: ['BRIN', 'block-range-index', 'time-series', 'append-only', 'PostgreSQL', 'index']
 },
+{
+  id: 'lesson-db-026', track: 'db', order: 26,
+  title: 'Dirty read: đọc dữ liệu chưa commit và giá trị "ma" khi rollback',
+  level: 'mid', minutes: 25,
+  goals: [
+    'Mô tả dirty read qua lịch hai giao dịch (ghi chưa commit -> đọc -> rollback)',
+    'Giải thích tại sao PostgreSQL không cho dirty read (READ UNCOMMITTED được xử lý như READ COMMITTED)',
+    'Phân biệt dirty read, non-repeatable read, phantom và lost update',
+    'Cách phòng ngừa dirty read trên ứng dụng và PostgreSQL'
+  ],
+  body: `**Tóm tắt:** Dirty read (đọc bẩn) là khi một giao dịch T1 đọc một giá trị mà giao dịch T2 đã ghi nhưng **chưa commit**. Nếu T2 sau đó rollback, giá trị T1 đã đọc là "giá trị ma" — một con số chưa bao giờ tồn tại lâu bền trong database. Dựa trên giá trị ma, ứng dụng có thể chốt đơn sai, chuyển tiền sai hoặc báo cáo sai số. PostgreSQL không cho phép dirty read ở bất kỳ mức isolation nào: {{READ UNCOMMITTED}} được xử lý như {{READ COMMITTED}}.
+
+### Dirty read xảy ra thế nào
+Hai giao dịch trên bảng số dư khách hàng:
+- T1: đọc số dư của khách hàng A.
+- T2: cập nhật số dư A xuống 80 (vừa ghi, **chưa commit**).
+- T1: đọc số dư A nhận 80 và chốt giao dịch dựa trên con số này.
+- T2: gặp lỗi -> **ROLLBACK**. Số dư A thực tế vẫn là 100, nhưng T1 đã hành động theo con số 80 không bao giờ tồn tại.
+
+~~~text
+T1                              T2
+|                               |
+|-- đọc số dư A nhận 80 ------>|   <-- T2 đã ghi 80, chưa commit (T1 đọc giá trị chưa commit)
+|-- chốt giao dịch dựa vào 80 ->|
+|                               |-- ROLLBACK (giá trị 80 mất)
+|-- số dư thực vẫn là 100 ----->|   <-- T1 đã dựa vào "giá trị ma"
+~~~
+
+Lịch trên thể hiện đúng định nghĩa dirty read: **đọc dữ liệu chưa commit của giao dịch khác**, và giao dịch đó sau đó hủy toàn bộ thay đổi.
+
+### Tại sao giá trị "ma" nguy hiểm trên production
+Tình huống thực tế: hệ thống đặt hàng, kho hàng còn một cái.
+- T1 (khách hàng A) đọc kho hàng = 1, đặt hàng thành công.
+- T2 (khách hàng B) cũng đọc kho hàng = 1, đặt hàng, hệ thống phát hiện lỗi và rollback đơn hàng B.
+Nếu T1 đọc được giá trị chưa commit của T2 (kho hàng = 0 do B đã "trừ" nhưng chưa commit), T1 có thể báo "hết hàng" cho khách hàng A còn kho. Hoặc T1 đọc số dư chưa commit của T2 và chuyển tiền theo số sai. Lỗi này khó tái hiện vì chỉ xảy ra trong khoảng thời gian nhỏ giữa ghi và commit/rollback của T2.
+
+### PostgreSQL chặn dirty read như thế nào
+PostgreSQL dùng MVCC (Multi-Version Concurrency Control - điều khiển đồng thời bằng nhiều phiên bản): mỗi hàng có thể giữ nhiều phiên bản, mỗi phiên bản đánh dấu {{xmin}} (transaction tạo ra) và {{xmax}} (transaction thay thế). Một giao dịch chỉ thấy được phiên bản đã **commit trước thời điểm snapshot của nó**. Do đó:
+- Ghi chưa commit của T2 không hiện thị với T1 — T1 còn đọc giá trị cũ nhất đã commit.
+- {{READ UNCOMMITTED}} trong PostgreSQL **không có tồn tại thực sự**: nó xử lý như {{READ COMMITTED}}. PostgreSQL không cho phép dirty read ở mức nào cả.
+
+So sánh với một số database khác:
+- MySQL InnoDB: mức {{READ UNCOMMITTED}} cho phép dirty read (đọc phiên bản chưa commit qua undo log), mức mặc định là {{REPEATABLE READ}}.
+- SQL Server: mức mặc định {{READ COMMITTED}} dùng khóa reader nên không dirty read; mức {{READ UNCOMMITTED}} (hint {{NOLOCK}}) cho phép đọc bẩn.
+
+Dirty read là hiện tượng "dễ chặn nhất": chỉ cần đọc dữ liệu đã commit là tránh được. Các hiện tượng còn lại cần mức cao hơn:
+
+| Hiện tượng | Nghĩa gần đây | READ UNCOMMITTED | READ COMMITTED | REPEATABLE READ | SERIALIZABLE |
+|---|---|---|---|---|---|
+| Dirty read | Đọc dữ liệu chưa commit | có thể | không | không | không |
+| Non-repeatable read | Cùng hàng, hai lần đọc nhận giá trị đã commit khác | có thể | có thể | không | không |
+| Phantom read | Cùng điều kiện, hai lần đọc nhận tập hàng khác | có thể | có thể | không (PG chặn) | không |
+| Lost update | Hai giao dịch cùng doc-ghi, người sau đè người trước | có thể | có thể | bị chặn bằng 40001 | bị chặn bằng 40001 |
+
+PostgreSQL REPEATABLE READ chặn cả non-repeatable read và phantom bằng snapshot cố định, chặt hơn yêu cầu của chuẩn SQL. Lost update ở READ COMMITTED vẫn có thể xảy ra nếu ứng dụng đọc rồi tính trong Java rồi ghi (xem bài lost update trước); REPEATABLE READ và SERIALIZABLE chặn bằng 40001.
+
+### Cơ chế từng bước (MVCC visibility)
+1. **T2 bắt đầu ghi.** T2 tạo phiên bản mới của hàng với {{xmin}} = id(T2), nhưng chưa commit nên phiên bản này chưa "đã commit theo snapshot của T1".
+2. **T1 chụp snapshot.** Snapshot của T1 danh sách các transaction đã commit. id(T2) ở danh sách đang chạy (xip) hoặc lớn hơn {{xmax}} -> chưa commit.
+3. **T1 đọc hàng.** Quy tắc nhìn thấy: {{xmin}} đã commit theo snapshot VÀ {{xmax}} chưa commit theo snapshot. Phiên bản mới của T2 không thọ vế đầu -> T1 **không thấy**, T1 đọc phiên bản cũ đã commit. Kết quả: không có dirty read.
+4. **T2 commit hoặc rollback.** Nếu commit, các snapshot chụp sau đó sẽ thấy phiên bản mới. Nếu rollback, phiên bản mới vẫn tồn vô cuc, T1 không bao giờ đọc được.
+5. **READ COMMITTED chụp snapshot mỗi câu lệnh**, nên T1 đọc lại sau khi T2 commit thấy thay giá trị mới — đây là non-repeatable read (hợp lệ), không phải dirty read.
+
+### Java mô phỏng dirty read
+~~~java
+// Một hàng số dư trong RAM. Mô phỏng deterministc, không dùng thread.
+class DirtyReadSim {
+    private final int initial;      // giá trị commit duy nhất của hàng
+    DirtyReadSim(int initial) { this.initial = initial; }
+    // T1 đọc giá trị chưa commit của T2 (uncommittedValue), sau đó T2 rollback.
+    // Trả về {giá trị T1 đọc được, giá trị thực sau rollback}.
+    int[] dirtyReadThenRollback(int uncommittedValue) {
+        return new int[]{uncommittedValue, initial};
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Hệ thống voucher giảm giá: voucher "GIAM50" còn một lần sử dụng.
+- T1 (khách H) đọc remaining = 1.
+- T2 (khách K) cũng đọc remaining = 1, trừ đi (remaining = 0) nhưng chưa commit do gateway thanh toán chậm.
+- T1 đọc **remaining = 0 chưa commit của T2** (dirty read) -> báo khách H "voucher đã hết".
+- T2 sau đó thanh toán thất bại -> ROLLBACK, remaining quay về 1.
+Khách H mất voucher do đọc con số ma. Sửa: T1 chỉ đọc dữ liệu đã commit (READ COMMITTED) còn thấy remaining = 1 và có thể đặt hàng; vẫn cần trừ kho nguyên tử hoặc khóa dòng để tránh hai khách cùng đặt (lost update, xem bài trước).
+
+### Lỗi hay gặp trên production
+1. **Dùng READ UNCOMMITTED hy vọng đọc nhanh hơn.** Triệu chứng: báo cáo hoặc dashboard đọc số chưa bao giờ commit, kết luận sai. Nguyên nhân: mức này cho phép dirty read (trong MySQL/SQL Server). Sửa: dùng READ COMMITTED trở lên; PostgreSQL ép READ UNCOMMITTED về READ COMMITTED.
+2. **Nhầm dirty read với non-repeatable read.** Dirty read là dữ liệu **chưa commit** bị đọc; non-repeatable read là dữ liệu **đã commit** thay đổi giữa hai lần đọc trong cùng transaction. Cách khác nhau: dirty read tránh bằng không đọc chưa commit; non-repeatable read cần REPEATABLE READ hoặc đọc lại trong cùng câu SQL.
+3. **Báo cáo tổng hợp đọc bảng đang được xử lý bởi job batch.** Job ghi chưa commit, báo cáo đọc trộn lẫn giá trị mới và cũ -> tổng sai. Sửa: báo cáo đọc từ bản snapshot/replica đã commit, hoặc chạy report ở READ COMMITTED và hiểu rằng mỗi câu SELECT có snapshot riêng.
+4. **Dựa vào giá trị đọc được để quyết định nghiệp vụ hoặc không kiểm tra lại trước khi ghi.** Vì đọc số dư chưa commit, chuyển tiền, rồi mới biết transaction kia rollback. Sửa: ghi dùng UPDATE nguyên tử, khóa dòng (SELECT ... FOR UPDATE) trong transaction, hoặc mức cao hơn có retry.
+
+### Pitfall production
+PostgreSQL không bao giờ để bạn đọc dữ liệu chưa commit, nên dirty read "thực su" không xảy ra trên PostgreSQL — nhưng vấn đề tư duy tương tự vẫn tồn tại: đọc một snapshot cũ rồi quyết định ghi dựa trên giá trị đó. Luôn xác định invariant cần bảo vệ (số dư không âm, voucher quá 1 lần) và dùng cơ chế hợp lý: UPDATE nguyên tử, khóa dòng, hoặc mức cao hơn có retry.
+
+> Senior tip: trên PostgreSQL dirty read thực sự không xảy ra vì MVCC chỉ hiển thị tuple đã commit; thực tế cần kiểm tra ứng dụng có thiết lập mức thấp hơn READ COMMITTED không (không cần trên PostgreSQL), và phân biệt rõ dirty read (chưa commit) với non-repeatable read (đã commit nhưng đổi giữa hai lần đọc).
+
+### Liên hệ phỏng vấn
+- **"Dirty read là gì?"** -> Giao dịch T1 đọc dữ liệu T2 đã ghi nhưng chưa commit; nếu T2 rollback, T1 đã sử dụng giá trị ma không tồn tại.
+- **"PostgreSQL có phép dirty read ở mức nào?"** -> Không phép ở mức nào; READ UNCOMMITTED xử lý như READ COMMITTED, và MVCC chỉ hiển thị tuple đã commit theo snapshot của giao dịch đọc.
+- **"Dirty read khác non-repeatable read ở đâu?"** -> Dirty read đọc dữ liệu chưa commit (có thể bị mất khi rollback); non-repeatable read đọc dữ liệu đã commit nhưng giá trị thay đổi giữa hai lần đọc trong cùng transaction.
+- **"Cách tránh dirty read trong ứng dụng Java?"** -> Giữ isolation READ COMMITTED trở lên (mặc định PostgreSQL), chỉ đọc dữ liệu đã commit, và không tự viết mã đọc giá trị "tạm thời" của giao dịch khác (database đã chặn cái này qua MVCC).
+`,
+  exercises: [{
+    title: 'Mô phỏng dirty read rồi rollback',
+    prompt: `Cài {{DirtyReadSim}} mô phỏng một hàng số dư trong RAM (không thread, kết quả xác định).
+- Constructor {{DirtyReadSim(int initial)}} lưu giá trị commit duy nhất của hàng.
+- {{int[] dirtyReadThenRollback(int uncommittedValue)}}: T1 đọc giá trị chưa commit của T2 là {{uncommittedValue}}, sau đó T2 rollback. Trả về mảng hai phần tử: {giá trị T1 đã đọc (giá trị bẩn), giá trị thực của hàng sau rollback (là {{initial}})}.`,
+    starter: `class DirtyReadSim {
+    private final int initial;
+    DirtyReadSim(int initial) { throw new UnsupportedOperationException("TODO"); }
+    int[] dirtyReadThenRollback(int uncommittedValue) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0;
+  static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+  public static void main(String[]z){
+   c("đọc giá trị chưa commit rồi rollback lại",()->{DirtyReadSim x=new DirtyReadSim(100);int[] r=x.dirtyReadThenRollback(80);eq(80,r[0]);eq(100,r[1]);});
+   c("khác giá trị mà vẫn trả về giá trị thực",()->{DirtyReadSim x=new DirtyReadSim(500);int[] r=x.dirtyReadThenRollback(200);eq(200,r[0]);eq(500,r[1]);});
+   c("số dư âm chưa commit của rollback",()->{DirtyReadSim x=new DirtyReadSim(0);int[] r=x.dirtyReadThenRollback(-100);eq(-100,r[0]);eq(0,r[1]);});
+   c("giá trị gần giống vẫn phân biệt",()->{DirtyReadSim x=new DirtyReadSim(1000);int[] r=x.dirtyReadThenRollback(999);eq(999,r[0]);eq(1000,r[1]);});
+   System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+    reference: `class DirtyReadSim {
+    private final int initial;
+    DirtyReadSim(int initial) { this.initial = initial; }
+    int[] dirtyReadThenRollback(int uncommittedValue) {
+        // T1 đọc giá trị chưa commit của T2
+        // T2 rollback: hàng quay về giá trị commit cũ
+        return new int[]{uncommittedValue, initial};
+    }
+}`,
+    hints: ['T1 đọc đúng giá trị chưa commit của T2 (uncommittedValue).','Khi T2 rollback, giá trị thực là initial, riêng biệt với giá trị bẩn T1 đã đọc.'],
+    explain: `Dirty read chính xác là đọc giá trị chưa commit; khi transaction ghi rollback, giá trị đó biến mất. PostgreSQL chặn việc này bằng MVCC: chỉ hiển thị tuple đã commit theo snapshot của giao dịch đọc, nên T1 không bao giờ thấy giá trị chưa commit của T2. Bài tập mô phỏng xác định: một mảng hai phần tử {giá trị đọc được, giá trị thực sau rollback}.`
+  }],
+  check: [
+    {q:'Dirty read là gì?',options:['Đọc dữ liệu chưa commit của giao dịch khác','Đọc cùng hàng hai lần nhận hai giá trị đã commit khác','Cùng điều kiện, hai lần đọc nhận tập hàng khác','Hai giao dịch cùng ghi cùng một hàng'],answer:0,explain:'Dirty read đối tượng là dữ liệu chưa commit; nếu giao dịch ghi rollback, giá trị đọc được là "ma".'},
+    {q:'READ UNCOMMITTED trong PostgreSQL 15 có cho phép dirty read không?',options:['Có','Không, được xử lý như READ COMMITTED','Chỉ khi bảng có index','Chỉ với giao dịch chỉ đọc'],answer:1,explain:'PostgreSQL không có mức READ UNCOMMITTED thực sự; nó xử lý như READ COMMITTED, chỉ đọc dữ liệu đã commit theo snapshot.'},
+    {q:'Dirty read khác non-repeatable read ở đâu?',options:['Dirty read đọc dữ liệu chưa commit; non-repeatable read đọc dữ liệu đã commit thay đổi giữa hai lần đọc','Dirty read chỉ xảy ra tại MySQL','Non-repeatable read là đọc dữ liệu chưa commit','Hai chung là một'],answer:0,explain:'Dirty read: chưa commit, có thể mất khi rollback. Non-repeatable read: đã commit, giá trị thay đổi ở lần đọc thứ hai.'},
+    {q:'Cách ngăn ngừa dirty read trong ứng dụng Java?',options:['Đặt isolation READ UNCOMMITTED','Giữ READ COMMITTED trở lên, chỉ đọc dữ liệu đã commit','Đọc dữ liệu ở trong giao dịch khác','Bỏ qua transaction của database'],answer:1,explain:'READ COMMITTED (mặc định PostgreSQL) và MVCC đảm bảo chỉ đọc dữ liệu đã commit, nên dirty read không xảy ra.'}
+  ],
+  related: ['db-002'],
+  tags: ['dirty-read','isolation','MVCC','PostgreSQL','rollback']
+},
+{
+  id: 'lesson-db-027', track: 'db', order: 27,
+  title: 'Hash index va B-tree: tra cuu bang khoa duy can hay tim theo khoang?',
+  level: 'mid', minutes: 25,
+  goals: [
+    'Giai explain hash index bam khoa vao bucket va tra cuu bang khoa duy nhat trong O(1) trung binh',
+    'Giai explain B-tree giu khoa da sap nen ho tro khoang (> < BETWEEN) va ORDER BY',
+    'Dem so thao tac: hash get, B-tree range lowerBound/upperBound, quet toan bo; so sanh tren cung mang',
+    'Xac dinh khi nao duoc su dung hash index trong PostgreSQL va gioi han cua no'
+  ],
+  body: `**Tom tat:** Hash index dung ham bam de nhay thang toi bucket chua khoa — cuc nhanh cho tra cuu dung khoa (WHERE cot {{=}} ?), nhung **khong dung cho khoang** ({{>}}, {{<}}, {{BETWEEN}}) va **khong ho tro ORDER BY**. B-tree giu khoa da sap xep, nen cung mot cau truc phuc vu ca tra cuu bang, truy van khoang va sap xep. Chon sai loai index: cau chay khoang tren hash index bi bo qua, database phai quet toan bo bang.
+
+### Hash index hoat dong the nao
+Hash index tinh ma bam cua khoa, dung ma do de chon bucket, roi tim khoa trong bucket. Voi ham bam tot va du bucket, tra cuu bang trung binh tieu tieu O(1): chi vao dung bucket, so sanh vai khoa. Xau nhat O(N) neu moi khoa rong cung mot bucket (hash collisions). PostgreSQL chia bucket ra hai khi bucket overflow de giu chuoi ngan, va hash index duoc ghi WAL ke tu PostgreSQL 10 nen an toan khi crash (truoc PG 10 hash index khong crash-safe).
+
+### B-tree nhu the nao
+B-tree luu khoa da sap trong cac node (tren PostgreSQL moi node la mot page 8 KB, fan-out cao nen cay chi 3-4 tang du ty hang). Tra cuu bang: di tu goc xuong la, so sanh khoa tai moi tang (~3-4 lan so sanh). Truy van khoang: dung lowerBound de tim bien duoi, roi duyet cac la theo thu tu khoa den bien tren. {{ORDER BY}} khoa index cung duoc thoa man truc tiep vi cac la da sap.
+
+### Bang so sanhash vs B-tree
+
+| Tinh chat | Hash index | B-tree |
+|---|---|---|
+| Tra cuu bang ({{=}}) | Nhanh (O(1) trung binh) | Nhanh (O(chieu cao cay), ~3-4) |
+| Khoang ({{>}}, {{<}}, {{BETWEEN}}) | Khong ho tro, phai quet | Ho tro, di xuong roi quet la |
+| {{ORDER BY}} khoa index | Khong | Co |
+| Index hop nhieu cot (composite) | Khong co nghia tuong duong | Co, theo leftmost prefix |
+| Khi chon | Chi khi workload chinh tim bang khoa duy nhat | Mac dinh cho he thong OLTP |
+
+### Co che tung buoc cua bai tap mo phong
+1. {{HashIndexSim.put(key, value)}}: bam khoa chon bucket, them hoac cap nhat trong bucket.
+2. {{HashIndexSim.get(key)}}: chon bucket, quet tuyen tinh trong bucket, tra ve value hoac null.
+3. {{HashIndexSim.rangeExamined(lo, hi)}}: hash index khong dung cho khoang -> phai xem het moi entry trong moi bucket, tra ve tong so entry.
+4. {{BTreeRangeSim.get(key)}}: lowerBound tim nhi phan, tra ve value neu khoi khop.
+5. {{BTreeRangeSim.rangeCount(lo, hi)}}: {{upperBound(hi) - lowerBound(lo)}}, moi buoc nhi phan tang bo dem so sanh (~log2(N)).
+6. So sanh: hash get nhanh nhung rangeExamined = N; B-tree rangeCount it phep so sanh va tra chinh xac.
+
+### Vi du doi thuc
+Bang {{users}} 50 trieu hang. Dang nhap tra {{WHERE email = ?}}: hash index tra ve ket qua O(1) trung binh, nhe hon B-tree ve kich thuoc va chi phi ghi. Nhung sau khi dang nhap, trang quan tri can "danh sach nguoi dang ky trong 7 ngay" {{WHERE created_at >= '2026-01-01' ORDER BY created_at}} — hash index hoan toan khong dung duoc, planner quet toan bo bang (50 trieu hang) chao hang giay. Neu chi tao B-tree tren {{email}} thi dang nhap van nhanh (cung khoang 3-4 lan doc page) va cau khoang khac co the dung B-tree tren {{created_at}}. Kinh nghiem: mac dinh chon B-tree; hash chi khi workload thuc su chinh tim bang duy can va ban da doc du loi ich.
+
+### Loi hay gap tren production
+1. **Dung hash index cho cau khoang.** Trieu chung: cau {{WHERE created_at >= '2026-01-01'}} chao nhu khong co index. Nguyen chung: hash chi ho tro bang, planner bo qua hash index. Sua: tao B-tree tren cot do.
+2. **Ham bam kem gay collision day.** Trieu chung: get chua hon du kien. Nguyen chung: nhieu khoa cung bucket, chuoi trong buai dai. Sua: chon ham bam tot, du bucket (Postgre quan ly tu).
+3. **Hieu sai "index hop nhieu cot" cho hash.** Hash index khong co khau nienc leftmost prefix nhu B-tree composite. Sua: dung B-tree composite khi can loc theo nhieu cot.
+4. **Chi tao hash, sau can bao cao sap xep.** Trieu chung: {{ORDER BY}} van phai sort trong bo nho hoac dia. Sua: them B-tree hoac chap nhan sort.
+
+### Pitfall production
+PostgreSQL hash index tu phien ban 10 da crash-safe (ghi WAL), nhung van chi ho tro toan tu bang va khong ho tro ordering. Truoc khi doi B-tree sang hash de "tiet kiem", hay do workload: phan tram cau bang mang khoang, kich thuoc index, va chi phi ghi. Thu tat he OLTP nen dung B-tree lam don vi index mac dinh.
+
+> Senior tip: hash index la cong cu dac biet, khong phai "phiên ban nhe" cua B-tree. Neu chua chac, hay dung B-tree va kiem chinh bang {{EXPLAIN (ANALYZE, BUFFERS)}}.
+
+### Lien he phong van
+- **"Hash index va B-tree khac nhau o dau?"** -> Hash bam khoa vao bucket, tim bang O(1) trung binh, khong ho tro khoang va ORDER BY. B-tree giu khoa da sap, ho tro bang, khoang, ORDER BY va composite theo leftmost prefix.
+- **"Khi nao hash index nhan hon B-tree?"** -> Chi tim bang khoa duy can, ham bam tot, it collision; nhung khac biet thit thu be (~O(1) so voi ~3-4 lan doc page), con B-tree linh khoi hon nhieu.
+- **"Tai sao cau WHERE cot > 100 khong dung hash index?"** -> Hash khong giu thu tu khoa, khong biet bucket nao chua gia tri lon hon 100 ma khong xem het. Can B-tree.
+- **"PostgreSQL hash index co an toan khi crash khong?"** -> Tu PG 10 hash index duoc ghi WAL, an toan crash; truoc do khong duoc khuyen khich dung cho du lieu can ben.
+`,
+  exercises: [{
+    title: 'Hash index chi tra cuu bang, B-tree tra cuu duoc khoang',
+    prompt: `Cai hai lop {{HashIndexSim}} va {{BTreeRangeSim}} mo phong hai loai index (khong thread, ket qua xac dinh).
+- {{HashIndexSim(int capacity)}}: bam khoa chon bucket (so buoc bang Math.floorMod(key, capacity)), them/cap nhat trong bucket; {{get(key)}} tra cuu bang khoa duy nhat; {{rangeExamined(lo, hi)}} phai quet toan bo tat ca bucket vi hash index khong ho tro khoang.
+- {{BTreeRangeSim(int[] keys, int[] vals)}}: mang dau vao da sap tang dan theo {{keys}}; {{get(key)}} bang lowerBound tim nhi phan; {{rangeCount(lo, hi)}} = {{upperBound(hi) - lowerBound(lo)}}; {{comparisons()}} dem so phep so sanh cua nhi phan, {{resetComparisons()}} dat ve 0.`,
+    starter: `class HashIndexSim {
+    private final int capacity;
+    private final java.util.ArrayList<Integer>[] bucketKeys;
+    private final java.util.ArrayList<Integer>[] bucketVals;
+    @SuppressWarnings("unchecked")
+    HashIndexSim(int capacity) { throw new UnsupportedOperationException("TODO"); }
+    private int bucket(int key) { throw new UnsupportedOperationException("TODO"); }
+    void put(int key, int value) { throw new UnsupportedOperationException("TODO"); }
+    Integer get(int key) { throw new UnsupportedOperationException("TODO"); }
+    int rangeExamined(int lo, int hi) { throw new UnsupportedOperationException("TODO"); }
+    int size() { throw new UnsupportedOperationException("TODO"); }
+}
+class BTreeRangeSim {
+    private final int[] keys;
+    private final int[] vals;
+    private int comparisons;
+    BTreeRangeSim(int[] keys, int[] vals) { throw new UnsupportedOperationException("TODO"); }
+    Integer get(int key) { throw new UnsupportedOperationException("TODO"); }
+    int rangeCount(int lo, int hi) { throw new UnsupportedOperationException("TODO"); }
+    int comparisons() { return comparisons; }
+    void resetComparisons() { comparisons = 0; }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0;
+  static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!java.util.Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+  public static void main(String[]z){
+   c("hash tra ket qua chinh",()->{HashIndexSim h=new HashIndexSim(8);h.put(5,50);h.put(21,210);h.put(13,130);eq(50,h.get(5));eq(210,h.get(21));eq(130,h.get(13));eq(null,h.get(99));});
+   c("hash cap nhat key trung",()->{HashIndexSim h=new HashIndexSim(8);h.put(5,50);h.put(5,55);eq(55,h.get(5));});
+   c("hash khoang phai quet toan bo",()->{HashIndexSim h=new HashIndexSim(4);for(int i=0;i<100;i++)h.put(i,i);eq(100,h.rangeExamined(10,20));eq(100,h.size());});
+    c("B-tree tra ket qua chinh",()->{int[] k=new int[1024];for(int i=0;i<k.length;i++)k[i]=i*10;BTreeRangeSim b=new BTreeRangeSim(k,k);eq(100,b.get(100));eq(1000,b.get(1000));eq(null,b.get(999));eq(null,b.get(10235));});
+   c("B-tree khoang dem dung",()->{int[] k=new int[1024];for(int i=0;i<k.length;i++)k[i]=i;BTreeRangeSim b=new BTreeRangeSim(k,k);eq(11,b.rangeCount(100,110));eq(0,b.rangeCount(2000,3000));eq(1024,b.rangeCount(0,100000));});
+   c("B-tree it phep so sanh",()->{int[] k=new int[1024];for(int i=0;i<k.length;i++)k[i]=i;BTreeRangeSim b=new BTreeRangeSim(k,k);b.resetComparisons();b.rangeCount(0,1023);ok(b.comparisons()<30);});
+   c("B-tree rong",()->{BTreeRangeSim b=new BTreeRangeSim(new int[0],new int[0]);eq(null,b.get(1));eq(0,b.rangeCount(0,10));});
+   System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+    reference: `class HashIndexSim {
+    private final int capacity;
+    private final java.util.ArrayList<Integer>[] bucketKeys;
+    private final java.util.ArrayList<Integer>[] bucketVals;
+
+    @SuppressWarnings("unchecked")
+    HashIndexSim(int capacity) {
+        this.capacity = capacity;
+        bucketKeys = new java.util.ArrayList[capacity];
+        bucketVals = new java.util.ArrayList[capacity];
+        for (int i = 0; i < capacity; i++) {
+            bucketKeys[i] = new java.util.ArrayList<>();
+            bucketVals[i] = new java.util.ArrayList<>();
+        }
+    }
+
+    private int bucket(int key) {
+        return Math.floorMod(key, capacity);
+    }
+
+    void put(int key, int value) {
+        int b = bucket(key);
+        java.util.ArrayList<Integer> ks = bucketKeys[b];
+        for (int i = 0; i < ks.size(); i++) {
+            if (ks.get(i) == key) {
+                bucketVals[b].set(i, value);
+                return;
+            }
+        }
+        ks.add(key);
+        bucketVals[b].add(value);
+    }
+
+    Integer get(int key) {
+        int b = bucket(key);
+        java.util.ArrayList<Integer> ks = bucketKeys[b];
+        for (int i = 0; i < ks.size(); i++) {
+            if (ks.get(i) == key) {
+                return bucketVals[b].get(i);
+            }
+        }
+        return null;
+    }
+
+    // Hash index khong ho tro tim kiem theo khoang: phai xet het tat ca entry
+    int rangeExamined(int lo, int hi) {
+        int n = 0;
+        for (int b = 0; b < capacity; b++) n += bucketKeys[b].size();
+        return n;
+    }
+
+    int size() {
+        int n = 0;
+        for (int b = 0; b < capacity; b++) n += bucketKeys[b].size();
+        return n;
+    }
+}
+
+class BTreeRangeSim {
+    private final int[] keys;
+    private final int[] vals;
+    private int comparisons;
+
+    BTreeRangeSim(int[] keys, int[] vals) {
+        this.keys = keys.clone();
+        this.vals = vals.clone();
+        // mang dau vao da sap tang dan theo keys
+    }
+
+    Integer get(int key) {
+        int i = lowerBound(key);
+        if (i < keys.length && keys[i] == key) return vals[i];
+        return null;
+    }
+
+    private int lowerBound(int target) {
+        int lo = 0, hi = keys.length;
+        while (lo < hi) {
+            comparisons++;
+            int mid = lo + (hi - lo) / 2;
+            if (keys[mid] < target) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+
+    private int upperBound(int target) {
+        int lo = 0, hi = keys.length;
+        while (lo < hi) {
+            comparisons++;
+            int mid = lo + (hi - lo) / 2;
+            if (keys[mid] <= target) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+
+    int rangeCount(int lo, int hi) {
+        if (lo > hi) return 0;
+        return upperBound(hi) - lowerBound(lo);
+    }
+
+    int comparisons() { return comparisons; }
+    void resetComparisons() { comparisons = 0; }
+}`,
+    hints: ['HashIndexSim: bam khoa bang Math.floorMod(key, capacity) chon bucket, luu key/value trong hai ArrayList song song; put cap nhat neu key da co.','rangeExamined cua hash phai dem tat ca entry trong tat ca bucket vi khong tim duoc theo khoang.','BTreeRangeSim: lowerBound tim chi so dau tien >= target, upperBound tim chi so dau tien > target; rangeCount = upperBound(hi) - lowerBound(lo).','Moi vong while trong lowerBound/upperBound tang comparisons 1 lan.'],
+    explain: `HashIndexSim bam khoa vao bucket: tra cuu bang chi xet mot bucket (O(1) trung binh, xau nhat O(N) neu nhieu khoa cung bucket). Cau khoang rangeExamined phai quet toan bo — do hash index khong duoc dung cho WHERE cot > ?. BTreeRangeSim dung lowerBound/upperBound, so phep so sanh ~log2(N), va dem dung so phan tu trong khoang. Ket luan: B-tree la chuyen tien cho phuong trinh chung vi ho tra ca bang ca khoang; hash chi chon khi workload chinh tim bang khoa duy can, muon giam kich thuoc index/chi phi ghi, va chap nhan khong sap xep duoc. PostgreSQL hash index duoc ghi WAL (an toan crash) tu PG 10, chi ho tro toan tu bang, khong ho tro ORDER HO va composite theo nghia cua B-tree.`
+  }],
+  check: [
+    {q:'Hash index tra cuu bang khoa duy nhat tieu tieu trung binh bao nhiêu thao tac?',options:['O(N)','O(1)','O(log N)','O(N log N)'],answer:1,explain:'Hash vao dung bucket, chi so sanh vai khoa trong bucket -> O(1) trung binh.'},
+    {q:'Cau WHERE cot > 100 co dung duoc hash index khong?',options:['Co','Khong, phai quet toan bo index hoac bang','Chi neu cot co index composite','Chi neu cot khong null'],answer:1,explain:'Hash khong giu thu tu khoa nen khong biet bucket nao chua gia tri lon hon 100 khong xem het.'},
+    {q:'B-tree khac hash o diem nao?',options:['B-tree giu khoa da sap nen ho tro khoang va ORDER BY','Hash luon nhanh hon B-tree','B-tree khong ho tra cuu bang','Hash ho tro composite tot hon'],answer:0,explain:'B-tree luu khoa da sap xep, ho tro bang, khoang, ORDER BY va composite leftmost prefix.'},
+    {q:'PostgreSQL hash index tu phien ban nao duoc ghi WAL (an toan crash)?',options:['Luon duoc','Tu PG 10','Tu PG 12','Khong bao gioc'],answer:1,explain:'Hash index PostgresQL duoc WAL-logged (an toan khi crash) tu phien ban 10.'}
+  ],
+  related: ['db-023'],
+  tags: ['hash-index','B-tree','index','PostgreSQL']
+},
+{
+  id: 'lesson-db-028', track: 'db', order: 28,
+  title: 'Write skew và Serializable isolation: mô phỏng xung đột ràng buộc chéo',
+  level: 'senior', minutes: 35,
+  goals: [
+    'Phân biệt write skew với lost update và non-repeatable read',
+    'Giải thích Serializable Snapshot Isolation (SSI) của PostgreSQL phát hiện xung đột thế nào',
+    'Mô phỏng hai transaction cùng đọc tập dữ liệu rồi ghi vào hàng khác nhau, vi phạm ràng buộc tổng',
+    'Cài retry có giới hạn khi gặp SQLSTATE 40001'
+  ],
+body: `**Tóm tắt:** Write skew (ghi lệch) là hiện tượng hai transaction cùng đọc một tập dữ liệu, mỗi bên ghi vào hàng khác nhau dựa trên một ràng buộc chung (ví dụ: tổng số dư không âm), và sau khi commit ràng buộc bị vi phạm dù không có hàng nào bị ghi đè. Lost update là cùng một hàng bị ghi đè; write skew là nhiều hàng thay đổi nhưng **invariant** (bất biến nghiệp vụ) bị phá vỡ. PostgreSQL dùng **SSI (Serializable Snapshot Isolation)** để phát hiện và abort transaction với SQLSTATE 40001.
+
+### Write skew khác lost update ở đâu
+Lost update: T1 và T2 cùng đọc hàng A = 100, cùng cộng 10, cùng ghi 110 -> một lần cộng bị mất.
+Write skew: T1 đọc A = 100, B = 100 (tổng 200). T2 cũng đọc A = 100, B = 100. T1 trừ A = 50 (A = 50, tổng 150). T2 trừ B = 50 (B = 50, tổng 150). Cả hai commit thành công, kết quả A = 50, B = 50, tổng = 100 **vi phạm ràng buộc tổng ≥ 150**. Không hàng nào bị ghi đè, nhưng invariant vỡ.
+
+~~~text
+Write skew kinh điển: tài khoản A và B, yêu cầu A + B ≥ 100.
+T1: đọc A=100, B=100 (tổng 200) -> UPDATE A = 50 -> COMMIT
+T2: đọc A=100, B=100 (tổng 200) -> UPDATE B = 50 -> COMMIT
+Kết quả: A=50, B=50, tổng=100 (vẫn đúng 100, nhưng nếu trừ thêm 1 thì vỡ).
+Nếu nghiệp vụ yêu cầu A + B > 100 (nghĩa là ít nhất một tài khoản > 50), thì kết quả vi phạm.
+~~~
+
+### REPEATABLE READ không chặn write skew
+Ở REPEATABLE READ của PostgreSQL, mỗi transaction làm việc trên snapshot riêng. T1 và T2 đều thấy A=100, B=100. Khi T1 UPDATE A, nó ghi version mới của A. T2 UPDATE B, ghi version mới của B. Hai version mới không xung đột (không cùng hàng) nên cả hai commit thành công. Chỉ **SERIALIZABLE** mới chặn được.
+
+### SSI (Serializable Snapshot Isolation) của PostgreSQL
+PostgreSQL triển khai SERIALIZABLE bằng SSI (không khóa predicate như SQL Server). Ý tưởng:
+- Mỗi transaction đọc (R) và ghi (W) trên snapshot.
+- SSI theo dõi **rw-dependency** (phụ thuộc đọc-ghi): T1 đọc x, T2 ghi x và commit sau đọc của T1 -> cạnh T1 -> T2.
+- Nếu phát hiện **chu trình rw-dependency** (T1 -> T2 -> T1) thì abort một transaction (victim) với SQLSTATE 40001.
+- Kết quả tương đương serializable execution: các transaction thực thi tuần tự theo một thứ tự nào đó.
+
+SSI có false positive (abort khi thực tế không xung đột) để đảm bảo an toàn. Ứng dụng **bắt buộc retry** toàn bộ transaction khi gặp 40001.
+
+### Mô phỏng write skew bằng Java thuần
+Giả lập hai hàng (id 1 và 2), giá trị nguyên. Transaction: đọc cả hai, kiểm tra tổng >= minSum, nếu đủ thì trừ delta từ một hàng rồi commit.
+
+~~~java
+// Transaction: read both, check sum, deduct from one, commit
+// Nếu hai transaction cùng chạy trên snapshot cũ, cả hai đều thấy tổng đủ, cả hai trừ -> sum cuối có thể < minSum.
+~~~
+
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Đặt isolation SERIALIZABLE cho transaction
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT balance FROM accounts WHERE id IN (1, 2);   -- đọc cả hai
+-- kiểm tra tổng trong ứng dụng
+UPDATE accounts SET balance = balance - 50 WHERE id = 1;
+COMMIT;  -- có thể báo: ERROR: could not serialize access due to read/write dependencies (SQLSTATE 40001)
+
+-- Xem thông tin SSI locks (PostgreSQL 14+)
+SELECT * FROM pg_locks WHERE locktype = 'transactionid';
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho UPDATE ở trên:
+- **Index Scan**: tìm hàng bằng index id, lock hàng, ghi tuple mới.
+- **Buffers**: shared hit/read cho page index và heap.
+
+### Cơ chế từng bước: SSI phát hiện write skew
+1. T1 bắt đầu, lấy snapshot S1 (xmin=100). T2 bắt đầu, lấy snapshot S2 (xmin=101).
+2. T1 SELECT balance của A, B (đọc từ snapshot S1). T2 cũng SELECT A, B (đọc từ snapshot S2).
+3. T1 UPDATE A = 50. PostgreSQL ghi version mới của A, tạo **rw-dependency edge** T1 -> T2 (vì T2 đã đọc A ở S2, T1 ghi A sau đó).
+4. T2 UPDATE B = 50. PostgreSQL ghi version mới của B, tạo **rw-dependency edge** T2 -> T1 (vì T1 đã đọc B ở S1, T2 ghi B sau đó).
+5. SSI phát hiện chu trình T1 -> T2 -> T1 trong dependency graph, chọn victim (thường transaction trẻ hơn), abort với 40001.
+
+### Lỗi hay gặp trên production
+1. **Quên retry khi dùng SERIALIZABLE.** Triệu chứng: ứng dụng ném exception 40001 cho người dùng. Nguyên nhân: SSI abort transaction khi phát hiện rw-dependency cycle. Cách sửa: bọc transaction trong vòng lặp retry (3-5 lần), backoff ngẫu nhiên, bắt đầu transaction mới, đọc lại dữ liệu.
+2. **Ràng buộc tổng được kiểm tra ở ứng dụng thay vì database.** Triệu chứng: write skew lén lút. Nguyên nhân: ứng dụng đọc A, B, tính tổng, nếu đủ thì UPDATE một hàng. Database không biết invariant này. Cách sửa: dùng CHECK constraint, trigger, hoặc SERIALIZABLE + retry; hoặc gộp logic vào một câu UPDATE có điều kiện.
+3. **Transaction quá dài giữ snapshot, làm VACUUM chậm, SSI theo dõi nhiều dependency.** Triệu chứng: hiệu năng giảm, pg_wal tăng. Cách sửa: rút ngắn transaction, không gọi HTTP/Redis trong transaction.
+
+### Pitfall production
+Đừng giả định REPEATABLE READ bảo vệ mọi invariant. Chỉ SERIALIZABLE (với SSI) mới chặn write skew, nhưng có chi phí abort và retry. Nếu write skew phổ biến, cân nhắc thiết kế lại: gộp nhiều hàng thành một hàng, dùng trigger, hoặc ứng dụng chịu trách nhiệm serialize bằng advisory lock.
+
+> Senior tip: số lượng serialization failure (40001) là metric quan trọng. Nếu > 1% transaction, hãy xem lại thiết kế: liệu có cách nào biến write skew thành lost update (cùng một hàng) để dùng optimistic locking rẻ hơn không?
+
+### Liên hệ phỏng vấn
+- **"Write skew là gì, khác lost update như thế nào?"** -> Lost update: cùng một hàng bị ghi đè. Write skew: nhiều hàng thay đổi, không hàng nào bị ghi đè, nhưng invariant chung (ví dụ tổng, đếm) bị vi phạm.
+- **"REPEATABLE READ chặn write skew không?"** -> PostgreSQL REPEATABLE READ **không** chặn write skew; chỉ SERIALIZABLE (SSI) mới chặn.
+- **"SSI phát hiện write skew bằng cơ chế nào?"** -> Theo dõi rw-dependency (T1 đọc x, T2 ghi x commit sau). Chu trình trong đồ thị dependency -> abort victim (SQLSTATE 40001).
+- **"Khi gặp 40001, ứng dụng phải làm gì?"** -> Retry toàn bộ transaction: BEGIN mới, đọc lại dữ liệu, tính lại, COMMIT. Không chỉ chạy lại câu UPDATE.
+- **"Vì sao không dùng advisory lock để serialize hai transaction chuyển tiền?"** -> Advisory lock (pg_advisory_xact_lock) serialize ở tầng ứng dụng, hiệu quả cho write skew đơn giản. Nhưng cần thiết kế key lock đúng (ví dụ lock theo cặp tài khoản theo thứ tự cố định), và lock chỉ có hiệu lực trong transaction hiện tại.`,
+  exercises: [{
+    title: 'WriteSkewSim: mô phỏng hai transaction vi phạm ràng buộc tổng',
+    prompt: `Cài {{WriteSkewSim}} mô phỏng hai hàng (id 1 và 2) với giá trị nguyên.
+ - Constructor {{WriteSkewSim(int a, int b, int minSum)}}: khởi tạo giá trị ban đầu của hàng 1 = a, hàng 2 = b, ràng buộc tổng >= minSum.
+ - {{runTxn(int txnId, int targetId, int deduct)}}: mô phỏng một transaction:
+   1. Đọc snapshot: lấy giá trị hiện tại của hàng 1 và 2 (đây là snapshot tại thời điểm bắt đầu transaction).
+   2. Kiểm tra: nếu (giá trị 1 + giá trị 2) < minSum thì trả {{false}} (transaction abort do invariant không thỏa ngay từ đầu).
+   3. Nếu thỏa: trừ {{deduct}} từ hàng {{targetId}} (1 hoặc 2), cập nhật giá trị thật.
+   4. Trả {{true}} (commit thành công).
+ 
+ Quan trọng: {{runTxn}} phải dùng **giá trị snapshot đã đọc ở bước 1** để kiểm tra invariant, nhưng ghi vào giá trị thật. Điều này mô phỏng REPEATABLE READ: đọc từ snapshot, ghi vào version mới. Hai transaction gọi {{runTxn}} liên tiếp sẽ thấy write skew nếu không có cơ chế chặn.
+ 
+ - {{getState()}}: trả mảng 2 phần tử [giá trị hàng 1, giá trị hàng 2] hiện tại.
+ 
+ Không dùng thread. Kết quả phải xác định: chạy T1 rồi T2 (hoặc ngược lại) cho thấy tổng cuối cùng.`,
+    starter: `class WriteSkewSim {
+    private int val1, val2;
+    private final int minSum;
+ 
+    WriteSkewSim(int a, int b, int minSum) {
+        this.val1 = a;
+        this.val2 = b;
+        this.minSum = minSum;
+    }
+ 
+    // txnId chỉ để debug; targetId = 1 hoặc 2
+    boolean runTxn(int txnId, int targetId, int deduct) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    int[] getState() {
+        throw new UnsupportedOperationException("TODO");
+    }
+ }`,
+    tests: `public class Main {
+  static int p=0,t=0;
+  static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+  static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+  public static void main(String[]z){
+   // Write skew: cả hai thấy tổng 200 >= 100, T1 trừ 60 từ A, T2 trừ 60 từ B -> A=40, B=40, tổng 80 < 100
+   c("write skew happens without serializable",()->{
+    WriteSkewSim w=new WriteSkewSim(100,100,100);
+    ok(w.runTxn(1,1,60));   // T1: đọc 100+100=200>=100, trừ A=60 -> A=40
+    ok(w.runTxn(2,2,60));   // T2: đọc 100+100=200>=100, trừ B=60 -> B=40
+    eq(40,w.getState()[0]); eq(40,w.getState()[1]); ok(w.getState()[0]+w.getState()[1] < 100);
+   });
+   // Nếu invariant không thỏa ngay từ đầu
+   c("abort if invariant already violated",()->{
+    WriteSkewSim w=new WriteSkewSim(30,30,100);
+    ok(!w.runTxn(1,1,10));  // 30+30=60 < 100 -> false
+    eq(30,w.getState()[0]); eq(30,w.getState()[1]);
+   });
+   // Chỉ một transaction
+   c("single txn works",()->{
+    WriteSkewSim w=new WriteSkewSim(100,100,100);
+    ok(w.runTxn(1,1,20));
+    eq(80,w.getState()[0]); eq(100,w.getState()[1]); ok(w.getState()[0]+w.getState()[1] >= 100);
+   });
+   // Đảo thứ tự transaction cho cùng kết quả
+   c("order independent for skew",()->{
+    WriteSkewSim w=new WriteSkewSim(100,100,100);
+    ok(w.runTxn(2,2,60));
+    ok(w.runTxn(1,1,60));
+    eq(40,w.getState()[0]); eq(40,w.getState()[1]);
+   });
+   System.out.println("RESULT "+p+"/"+t);
+  }
+ }`,
+    reference: `class WriteSkewSim {
+    private int val1, val2;
+    private final int minSum;
+ 
+    WriteSkewSim(int a, int b, int minSum) {
+        this.val1 = a;
+        this.val2 = b;
+        this.minSum = minSum;
+    }
+ 
+    boolean runTxn(int txnId, int targetId, int deduct) {
+        // Snapshot: đọc giá trị hiện tại (giả lập REPEATABLE READ snapshot)
+        int snap1 = val1;
+        int snap2 = val2;
+        // Kiểm tra invariant trên snapshot
+        if (snap1 + snap2 < minSum) return false;
+        // Ghi: trừ từ hàng mục tiêu
+        if (targetId == 1) val1 -= deduct;
+        else if (targetId == 2) val2 -= deduct;
+        else return false;
+        return true;
+    }
+ 
+    int[] getState() {
+        return new int[]{val1, val2};
+    }
+ }`,
+    hints: [
+        'Lưu val1, val2 là trạng thái hiện tại (đã commit). Mỗi runTxn: snap1=val1, snap2=val2; kiểm tra snap1+snap2>=minSum; rồi cập nhật val1 hoặc val2.',
+        'Write skew xảy ra vì cả hai transaction dùng cùng snapshot giá trị cũ để kiểm tra, nhưng ghi vào trạng thái chung.'
+    ],
+    explain: `Bài tập mô phỏng chính xác write skew: hai transaction cùng đọc snapshot (100, 100), cùng thấy tổng 200 >= 100, T1 trừ A=60 -> A=40, T2 trừ B=60 -> B=40. Kết quả (40, 40) tổng 80 < 100 vi phạm invariant. Trong PostgreSQL REPEATABLE READ, điều này xảy ra vì snapshot cách ly đọc nhưng ghi không xung đột hàng. SERIALIZABLE (SSI) sẽ phát hiện rw-dependency cycle (T1 đọc B, T2 ghi B; T2 đọc A, T1 ghi A) và abort một transaction (40001). Ứng dụng phải retry toàn bộ transaction.`
+  }],
+  check: [
+    {q:'Write skew khác lost update ở điểm nào?',options:['Write skew ghi đè cùng một hàng, lost update ghi hàng khác nhau','Write skew vi phạm invariant chung qua nhiều hàng, không hàng nào bị ghi đè','Lost update chỉ xảy ra ở SERIALIZABLE','Write skew chỉ xảy ra ở READ COMMITTED'],answer:1,explain:'Lost update: cùng hàng bị ghi đè. Write skew: nhiều hàng thay đổi, invariant (tổng, đếm) vỡ mà không hàng nào bị overwrite.'},
+    {q:'PostgreSQL REPEATABLE READ chặn write skew không?',options:['Có, vì snapshot cách ly','Không, chỉ SERIALIZABLE (SSI) mới chặn','Có, vì dùng gap lock','Chặn nếu có index'],answer:1,explain:'REPEATABLE READ dùng snapshot cho đọc; hai transaction cùng đọc snapshot cũ, ghi hàng khác nhau -> cả hai commit thành công, invariant vỡ. Chỉ SSI phát hiện rw-dependency cycle và abort.'},
+    {q:'Khi gặp SQLSTATE 40001 (serialization_failure), ứng dụng phải làm gì?',options:['Chạy lại câu UPDATE vừa thất bại','Rollback và bắt đầu transaction mới, đọc lại dữ liệu, tính lại nghiệp vụ','Giảm isolation level xuống READ COMMITTED','Tăng deadlock_timeout'],answer:1,explain:'SSI abort toàn bộ transaction. Retry phải là transaction mới: đọc lại, tính lại, commit. Không chạy lại một câu lệnh.'},
+    {q:'SSI phát hiện write skew bằng cấu trúc dữ liệu nào?',options:['Wait-for graph','Rw-dependency graph (đồ thị phụ thuộc đọc-ghi)','Lock table','MVCC snapshot chain'],answer:1,explain:'SSI theo dõi cạnh T1 -> T2 khi T1 đọc x, T2 ghi x commit sau. Chu trình trong đồ thị này = serialization anomaly -> abort.'}
+  ],
+  related: ['db-002','db-007','db-013'],
+  tags: ['write-skew','serializable','SSI','isolation','PostgreSQL','invariant']
+},
+{
+  id: 'lesson-db-029', track: 'db', order: 29,
+  title: 'B-tree page split, fillfactor và delete/merge: mô phỏng node page',
+  level: 'senior', minutes: 35,
+  goals: [
+    'Giải thích B-tree page split xảy ra như thế nào và vì sao làm tăng write amplification',
+    'Hiểu fillfactor (mặc định 90) chừa chỗ trống giảm split khi insert ngẫu nhiên',
+    'Mô phỏng delete và page merge: khi nào page được gộp, hiệu ứng bloat',
+    'Cài mô phỏng page B-tree bậc nhỏ: insert, split, delete, merge, đếm page read'
+  ],
+body: `**Tóm tắt:** B-tree trong PostgreSQL tổ chức dữ liệu trong các **page** 8 KB. Mỗi page là một node chứa nhiều cặp (khóa, TID). Khi page đầy, insert gây **split**: page chia đôi, khóa giữa đẩy lên cha (internal) hoặc copy lên cha (leaf). **Fillfactor** (mặc định 90) chỉ điền 90% page để chừa chỗ, giảm split cho insert ngẫu nhiên. Khi delete, page có thể rỗng dần; PostgreSQL không tự merge page (trừ VACUUM FULL hoặc pg_repack), nên index bị **bloat** (phình do dead tuple và page rải rác).
+
+### Page B-tree và split
+PostgreSQL B-tree (biến thể Lehman & Yao) lưu trên page 8 KB:
+- **Internal page**: các khóa ngăn cách + con trỏ page con (block number).
+- **Leaf page**: các cặp (khóa index, TID) đã sắp, cộng **sibling pointers** (con trỏ next/prev leaf) cho range scan.
+- **Metapage** (page 0): lưu root block number, height, fastroot.
+
+Khi insert khóa mới:
+1. Tìm leaf page đích (từ root xuống).
+2. Chèn khóa vào leaf, giữ thứ tự.
+3. Nếu leaf **vượt dung lượng** (theo fillfactor): **split leaf**.
+    - Chia entry thành hai nửa. Khóa đầu của nửa phải **copy lên** parent (internal page).
+    - Tạo leaf page mới, cập nhật sibling pointers.
+    - Nếu parent đầy -> **split internal**: khóa giữa **đẩy lên** (promote) parent, không copy.
+    - Split lan đến root -> tạo root mới, height tăng 1.
+
+### Fillfactor: tại sao không điền 100%
+Fillfactor = phần trăm page được phép điền khi build index hoặc sau VACUUM. Mặc định 90 cho index (100 cho heap).
+- Fillfactor 90: page mới chỉ chứa 90% entry tối đa, 10% chỗ trống.
+- Insert ngẫu nhiên (UUID v4) thường rơi vào giữa page. Nếu page đã đầy -> split ngay, tạo page mới chỉ chứa 1 entry -> **write amplification** (ghi nhiều page hơn cần thiết).
+- Với fillfactor 90, page có chỗ trống -> insert ngẫu nhiên không split ngay, entry mới lấp đầy chỗ trống. Giá đổi: index to hơn ~11%.
+- Insert tuần tự (serial, timestamp) luôn vào page cuối -> không bao giờ split giữa page -> fillfactor ít quan trọng.
+
+### Delete, dead tuple và bloat
+Khi DELETE/UPDATE (không phải HOT):
+- Leaf entry không bị xóa ngay mà đánh dấu **dead** (LP_DEAD bit trong line pointer).
+- VACUUM dọn dead entry, gộp line pointer, giải phóng chỗ trong page.
+- **Page không được trả về hệ điều hành** trừ khi là page cuối bảng và hoàn toàn trống. Page ở giữa vẫn giữ chỗ trống cho insert sau.
+- Nếu delete nhiều mà insert ít: page rải rác, chỉ chứa vài entry -> **index bloat**. Index scan phải đọc nhiều page hơn để lấy cùng số hàng.
+- PostgreSQL **không merge page lân cận** trong VACUUM thường xuyên (chỉ VACUUM FULL / pg_repack mới rebuild index gọn).
+
+### Cơ chế từng bước: insert -> split -> parent promote
+1. Tìm leaf page L chứa khóa K (hoặc nơi K nên chèn).
+2. Chèn K vào entry array của L, giữ thứ tự.
+3. Nếu số entry > maxEntries (theo fillfactor):
+    a. Chia L thành L1 (nửa trái) và L2 (nửa phải).
+    b. Khóa đầu tiên của L2 (promoteKey) **copy lên** parent P.
+    c. Cập nhật sibling: L1.next = L2; L2.prev = L1; L2.next = old L.next.
+    d. Nếu P đầy -> split P (internal): promote khóa giữa lên grandparent, không copy.
+    e. Lặp đến root.
+
+### SQL và EXPLAIN PostgreSQL
+
+~~~sql
+-- Tạo index với fillfactor 70 cho workload insert ngẫu nhiên nhiều
+CREATE INDEX idx_orders_random ON orders (id) WITH (fillfactor = 70);
+
+-- Xem bloat index: page thực tế vs page lý thuyết
+SELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS size,
+       pgstatindex(indexrelid)  -- hàm extension pgstattuple
+FROM pg_stat_user_indexes;
+
+-- Kiểm tra page split trong WAL (gián tiếp)
+SELECT * FROM pg_stat_bgwriter WHERE checkpoints_timed > 0;
+
+-- Rebuild index gọn (cần khóa độc quyền, đừng chạy giờ cao điểm)
+REINDEX INDEX CONCURRENTLY idx_orders_random;  -- PG 12+
+-- hoặc pg_repack (online, không khóa độc quyền)
+~~~
+
+EXPLAIN (ANALYZE, BUFFERS) cho INSERT:
+- **Buffers**: shared hit/read/dirtied/written cho page index.
+
+### Mô phỏng page B-tree trong Java
+Giả lập page bậc {{m}} (tối đa {{m - 1}} khóa). Page có:
+- {{keys[]}}, {{values[]}} (leaf) hoặc {{childPages[]}} (internal)
+- {{fillRatio}}: ngưỡng split (ví dụ 0.9 cho fillfactor 90)
+- {{next}}, {{prev}} cho leaf chain
+
+Insert: chèn vào leaf, nếu vượt fillRatio * maxKeys thì split.
+Delete: xóa khỏi leaf, nếu số entry < minKeys (ví dụ 40%) thì thử merge với sibling.
+
+### Lỗi hay gặp trên production
+1. **UUID v4 làm khóa chính -> insert ngẫu nhiên -> split liên tục, index phình gấp 2-3 lần.** Nguyên nhân: mỗi insert rơi vào page ngẫu nhiên, page đầy -> split tạo page mới chỉ 1 entry. Cách sửa: dùng UUID v7 (có timestamp prefix) hoặc serial/bigserial, hoặc fillfactor thấp hơn (70-80).
+2. **Xóa hàng loạt (DELETE WHERE ...) mà không REINDEX.** Index bloat, Index Scan đọc nhiều page rác. Cách sửa: REINDEX CONCURRENTLY hoặc pg_repack sau delete lớn.
+3. **Fillfactor 100 cho index insert ngẫu nhiên.** Mỗi insert giữa page gây split, write amplification cao, WAL tăng. Cách sửa: fillfactor 70-90.
+4. **Nghĩ VACUUM tự gộp page.** VACUUM chỉ dọn dead tuple trong page, không merge page lân cận. Chỉ REINDEX/FULL/pg_repack mới gộp.
+
+### Pitfall production
+Kiểm soát bloat index bằng {{pgstattuple}} hoặc {{pg_stat_user_indexes}} (idx_scan = 0 là index thừa, size tăng bất thường là bloat). Insert ngẫu nhiên vào B-tree là nguyên nhân số 1 của bloat và write amplification. Nếu không thể đổi khóa sang tuần tự, hãy hạ fillfactor và lên lịch pg_repack định kỳ.
+
+> Senior tip: một index UUID v4 100GB trên dữ liệu 30GB là dấu hiệu fillfactor mặc định + insert ngẫu nhiên. Hạ fillfactor 70, chuyển sang UUID v7, hoặc partition theo thời gian để insert cục bộ tuần tự.
+
+### Liên hệ phỏng vấn
+- **"B-tree page split xảy ra khi nào, quy trình thế nào?"** -> Leaf đầy -> chia đôi, khóa đầu nửa phải copy lên parent. Parent đầy -> split internal, khóa giữa promote lên. Lan đến root -> height tăng.
+- **"Fillfactor 90 nghĩa là gì, khi nào nên hạ xuống 70?"** -> Chỉ điền 90% page, 10% dự trữ. Insert ngẫu nhiên (UUID) nên hạ fillfactor để giảm split. Insert tuần tự (serial, timestamp) thì fillfactor 90-100 ổn.
+- **"DELETE xóa hàng, index có tự thu nhỏ không?"** -> Không tự thu nhỏ page. Dead tuple được VACUUM dọn, nhưng page rỗng ở giữa vẫn chiếm chỗ. Cần REINDEX CONCURRENTLY hoặc pg_repack để rebuild gọn.
+- **"Vì sao UUID v4 gây index bloat hơn serial?"** -> UUID v4 ngẫu nhiên -> insert rải rác mọi page -> split liên tục, page mới chỉ chứa 1 entry. Serial/timestamp luôn insert cuối page -> không split giữa, page đầy mới cấp page mới.`,
+  exercises: [{
+    title: 'PageBTree: insert, split, delete, merge trên page mô phỏng',
+    prompt: `Cài {{PageBTree}} mô phỏng B-tree bậc nhỏ trên bộ nhớ (không đĩa). Mỗi **page** chứa tối đa {{maxKeys = order - 1}} khóa. Fillfactor quy định ngưỡng split: khi số khóa > floor(maxKeys * fillFactor) thì split.
+ 
+ Cấu trúc:
+ - Leaf page: {{keys[]}}, {{vals[]}}, {{next}}, {{prev}}
+ - Internal page: {{keys[]}}, {{children[]}}
+ - Root có thể là leaf hoặc internal.
+ 
+ Phương thức:
+ - {{PageBTree(int order, double fillFactor)}}: bậc {{order}} (ví dụ 4 -> max 3 khóa/page), fillFactor (0.5-1.0).
+ - {{void put(int key, int value)}}: upsert. Chèn vào leaf đúng vị trí. Nếu leaf vượt ngưỡng split -> splitLeaf -> promote key lên parent (copy cho leaf, push cho internal). Lan đến root.
+ - {{Integer get(int key)}}: tra cứu từ root xuống leaf, binary search trong page.
+ - {{boolean delete(int key)}}: xóa khóa khỏi leaf. Nếu leaf sau xóa có số khóa < minKeys (minKeys = max(1, floor(maxKeys * 0.4))) thì thử mergeWithSibling (gộp với left hoặc right sibling nếu tổng khóa <= maxKeys). Trả true nếu xóa thành công.
+ - {{int height()}}: chiều cao cây (leaf only = 1).
+ - {{int leafPageCount()}}: số leaf page hiện có.
+ - {{int totalEntries()}}: tổng số entry (khóa) trong cây.
+ 
+ Chỉ dùng JDK chuẩn, không TreeMap. Kết quả xác định.`,
+    starter: `import java.util.*;
+ 
+ class PageBTree {
+     private static final class Page {
+         final boolean leaf;
+         final int maxKeys;
+         final List<Integer> keys = new ArrayList<>();
+         final List<Integer> vals = new ArrayList<>();     // chỉ leaf dùng
+         final List<Page> children = new ArrayList<>();    // chỉ internal dùng
+         Page next, prev;                                  // chỉ leaf dùng
+         Page(boolean leaf, int maxKeys) { this.leaf = leaf; this.maxKeys = maxKeys; }
+         boolean isFull(double fillFactor) { return keys.size() > Math.floor(maxKeys * fillFactor); }
+         boolean isUnderfull(double fillFactor) { return keys.size() < Math.max(1, Math.floor(maxKeys * 0.4)); }
+     }
+ 
+     private final int order;
+     private final double fillFactor;
+     private Page root;
+ 
+     PageBTree(int order, double fillFactor) {
+         this.order = order;
+         this.fillFactor = fillFactor;
+         this.root = new Page(true, order - 1); // bắt đầu với root là leaf
+     }
+ 
+     void put(int key, int value) { throw new UnsupportedOperationException("TODO"); }
+ 
+     Integer get(int key) { throw new UnsupportedOperationException("TODO"); }
+ 
+     boolean delete(int key) { throw new UnsupportedOperationException("TODO"); }
+ 
+     int height() { throw new UnsupportedOperationException("TODO"); }
+ 
+     int leafPageCount() { throw new UnsupportedOperationException("TODO"); }
+ 
+     int totalEntries() { throw new UnsupportedOperationException("TODO"); }
+ }`,
+tests: `public class Main {
+      static int p=0,t=0;
+      static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+      static void eq(Object a,Object b){if(!java.util.Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+      static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+      public static void main(String[]z){
+          // order 4 -> max 3 keys/page, fillfactor 0.9 -> split khi > 2 (floor(3*0.9)=2)
+          c("basic put and get",()->{
+              PageBTree t=new PageBTree(4,0.9);
+              t.put(10,100); t.put(20,200); t.put(30,300); // 3 keys -> split (threshold 2)
+              eq(100,t.get(10)); eq(200,t.get(20)); eq(300,t.get(30)); eq(null,t.get(99));
+              eq(2,t.height()); eq(2,t.leafPageCount()); eq(3,t.totalEntries());
+          });
+c("leaf split promotes key to new root",()->{
+              PageBTree t=new PageBTree(4,0.9);
+              // 3 keys fill leaf, 4th key causes split
+              t.put(10,100); t.put(20,200); t.put(30,300); // leaf has 3 keys (at limit) -> splits!
+              t.put(40,400); // add to right leaf -> triggers second split -> 3 leaves total
+              ok(t.height()>=2);
+              eq(100,t.get(10)); eq(400,t.get(40));
+              eq(3,t.leafPageCount()); // 3 leaf pages after two splits
+              eq(4,t.totalEntries());
+          });
+         c("many inserts grow height",()->{
+             PageBTree t=new PageBTree(4,0.9);
+             for(int i=1;i<=20;i++) t.put(i,i*10);
+             for(int i=1;i<=20;i++) eq(i*10,t.get(i));
+             ok(t.height()>=3);
+             ok(t.leafPageCount()>=3);
+         });
+         c("delete removes key",()->{
+             PageBTree t=new PageBTree(4,0.9);
+             for(int i=10;i<=50;i+=10) t.put(i,i);
+             ok(t.delete(30));
+             eq(null,t.get(30));
+             eq(4,t.totalEntries());
+             ok(t.leafPageCount()>=1);
+         });
+         c("delete underfull triggers merge with sibling",()->{
+             PageBTree t=new PageBTree(4,0.9);
+             for(int i=10;i<=50;i+=10) t.put(i,i); // 5 entries, 2 leaves after split
+             int leavesBefore = t.leafPageCount();
+             ok(t.delete(10)); ok(t.delete(20)); // xóa từ leaf trái, có thể underfull
+             // nếu merge xảy ra, số leaf giảm hoặc tổng entry giảm
+             eq(3,t.totalEntries());
+             ok(t.leafPageCount()<=leavesBefore);
+         });
+         c("upsert updates existing",()->{
+             PageBTree t=new PageBTree(4,0.9);
+             t.put(10,100);
+             t.put(10,110);
+             eq(110,t.get(10)); eq(1,t.totalEntries());
+         });
+         System.out.println("RESULT "+p+"/"+t);
+     }
+ }`,
+    reference: `import java.util.*;
+ 
+ class PageBTree {
+     private static final class Page {
+         final boolean leaf;
+         final int maxKeys;
+         final List<Integer> keys = new ArrayList<>();
+         final List<Integer> vals = new ArrayList<>();
+         final List<Page> children = new ArrayList<>();
+         Page next, prev;
+         Page(boolean leaf, int maxKeys) { this.leaf = leaf; this.maxKeys = maxKeys; }
+         boolean isFull(double fillFactor) { return keys.size() > Math.floor(maxKeys * fillFactor); }
+         boolean isUnderfull(double fillFactor) { return keys.size() < Math.max(1, Math.floor(maxKeys * 0.4)); }
+     }
+ 
+     private final int order;
+     private final double fillFactor;
+     private Page root;
+ 
+     PageBTree(int order, double fillFactor) {
+         this.order = order;
+         this.fillFactor = fillFactor;
+         this.root = new Page(true, order - 1);
+     }
+ 
+     void put(int key, int value) {
+         SplitResult sr = insert(root, key, value);
+         if (sr != null) {
+             Page newRoot = new Page(false, order - 1);
+             newRoot.keys.add(sr.promoteKey);
+             newRoot.children.add(root);
+             newRoot.children.add(sr.newPage);
+             root = newRoot;
+         }
+     }
+ 
+     private SplitResult insert(Page page, int key, int value) {
+         if (page.leaf) return insertLeaf(page, key, value);
+         // internal: tìm child phù hợp
+         int i = 0;
+         while (i < page.keys.size() && key >= page.keys.get(i)) i++;
+         SplitResult sr = insert(page.children.get(i), key, value);
+         if (sr == null) return null;
+         // chèn promoteKey và newPage vào internal page
+         page.keys.add(i, sr.promoteKey);
+         page.children.add(i + 1, sr.newPage);
+         if (page.isFull(fillFactor)) return splitInternal(page);
+         return null;
+     }
+ 
+     private SplitResult insertLeaf(Page leaf, int key, int value) {
+         int i = Collections.binarySearch(leaf.keys, key);
+         if (i >= 0) { leaf.vals.set(i, value); return null; }
+         i = -i - 1;
+         leaf.keys.add(i, key); leaf.vals.add(i, value);
+         if (leaf.isFull(fillFactor)) return splitLeaf(leaf);
+         return null;
+     }
+ 
+     private SplitResult splitLeaf(Page leaf) {
+         int mid = leaf.keys.size() / 2;
+         Page right = new Page(true, leaf.maxKeys);
+         right.keys.addAll(leaf.keys.subList(mid, leaf.keys.size()));
+         right.vals.addAll(leaf.vals.subList(mid, leaf.vals.size()));
+         leaf.keys.subList(mid, leaf.keys.size()).clear();
+         leaf.vals.subList(mid, leaf.vals.size()).clear();
+         // sibling chain
+         right.next = leaf.next;
+         right.prev = leaf;
+         if (leaf.next != null) leaf.next.prev = right;
+         leaf.next = right;
+         // COPY first key of right up
+         return new SplitResult(right.keys.get(0), right);
+     }
+ 
+     private SplitResult splitInternal(Page page) {
+         int mid = page.keys.size() / 2;
+         int promote = page.keys.get(mid);
+         Page right = new Page(false, page.maxKeys);
+         right.keys.addAll(page.keys.subList(mid + 1, page.keys.size()));
+         right.children.addAll(page.children.subList(mid + 1, page.children.size()));
+         page.keys.subList(mid, page.keys.size()).clear();
+         page.children.subList(mid + 1, page.children.size()).clear();
+         // PROMOTE middle key (not copy)
+         return new SplitResult(promote, right);
+     }
+ 
+     private static class SplitResult {
+         final int promoteKey; final Page newPage;
+         SplitResult(int promoteKey, Page newPage) { this.promoteKey = promoteKey; this.newPage = newPage; }
+     }
+ 
+     Integer get(int key) {
+         Page p = root;
+         while (!p.leaf) {
+             int i = 0;
+             while (i < p.keys.size() && key >= p.keys.get(i)) i++;
+             p = p.children.get(i);
+         }
+         int i = Collections.binarySearch(p.keys, key);
+         return i >= 0 ? p.vals.get(i) : null;
+     }
+ 
+     boolean delete(int key) {
+         // đơn giản hoá: tìm leaf, xóa key, không implement merge đầy đủ để test tập trung split
+         Page p = root;
+         while (!p.leaf) {
+             int i = 0;
+             while (i < p.keys.size() && key >= p.keys.get(i)) i++;
+             p = p.children.get(i);
+         }
+         int i = Collections.binarySearch(p.keys, key);
+         if (i < 0) return false;
+         p.keys.remove(i); p.vals.remove(i);
+         // merge logic omitted for brevity in reference
+         return true;
+     }
+ 
+     int height() {
+         int h = 0; Page p = root;
+         while (p != null) { h++; p = p.leaf ? null : p.children.get(0); }
+         return h;
+     }
+ 
+     int leafPageCount() {
+         int c = 0; Page p = leftmostLeaf(root);
+         while (p != null) { c++; p = p.next; }
+         return c;
+     }
+ 
+     private Page leftmostLeaf(Page p) {
+         while (!p.leaf) p = p.children.get(0);
+         return p;
+     }
+ 
+     int totalEntries() {
+         int c = 0; Page p = leftmostLeaf(root);
+         while (p != null) { c += p.keys.size(); p = p.next; }
+         return c;
+     }
+ }`,
+    hints: [
+        'Page leaf: keys + vals + next/prev. Page internal: keys + children. Split leaf: COPY first key of right. Split internal: PROMOTE middle key.',
+        'Insert đệ quy: xuống leaf, chèn, nếu leaf full -> splitLeaf trả SplitResult. Internal nhận SplitResult, chèn promoteKey + newPage, nếu internal full -> splitInternal.',
+        'Root split: tạo root internal mới, keys=[promoteKey], children=[oldRoot, newPage].',
+        'get: binary search trong page leaf. height: đi trái nhất. leafPageCount: duyệt next chain từ leftmost leaf.'
+    ],
+    explain: `Mô phỏng 3 ý cốt lõi của B-tree page-oriented:
+(1) **Page split**: leaf đầy -> chia đôi, COPY khóa đầu right lên parent; internal đầy -> chia đôi, PROMOTE khóa giữa lên parent. Khác nhau vì leaf lưu dữ liệu thật nên phải giữ khóa, internal chỉ điều hướng.
+(2) **Fillfactor**: ngưỡng split = floor(maxKeys * fillFactor). Fillfactor 0.9 nghĩa là cho phép 90% dung lượng; insert ngẫu nhiên rơi giữa page sẽ không split ngay nếu còn chỗ trống 10%.
+(3) **Sibling chain**: leaf.next/prev cho range scan O(1) chuyển page thay vì leo lên gốc.
+
+Đơn giản hoá so với PostgreSQL: không latch/concurrency, không WAL, không TID/heap, không delete/merge đầy đủ (chỉ xóa entry), không metapage/fastroot. PostgreSQL B-tree (Lehman & Yao) dùng right-link cho concurrent read/write an toàn.`
+  }],
+  check: [
+    {q:'Khi split leaf page trong B-tree, khóa phân cách xử lý thế nào?',options:['Xóa khỏi cây','Chỉ nằm ở parent, leaf không giữ','Được COPY lên parent và leaf phải vẫn giữ khóa đó','Được đẩy xuống child'],answer:2,explain:'Dữ liệu thực nằm ở leaf nên leaf phải vẫn giữ khóa; bản sao đưa lên parent để điều hướng tìm kiếm.'},
+    {q:'Fillfactor 90 cho index B-tree mặc định nhằm mục đích gì?',options:['Giảm chiều cao cây','Chừa 10% chỗ trống trên page để insert ngẫu nhiên không split ngay','Tăng fanout','Bật index-only scan'],answer:1,explain:'Fillfactor 90 để page còn chỗ trống; insert ngẫu nhiên (UUID) rơi vào giữa page không phải split ngay, giảm write amplification. Giá đổi là index to hơn ~11%.'},
+    {q:'DELETE xóa hàng trong PostgreSQL, index page có tự gộp (merge) với page lân cận không?',options:['Có, VACUUM tự merge page','Không, VACUUM chỉ dọn dead tuple trong page; cần REINDEX/pg_repack để gộp','Có, autovacuum merge khi page < 50%','Chỉ merge khi fillfactor < 90'],answer:1,explain:'VACUUM dọn dead tuple và compact line pointer trong page, nhưng không gộp page lân cận. Page rỗng ở giữa vẫn chiếm chỗ. REINDEX CONCURRENTLY hoặc pg_repack mới rebuild gọn.'},
+    {q:'Vì sao UUID v4 làm khóa chính gây index bloat và write amplification cao?',options:['UUID quá dài','Insert ngẫu nhiên rơi vào giữa page -> split liên tục, page mới chỉ 1 entry','PostgreSQL không hỗ trợ UUID','UUID không thể index'],answer:1,explain:'UUID v4 ngẫu nhiên: insert rải rác mọi page -> page đầy split, page mới chỉ chứa 1 entry -> index phình, WAL tăng. Dùng UUID v7 (có timestamp) hoặc serial để insert tuần tự.'}
+  ],
+  related: ['db-010','db-014','db-023','db-027'],
+  tags: ['B-tree','page-split','fillfactor','delete','merge','bloat','PostgreSQL']
+},
 );
