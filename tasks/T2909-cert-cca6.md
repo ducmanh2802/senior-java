@@ -1,6 +1,6 @@
 # T2909 — 40 câu luyện thi CCA-F: tăng ngân hàng cho đề full
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/quiz-cca-5.js`
 
@@ -31,3 +31,12 @@ AGENTS.md mục "Câu trắc nghiệm" + mục 5 (không backtick, không ký hi
 Xong: `Status: DONE`, Notes ghi id + số câu theo domain.
 
 ## Notes
+- File đã có sẵn 43 câu `[Context Management]` (id qz-ccafive-001..043) từ lần chạy trước bị gián đoạn — giữ nguyên (đúng luật "chỉ thêm, không xoá"). Đã bổ sung 25 câu còn thiếu (id qz-ccafive-044..068):
+  - `[Tool Design & MCP]` 10 câu (044–053)
+  - `[Prompt Engineering]` 8 câu (054–061)
+  - `[Claude Code Configuration]` 7 câu (062–068)
+- Tổng file: 68 câu, 17 câu multi (multi: true, "Choose 2", answer mảng tăng dần), còn lại 1 đáp án trải đều 0..3. q/options tiếng Anh, explain tiếng Việt (vì sao đúng + vì sao từng phương án sai), không backtick, không `${`.
+- Domain tag khớp đúng `js/data/exams.js` (exam `cca-f`). Đã đọc lướt q của quiz-cca-2/3/4 để tránh trùng ý.
+- Nghiệm thu: `node --check js/data/quiz-cca-5.js` OK; `node scripts/build-light-index.js` ghi lại index-light.js; `node scripts/validate.js` → `OK — không có lỗi.`
+- Lưu ý: lúc chạy build/validate ban đầu có lỗi tạm thời do file của agent khác (quiz-ccdv-1.js) đang sửa dở và file `.clean` tạm; chạy lại sau khi agent kia xong thì OK. Không sửa file ngoài phạm vi sở hữu.
+Reviewed-by: kilo (T2909R)
