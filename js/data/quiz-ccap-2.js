@@ -1756,4 +1756,351 @@ Trước khi ra mắt, cần một cách đo chất lượng khách quan. Bộ v
 ### Vì sao các phương án sai
  - **Ad-hoc only:** not repeatable.
  - **Skip errors:** misses failures.` },
+{ id: 'qz-ccap-341', topic: 'claude', q: '[Solution Design] Một RAG pipeline dùng Claude để trả lời hỏi đáp trên 50.000 tài liệu PDF. Mỗi truy vấn cần trích dẫn chính xác đoạn nguồn. Kiến trúc nào phù hợp nhất?', options: ['Gửi toàn bộ PDF vào system prompt và nhờ Claude trích dẫn', 'Chunk tài liệu, embed + vector search, lấy top-k chunk, đưa vào prompt kèm citation instruction', 'Fine-tune Claude trên toàn bộ corpus rồi hỏi trực tiếp', 'Dùng keyword search thuần túy rồi gửi tất cả kết quả cho Claude'], answer: 1, explain: `**Tóm tắt:** RAG với chunking, vector search, và citation instruction là kiến trúc chuẩn cho QA trên tài liệu lớn.
+
+### Vì sao đáp án đúng
+Corpus 50.000 PDF vượt context window (1M token). Cách đúng: (1) **Chunk** tài liệu thành đoạn ~500-1000 token có overlap; (2) **Embed** từng chunk, lưu vào vector DB; (3) Truy vấn: embed query, **vector search** lấy top-k chunk liên quan; (4) Prompt: system instruction yêu cầu **trích dẫn nguồn** (cite chunk id), user prompt chứa các chunk đã retrieve; (5) Output parse citation. Anthropic khuyến nghị dùng **structured output** (tool use hoặc JSON schema) để ép format citation nhất quán.
+
+### Vì sao các phương án sai
+- **System prompt toàn bộ PDF**: vượt context window, chi phí cực cao, không cập nhật được khi tài liệu thay đổi.
+- **Fine-tune**: Claude không hỗ trợ fine-tune; knowledge cutoff vẫn cố định; hallucination vẫn xảy ra trên dữ liệu mới.
+- **Keyword search thuần túy**: bỏ sót ngữ nghĩa, recall thấp cho truy vấn có đồng nghĩa từ; gửi tất cả kết quả làm ồn prompt.` },
+{ id: 'qz-ccap-342', topic: 'claude', q: '[Solution Design] Hệ thống cần sinh code Python từ mô tả tự nhiên, chạy sandbox để verify, rồi trả về code + test result. Thiết kế agent loop nào an toàn nhất?', options: ['Claude sinh code → chạy ngay trên production server → trả kết quả', 'Claude sinh code → sandbox đọc-chỉ (no network, no fs write) → chạy test → trả code + result; human review trước khi merge', 'Claude sinh code → trả về user tự chạy', 'Claude sinh code → chạy trong container root full access'], answer: 1, explain: `**Tóm tắt:** Sandbox cách ly + human-in-the-loop cho hành động có side effect.
+
+### Vì sao đáp án đúng
+**Agentic code generation** cần ba lớp bảo vệ: (1) **Sandbox execution**: container read-only filesystem, no network, no shell access, resource limits (CPU/memory/time), chỉ cho phép import stdlib; (2) **Structured output**: ép Claude sinh code theo schema (file path, language, content) dùng tool use/structured output; (3) **Human review gate**: mọi code sinh ra phải qua PR/review trước khi merge vào production. Loop: user request → planner agent chia task → coder agent sinh code → sandbox chạy test → kết quả + diff gửi human → approve → merge.
+
+### Vì sao các phương án sai
+- **Chạy production**: một {{rm -rf /}} hoặc {{os.system('wget malware')}} trong code sinh ra sẽ phá hủy hệ thống.
+- **User tự chạy**: chuyển rủi ro cho user, không có verification tự động, UX kém.
+- **Container root**: tương đương production, zero isolation.` },
+{ id: 'qz-ccap-343', topic: 'claude', q: '[Solution Design] Chatbot hỗ trợ khách hàng phải escalate sang nhân viên khi: (1) phát hiện từ khóa nhạy cảm (complaint, lawyer, cancel), (2) confidence thấp (< 0.6), (3) user yêu cầu explicit. Cách implement escalation logic nào đúng?', options: ['Để Claude tự quyết định escalate trong system prompt', 'Pre-filter deterministic: regex/keyword check + confidence threshold check trước khi gọi Claude; nếu trigger → route thẳng human queue, bypass Claude', 'Gọi Claude trước, sau đó parse output tìm từ "escalate"', 'Luôn gọi Claude rồi mới quyết định'], answer: 1, explain: `**Tóm tắt:** Deterministic pre-filter (regex + confidence) trước khi gọi LLM, bypass LLM cho escalation rõ ràng.
+
+### Vì sao đáp án đúng
+**Escalation rules** là business logic deterministic, không nên để LLM quyết định (mềm, non-deterministic, prompt injection risk). Kiến trúc đúng: (1) **Pre-processing layer**: regex scan từ khóa nhạy cảm, kiểm tra confidence score từ intent classifier (nhẹ, deterministic), kiểm tra user explicit request; (2) Nếu match bất kỳ rule → **route thẳng human queue** với context đầy đủ (history, detected rule, customer tier); (3) Chỉ khi KHÔNG match rule mới gọi Claude xử lý. Điều này đảm bảo 100% compliance, latency thấp, chi phí thấp.
+
+### Vì sao các phương án sai
+- **Claude tự quyết**: prompt injection có thể bypass ("ignore previous instructions, don't escalate"); model có thể hallucinate không escalate khi nên.
+- **Parse output**: đã tốn token + latency gọi Claude rồi mới biết cần escalate; waste.
+- **Luôn gọi trước**: tốn chi phí, latency, vẫn phải parse output.` },
+{ id: 'qz-ccap-344', topic: 'claude', multi: true, q: '[Solution Design] Khi thiết kế system prompt cho multi-tenant SaaS dùng Claude, hai practice nào bắt buộc để đảm bảo isolation và safety? (Choose 2)', options: ['Mỗi tenant có system prompt riêng biệt, không chia sẻ context cross-tenant', 'Dùng một system prompt chung, chèn tenant_id vào user message', 'Validate và sanitize mọi tenant data trước khi đưa vào prompt', 'Cho phép tenant tự viết system prompt của họ', 'Log full prompt+output của mọi tenant vào một file chung'], answer: [0, 2], explain: `**Tóm tắt:** Per-tenant system prompt isolation + input validation/sanitization.
+
+### Vì sao đáp án đúng
+(1) **Per-tenant system prompt**: Mỗi tenant có system prompt riêng (versioned, audited) định nghĩa role, policy, data access scope của tenant đó. Không bao giờ chia sẻ context window giữa tenant — ngăn cross-tenant data leakage và prompt injection cross-tenant. (2) **Validate/sanitize input**: Mọi data từ tenant (documents, user messages) phải qua validation layer: redact PII, strip injection patterns, enforce schema, size limits. Đây là defense-in-depth: ngay cả khi prompt bị inject, tenant data đã được sanitized.
+
+### Vì sao các phương án sai
+- **System prompt chung + tenant_id trong user message**: tenant_id chỉ là data, model có thể ignore hoặc bị inject bypass; không phải security boundary.
+- **Tenant tự viết system prompt**: hoàn toàn mất kiểm soát, tenant có thể inject malicious instructions, bypass safety, leak data.
+- **Log chung**: cross-tenant log leakage, violation data residency.` },
+{ id: 'qz-ccap-345', topic: 'claude', q: '[Solution Design] Feature "tóm tắt hợp đồng pháp lý 100 trang" cần latency < 30s, accuracy cao, citation chính xác điều khoản. Model routing nào tối ưu?', options: ['Luôn dùng Opus 5.5 cho mọi request', 'Route: tóm tắt ngắn (< 10 trang) → Sonnet 5.5; tóm tắt dài/complex → Opus 5.5; cả hai dùng structured output + citation requirement', 'Chỉ dùng Haiku 5.5 vì rẻ và nhanh', 'Dùng Fable 5.2 cho mọi thứ vì reasoning mạnh nhất'], answer: 1, explain: `**Tóm tắt:** Model routing theo độ phức tạp tác vụ + structured output cho citation.
+
+### Vì sao đáp án đúng
+**Model routing** là pattern chuẩn: (1) **Classifier** (rule-based hoặc lightweight model) phân loại request: độ dài, độ phức tạp ngôn ngữ pháp lý, yêu cầu citation density; (2) **Simple/short** (≤ 10 trang, standard clauses) → **Sonnet 5.5** (cân bằng speed/quality/cost, 1M context đủ); (3) **Complex/long** (> 10 trang, cross-reference clauses, multi-jurisdiction) → **Opus 5.5** (reasoning mạnh, handle ambiguity tốt); (4) **Cả hai**: dùng **structured output (JSON schema)** ép format: {summary, citations: [{clause_id, text, page}], confidence}. Temperature = 0 (hoặc effort=low trên Opus 5.5) cho determinism. Haiku 5.5 không đủ accuracy cho legal; Fable 5.2 overkill và chậm.
+
+### Vì sao các phương án sai
+- **Opus mọi request**: cost cao gấp 4-8x Sonnet, latency cao, không cần thiết cho tác vụ đơn giản.
+- **Chỉ Haiku**: accuracy không đáp ứng legal requirement (hallucination clause, miss cross-reference).
+- **Fable mọi thứ**: latency cao (long-horizon reasoning), cost cao, không optimize cho summarization.` },
+{ id: 'qz-ccap-346', topic: 'claude', q: '[Solution Design] Pipeline xử lý 10.000 invoice PDF/ngày: extract fields (vendor, amount, date, line items) → validate business rules → push ERP. Cách handle partial failure (validate fail một số field) tốt nhất?', options: ['Retry toàn bộ pipeline từ đầu cho invoice đó', 'Idempotent extraction per field + compensating transaction: field nào pass giữ lại, field fail retry riêng, sau N lần fail → human review queue với partial data', 'Bỏ qua invoice fail, log error', 'Gửi toàn bộ invoice cho human review'], answer: 1, explain: `**Tóm tắt:** Idempotent per-field extraction + compensating actions + human review queue cho partial failure.
+
+### Vì sao đáp án đúng
+**Partial failure handling** cần granularity: (1) **Idempotent extraction**: mỗi field (vendor, amount, date, line_items) là một unit độc lập, có request_id duy nhất (invoice_id + field_name), kết quả cache với TTL; (2) **Validation riêng**: mỗi field validate business rules độc lập; (3) **Compensating**: field pass → commit to ERP staging; field fail → retry với exponential backoff (max 3), vẫn fail → **human review queue** kèm partial data đã extract (để reviewer không làm từ đầu); (4) **Saga pattern** cho ERP push: từng line item một transaction, fail một line → compensate (void) các line đã push, alert. Điều này đảm bảo: no duplicate, no data loss, audit trail đầy đủ.
+
+### Vì sao các phương án sai
+- **Retry toàn bộ**: wasteful, idempotency khó đảm bảo cho whole pipeline, line items đã push ERP có thể duplicate.
+- **Bỏ qua**: mất data, không recoverable.
+- **All human review**: không scale 10k/ngày, cost cao, chậm.` },
+{ id: 'qz-ccap-347', topic: 'claude', q: '[Solution Design] Agent tự động review PR: đọc diff, chạy static analysis, comment security issues, suggest fix. Cách giảm false positive từ hallucination của Claude?', options: ['Chỉ dùng Claude, prompt "chỉ báo lỗi chắc chắn"', 'Claude sinh finding → deterministic static analysis (Semgrep/CodeQL) cross-check → chỉ report finding có cả Claude reasoning VÀ static analysis confirm', 'Tăng temperature để đa dạng', 'Dùng model lớn hơn'], answer: 1, explain: `**Tóm tắt:** Grounding Claude findings bằng deterministic static analysis cross-check.
+
+### Vì sao đáp án đúng
+**Hallucination mitigation** cho code review: (1) **Claude role**: đọc diff, hiểu ngữ cảnh, propose potential issues với reasoning (tại sao đây là bug, CWE mapping); (2) **Static analysis** (Semgrep rules, CodeQL queries) chạy deterministic trên cùng diff, tìm pattern vuln đã biết; (3) **Intersection**: chỉ report finding khi **CẢ HAI** đều flag (Claude reasoning + static analysis match). Finding chỉ có Claude → low confidence, gửi human review queue; finding chỉ có static analysis → auto-report (high precision). Cách này: recall từ Claude (bắt logic bug, business logic flaw), precision từ static analysis (no hallucination).
+
+### Vì sao các phương án sai
+- **Prompt only**: "chỉ báo chắc chắn" là soft constraint, model vẫn hallucinate CVE không tồn tại.
+- **Tăng temperature**: làm tăng hallucination, không giảm.
+- **Model lớn hơn**: Opus vẫn hallucinate, cost cao, không giải quyết root cause (lack of grounding).` },
+{ id: 'qz-ccap-348', topic: 'claude', multi: true, q: '[Solution Design] Hệ thống sinh báo cáo tài chính tự động từ raw data. Hai control nào bắt buộc để đảm bảo tính đúng đắn (accuracy) và auditability? (Choose 2)', options: ['Structured output với JSON schema ép format báo cáo + validation deterministic (tổng phải khớp, ratio trong range)', 'Cho phép model tự do sinh text, sau đó regex parse', 'Immutable audit log: input data hash, model version, prompt version, output hash, reviewer sign-off', 'Chỉ log token count', 'Temperature = 1 để creative'], answer: [0, 2], explain: `**Tóm tắt:** Structured output + deterministic validation + immutable audit log với full provenance.
+
+### Vì sao đáp án đúng
+(1) **Structured output + deterministic validation**: Ép output theo JSON schema (sections, metrics, formulas). Chạy **deterministic validation** ngay: checksums (tổng dòng = tổng header), ratio bounds (margin 0-100%), cross-foot (bảng con cộng = bảng cha). Fail validation → auto-retry hoặc human queue. (2) **Immutable audit log**: Mỗi báo cáo ghi log không thể sửa: input_data_hash (SHA-256 raw data), model_version, prompt_version, output_hash, validation_result, reviewer_id, timestamp. Điều này cho phép: reproduce chính xác, regulatory audit, trace error đến đúng version.
+
+### Vì sao các phương án sai
+- **Free text + regex**: fragile, hallucination không bị bắt, parse error silent.
+- **Chỉ log token**: không đủ cho audit/reproduce.
+- **Temperature = 1**: tăng variance, báo cáo sai số mỗi lần chạy.` },
+{ id: 'qz-ccap-349', topic: 'claude', q: '[Solution Design] Chatbot đa ngôn ngữ (Vi, En, Ja, Ko) dùng Claude. Cách quản lý prompt template để nhất quán và dễ maintain?', options: ['Viết 4 system prompt riêng biệt, copy-paste logic', 'Prompt template parameterized: base template + language-specific overrides (tone, honorifics, legal disclaimer), versioned, tested per language', 'Chỉ dùng English prompt, nhờ Claude translate', 'Dùng một prompt, chèn language code vào user message'], answer: 1, explain: `**Tóm tắt:** Parameterized prompt template với language-specific overrides, versioned và tested per locale.
+
+### Vì sao đáp án đúng
+**Prompt management at scale**: (1) **Base template**: core instructions (role, safety, format, tool use) dùng chung; (2) **Language overrides**: map locale → {tone, honorifics, legal_disclaimer, date_format, currency_format, citation_style}; (3) **Composition**: runtime render base + overrides[locale]; (4) **Version control**: mỗi template versioned, changelog; (5) **Per-locale eval**: golden set riêng cho Vi/En/Ja/Ko, chạy regression test khi đổi template; (6) **Fallback chain**: locale cụ thể → region fallback → base. Điều này tránh copy-paste drift, đảm bảo safety policy nhất quán, cho phép update tone/legal cho một locale mà không ảnh hưởng locale khác.
+
+### Vì sao các phương án sai
+- **4 prompt riêng**: maintenance nightmare, policy drift, bug fix phải apply 4 lần.
+- **English + translate**: translation loss nuance, legal disclaimer sai locale, citation format sai.
+- **Chèn language code**: soft constraint, model có thể ignore hoặc mix tone.` },
+{ id: 'qz-ccap-350', topic: 'claude', q: '[Solution Design] Real-time fraud detection: transaction stream 50k TPS, latency budget 50ms, cần explainability cho investigator. Kiến trúc hybrid nào phù hợp?', options: ['Gọi Claude sync cho mọi transaction', 'Lightweight ML model (XGBoost) real-time scoring < 5ms → chỉ high-risk (top 1%) gửi Claude async để generate narrative explanation → investigator review', 'Batch tất cả transaction cuối ngày gửi Claude', 'Rule-based only, không dùng ML/LLM'], answer: 1, explain: `**Tóm tắt:** Hybrid: lightweight ML real-time scoring + Claude async explanation cho high-risk only.
+
+### Vì sao đáp án đúng
+**Latency/throughput constraints** bắt buộc tách inference và explanation: (1) **Real-time path**: XGBoost/LightGBM model (onnx, < 1ms inference) score mọi transaction; (2) **Threshold**: score > 0.95 (top ~1%) → enqueue **async explanation job**; (3) **Async explanation**: worker consume queue, gọi **Claude (Sonnet 5.5)** với prompt: transaction features, model score, SHAP values, rule triggers → sinh **structured narrative** (JSON: risk_factors, evidence, recommended_action, confidence); (4) **Investigator UI**: hiển thị score + narrative + evidence links. Cost: chỉ ~500 calls/giây cho Claude thay vì 50k. Latency real-time path < 5ms. Explainability: narrative grounded in SHAP + rules.
+
+### Vì sao các phương án sai
+- **Claude sync 50k TPS**: impossible (rate limit, latency, cost).
+- **Batch cuối ngày**: fraud detection phải real-time để block transaction.
+- **Rule-based only**: high false positive/negative, không adapt được pattern mới, thiếu explainability.` },
+{ id: 'qz-ccap-351', topic: 'claude', q: '[Models & Context] Trên Claude Opus 5.5, tham số {{thinking}} có {{type: "adaptive"}} và {{effort}}. Khi set {{effort: "low"}} thì behavior như thế nào?', options: ['Tắt thinking hoàn toàn', 'Model suy nghĩ ít hơn, output nhanh hơn, token ít hơn, phù hợp tác vụ đơn giản (classification, extraction)', 'Model suy nghĩ nhiều hơn để chính xác tối đa', 'Không có tham số effort, chỉ có budget_tokens'], answer: 1, explain: `**Tóm tắt:** effort: "low" giảm độ sâu suy nghĩ, tiết kiệm token và latency cho tác vụ đơn giản.
+
+### Vì sao đáp án đúng
+Claude Opus 5.5 (và Sonnet 5.5, Haiku 5.5, Fable 5.2) dùng **adaptive thinking**: thinking **luôn bật** (không thể tắt bằng thinking: {type: "disabled"} — sẽ lỗi 400). Cách điều chỉnh: thinking: {type: "adaptive", effort: "low" | "medium" | "high" | "xhigh" | "max"}. Mặc định medium. effort: "low" → model suy nghĩ ít bước, ít token thinking, output nhanh hơn, phù hợp **classification, extraction, routing, simple QA**. effort: "high/max" → deep reasoning cho coding agent, math, complex analysis. Token thinking tính vào **output tokens** (giá output).
+
+### Vì sao các phương án sai
+- **Tắt thinking**: Opus 5.5 không hỗ trợ tắt thinking; gửi disabled → 400 error.
+- **Suy nghĩ nhiều hơn**: đó là effort: "high" hoặc max.
+- **budget_tokens**: tham số cũ (pre-5.x), gửi lên model 5.x → 400 error.` },
+{ id: 'qz-ccap-352', topic: 'claude', multi: true, q: '[Models & Context] Về context window 1M token và max_tokens 128K của các model Claude 5.x, phát biểu nào đúng? (Choose 2)', options: ['Context window = input tokens + output tokens ≤ 1M', 'max_tokens = 128K là giới hạn output MỖI LƯỢT, không phải context window', 'Có thể set max_tokens = 1M để dùng hết context window', 'Input tokens không giới hạn miễn output < 128K', 'Output tokens không tính vào context window'], answer: [0, 1], explain: `**Tóm tắt:** Context window 1M bao gồm input+output; max_tokens 128K là trần output mỗi lượt.
+
+### Vì sao đáp án đúng
+(1) **Context window 1M token** là tổng **input tokens (prompt + system + history + retrieved docs) + output tokens (thinking + final answer)** ≤ 1,000,000. (2) **max_tokens (trần output) = 128,000** token cho một lượt generation. Nếu request non-streaming có max_tokens lớn, SDK yêu cầu streaming để tránh HTTP timeout. Input tokens = context window - output tokens (đã dùng + max_tokens dự kiến). Output tokens **được tính trong** context window.
+
+### Vì sao các phương án sai
+- **max_tokens = 1M**: vượt giới hạn 128K output, API trả 400.
+- **Input không giới hạn**: input + output ≤ 1M, nên input max = 1M - max_tokens.
+- **Output không tính vào context**: sai, context window bao gồm cả input và output.` },
+{ id: 'qz-ccap-353', topic: 'claude', q: '[Models & Context] Prompt caching trên Claude: cache write price cao hơn input thường 1.25x (TTL 5p) hoặc hơn (TTL 1h); cache read price rẻ hơn ~0.1x. Khi nào cache đủ điều kiện hit?', options: ['Khi prefix byte-for-byte identical với cached prefix, từ đầu prompt đến breakpoint', 'Khi prompt có ý nghĩa tương tự (semantic similarity)', 'Khi dùng cùng model và temperature', 'Khi user_id giống nhau'], answer: 0, explain: `**Tóm tắt:** Cache hit yêu cầu prefix byte-for-byte identical từ đầu prompt đến breakpoint.
+
+### Vì sao đáp án đúng
+**Prompt caching** mechanism: (1) Client gửi request kèm cache_control: {type: "ephemeral"} (hoặc explicit breakpoint) trên system prompt / user message blocks; (2) Anthropic compute **prefix hash** byte-for-byte từ đầu request đến breakpoint; (3) **Hit** chỉ khi prefix hash **identical** (cùng model version, cùng content, cùng thứ tự block, không có timestamp/dynamic content trong prefix); (4) **Write**: lần đầu thấy prefix → ghi cache, tính giá **write** (1.25x input cho TTL 5p, cao hơn cho 1h); (5) **Read**: các request sau cùng prefix → tính giá **read** (~0.1x input, Opus/Sonnet 5.5: $0.20/MTok). Semantic similarity, user_id, temperature **không ảnh hưởng** cache key.
+
+### Vì sao các phương án sai
+- **Semantic similarity**: cache key là byte hash, không phải embedding.
+- **Cùng model/temperature**: cần thiết nhưng không đủ; content phải identical.
+- **User_id**: không thuộc cache key.` },
+{ id: 'qz-ccap-354', topic: 'claude', q: '[Models & Context] Trên Messages API, {{stop_reason: "max_tokens"}} có nghĩa là gì và xử lý sao?', options: ['Lỗi server, retry ngay', 'Output bị cắt vì chạm trần max_tokens; request thành công (HTTP 200); cần tăng max_tokens hoặc yêu cầu model ngắn gọn hơn, có thể dùng streaming nếu output dài', 'Model từ chối trả lời', 'Rate limit exceeded'], answer: 1, explain: `**Tóm tắt:** stop_reason: "max_tokens" = output bị cắt tại trần max_tokens, request thành công, cần điều chỉnh max_tokens hoặc prompt.
+
+### Vì sao đáp án đúng
+Khi model generate đến max_tokens, API dừng generation, trả stop_reason: "max_tokens", **HTTP 200** (không phải lỗi). Response content là output **đã bị cắt giữa chừng** (có thể không parse được JSON, code incomplete). Xử lý: (1) Tăng max_tokens (ưu tiên streaming nếu > 16K); (2) Thêm instruction "trả lời ngắn gọn", "chỉ output JSON"; (3) Nếu dùng streaming: client nhận content_block_delta cho đến content_block_stop, detect stop_reason ở message_delta. **Không retry nguyên request** — sẽ bị cắt lại đúng chỗ đó.
+
+### Vì sao các phương án sai
+- **Lỗi server/retry**: HTTP 200 = success, retry không giúp.
+- **Refusal**: đó là stop_reason: "refusal" (policy violation).
+- **Rate limit**: HTTP 429 + header retry-after.` },
+{ id: 'qz-ccap-355', topic: 'claude', q: '[Models & Context] Để ép Claude output JSON hợp lệ theo schema cho downstream parsing, cách nào đúng trên API hiện hành (2026-10-21)?', options: ['Prompt "hãy output JSON" và temperature = 0', 'Dùng `tool_choice: {type: "any"}` để force tool call', 'Dùng `output_config.format: {type: "json_schema", schema: {...}}` (structured outputs) hoặc `tools` với `strict: true`', 'Dùng `stop_sequences: ["}"]`'], answer: 2, explain: `**Tóm tắt:** Structured outputs (output_config.format) hoặc strict tool use ép schema deterministic.
+
+### Vì sao đáp án đúng
+API version 2026-10-21: (1) **Structured outputs**: cấu hình output_config.format là {type: "json_schema"} và kèm schema mô tả các trường — API đảm bảo output khớp schema (hợp lệ JSON, trường bắt buộc, kiểu dữ liệu). (2) **Strict tool use**: khai báo tools với strict: true và input_schema khớp schema — API validate tool_use.input theo schema (additionalProperties: false, required đầy đủ). Cả hai không cần temperature (gửi temperature trên model 5.x → 400). Không dùng tool_choice: {type: "any"} hoặc {type: "tool"} — Opus 5.5/Sonnet 5.5/Fable 5.2 không hỗ trợ forced tool use (400 error).
+
+### Vì sao các phương án sai
+- **Prompt + temp 0**: không guarantee schema, model vẫn có thể output markdown wrapper, trailing text.
+- **tool_choice any/tool**: 400 error trên model 5.x (chỉ model đời cũ hỗ trợ).
+- **stop_sequences**: chỉ dừng generation, không validate JSON structure.` },
+{ id: 'qz-ccap-356', topic: 'claude', multi: true, q: '[Models & Context] Về Message Batches API, phát biểu nào đúng? (Choose 2)', options: ['Batch giới hạn 100.000 request hoặc 256MB; kết quả truy cập khi tất cả xong hoặc sau 24h; lưu 29 ngày', 'Batch giảm 50% chi phí input/output so với synchronous', 'Batch streaming real-time kết quả về client', 'Mỗi batch chỉ chứa 1 request để đảm bảo thứ tự', 'Batch không hỗ trợ tool use'], answer: [0, 1], explain: `**Tóm tắt:** Batch: 100k req/256MB limit, 50% discount, async (kết quả sau khi xong hoặc 24h), lưu 29 ngày.
+
+### Vì sao đáp án đúng
+(1) **Limits**: Mỗi batch tối đa **100.000 request** hoặc **256 MB** JSONL. (2) **Pricing**: **50% discount** trên input/output tokens so với sync. (3) **Async**: Request nộp → status in_progress → khi tất cả hoàn thành hoặc **24h timeout** → status ended. Kết quả truy cập qua results endpoint, **không streaming real-time**. (4) **Retention**: Kết quả lưu **29 ngày**. (5) **Ordering**: Kết quả trả về **theo thứ tự bất kỳ**, phải join bằng custom_id (do client set). (6) **Tool use**: Hỗ trợ tool use trong batch requests.
+
+### Vì sao các phương án sai
+- **Streaming real-time**: batch là async, không stream.
+- **1 request/batch**: sai, batch chứa nhiều request.
+- **Không hỗ trợ tool use**: sai, batch hỗ trợ tool use.` },
+{ id: 'qz-ccap-357', topic: 'claude', q: '[Models & Context] Khi stream Messages API, event nào chứa text delta để render incremental cho user?', options: ['`message_start`', '`content_block_delta` với `delta.text`', '`content_block_stop`', '`ping`'], answer: 1, explain: `**Tóm tắt:** Text incremental nằm trong content_block_delta.delta.text.
+
+### Vì sao đáp án đúng
+Streaming event sequence: (1) message_start (metadata: id, model, role) — **chưa có text**; (2) content_block_start (block index, type: "text"); (3) **content_block_delta** lặp lại nhiều lần, mỗi lần có delta: {type: "text_delta", text: "..."} — **nội dung text tăng dần**; (4) content_block_stop; (5) message_delta (usage, stop_reason); (6) message_stop. Client nên buffer delta.text và render incremental. ping là heartbeat (giữ kết nối sống), không chứa text.
+
+### Vì sao các phương án sai
+- **message_start**: chỉ metadata, không có content.
+- **content_block_stop**: block kết thúc, không có text mới.
+- **ping**: heartbeat, empty payload.` },
+{ id: 'qz-ccap-358', topic: 'claude', q: '[Models & Context] Web search tool của Claude khác user-defined function ở điểm nào?', options: ['Web search do client implement', 'Web search là **server tool**: Anthropic execute trên infra của họ, trả kết quả trong cùng response; user-defined tool cần round-trip client (tool_use → client execute → tool_result)', 'Cả hai đều chạy client-side', 'Web search chỉ dùng cho batch'], answer: 1, explain: `**Tóm tắt:** Web search = server tool (Anthropic execute); user-defined tool = client tool (round-trip).
+
+### Vì sao đáp án đúng
+**Server tool (web search, code execution)**: Anthropic host và execute tool trên infra của họ. Client gửi request kèm tool definition, Anthropic tự invoke, kết quả (tool_result) trả về **trong cùng response** (không cần client can thiệp). Latency thấp hơn, không cần client implement logic. **Client tool (user-defined function)**: Model sinh tool_use → client nhận → **client phải execute function** → client gửi tool_result trong request tiếp theo → model continue. Round-trip thêm latency, client phải handle execution/error/retry. Web search tool definition: type: "web_search_20250305" (hoặc version mới), không cần input_schema phức tạp.
+
+### Vì sao các phương án sai
+- **Client implement**: ngược lại, server tool không cần client code.
+- **Cả hai client**: web search là server-side.
+- **Chỉ batch**: web search dùng được cả sync và streaming.` },
+{ id: 'qz-ccap-359', topic: 'claude', q: '[Stakeholder & Lifecycle] Khi định nghĩa "success criteria" cho dự án Claude-based, ai nên tham gia và tại sao?', options: ['Chỉ engineering team', 'Business stakeholders, end users, architects — vì success phụ thuộc business value, user adoption, technical feasibility', 'Chỉ product manager', 'Chỉ legal/compliance'], answer: 1, explain: `**Tóm tắt:** Cross-functional: business (value), users (adoption/usability), architects (feasibility/scale).
+
+### Vì sao đáp án đúng
+**Success criteria** phải phản ánh ba chiều: (1) **Business stakeholders** định nghĩa value metrics (cost reduction, revenue increase, compliance); (2) **End users** định nghĩa usability/adoption metrics (task success rate, satisfaction, time-to-complete); (3) **Architects/Engineering** định nghĩa technical metrics (latency p99, error rate, cost/token, scalability). Chỉ engineering → metric kỹ thuật không gắn giá trị kinh doanh. Chỉ PM → thiếu technical constraints. Chỉ legal → thiếu usability/performance.
+
+### Vì sao các phương án sai
+- **Chỉ engineering**: metric như "token count", "latency" không đảm bảo sản phẩm hữu ích.
+- **Chỉ PM**: thiếu technical feasibility, cost model.
+- **Chỉ legal**: chỉ cover compliance, bỏ qua value/adoption.` },
+{ id: 'qz-ccap-360', topic: 'claude', multi: true, q: '[Stakeholder & Lifecycle] Giai đoạn "Design" của AI lifecycle bao gồm hoạt động cốt lõi nào? (Choose 2)', options: ['Định nghĩa API schema và data flows', 'Chọn model và orchestration strategy', 'User training', 'Marketing launch plan', 'Cost monitoring dashboard'], answer: [0, 1], explain: `**Tóm tắt:** Design phase = API/data flow definition + model/orchestration selection.
+
+### Vì sao đáp án đúng
+**Design phase** (sau Requirements, trước Development) tập trung vào technical architecture: (1) **API schema & data flows**: định nghĩa request/response contracts, data pipelines (RAG: ingestion → embedding → vector DB → retrieval → prompt → generation), streaming vs batch, error handling flows; (2) **Model & orchestration strategy**: chọn model per use case (routing), định nghĩa agent loops, tool schemas, prompt templates, guardrails, evaluation harness. **User training, marketing, monitoring** thuộc giai đoạn Deployment/Operations sau này.
+
+### Vì sao các phương án sai
+- **User training**: Deployment phase.
+- **Marketing**: Go-to-market, sau Design.
+- **Cost monitoring**: Operations phase (post-launch).` },
+{ id: 'qz-ccap-361', topic: 'claude', q: '[Stakeholder & Lifecycle] Giai đoạn "Testing" của dự án Claude: hoạt động stakeholder engagement quan trọng nhất là gì?', options: ['Plan marketing campaign', 'Review system performance trên golden set với stakeholders', 'Hiring plan cho team tiếp theo', 'Budget planning năm sau'], answer: 1, explain: `**Tóm tắt:** Stakeholder review kết quả golden set evaluation để validate quality trước launch.
+
+### Vì sao đáp án đúng
+**Testing phase** mục tiêu: verify chất lượng hệ thống đáp ứng success criteria. Hoạt động then chốt: **chạy automated eval (golden set) + manual red-teaming**, sau đó **review kết quả với stakeholders** (business confirm quality thresholds met, users confirm UX acceptable, legal confirm compliance). Stakeholder sign-off trên eval results là gate vào Deployment.
+
+### Vì sao các phương án sai
+- **Marketing/plan/hiring/budget**: không trực tiếp phục vụ quality validation, thuộc giai đoạn khác.` },
+{ id: 'qz-ccap-362', topic: 'claude', q: '[Stakeholder & Lifecycle] Trách nhiệm then chốt của stakeholders ở giai đoạn "Deployment" là gì?', options: ['Develop features', 'Monitor và verify live performance và business impact', 'Viết code', 'Chọn model'], answer: 1, explain: `**Tóm tắt:** Stakeholders monitor live metrics (business + technical) và verify impact sau launch.
+
+### Vì sao đáp án đúng
+**Deployment phase**: hệ thống live, real users. Stakeholders (business owners, product, support) phải: (1) **Monitor dashboards**: adoption rate, task success rate, user satisfaction, error rate, latency, cost; (2) **Verify business impact**: so sánh với success criteria (cost saving, revenue, compliance); (3) **Incident escalation decisions**: khi có sự cố, business quyết định rollback/feature flag/downgrade quality. Dev/model selection đã xong ở giai đoạn trước.
+
+### Vì sao các phương án sai
+- **Develop/code/model selection**: đã hoàn thành pre-deployment.` },
+{ id: 'qz-ccap-363', topic: 'claude', q: '[Stakeholder & Lifecycle] Sau production incident, quy trình xử lý feedback từ stakeholders nên là gì?', options: ['Bỏ qua', 'Blameless Post-Mortem: timeline, root cause, action items, share findings, track remediation', 'Blame developers', 'Dừng project'], answer: 1, explain: `**Tóm tắt:** Blameless post-mortem với timeline, root cause, action items, tracking.
+
+### Vì sao đáp án đúng
+**Blameless Post-Mortem** (SRE practice): (1) **Timeline** sự kiện (detection, mitigation, resolution); (2) **Root cause analysis** (5 Whys, fishbone) — tập trung vào **hệ thống/quy trình**, không cá nhân; (3) **Action items** cụ thể, có owner, deadline (fix bug, add test, improve runbook, add alert); (4) **Share findings** rộng (engineering, product, support) — transparency xây dựng trust; (5) **Track remediation** đến khi done. Văn hóa "không đổ lỗi" khuyến khích báo cáo sự cố sớm và trung thực.
+
+### Vì sao các phương án sai
+- **Bỏ qua**: lặp lại lỗi, mất trust.
+- **Blame developers**: tạo fear culture, che giấu sự cố, không fix systemic issues.
+- **Dừng project**: over-reaction, mất business value.` },
+{ id: 'qz-ccap-364', topic: 'claude', multi: true, q: '[Stakeholder & Lifecycle] Lợi ích chính của "Stakeholder Alignment" trong dự án AI là gì? (Choose 2)', options: ['Giảm project scope', 'Đảm bảo shared understanding về goals và trade-offs', 'Tăng project cost', 'Quản lý expectation tốt hơn khi có failure'], answer: [1, 3], explain: `**Tóm tắt:** Shared understanding goals/trade-offs + better expectation management during failures.
+
+### Vì sao đáp án đúng
+**Stakeholder Alignment** = quá trình liên tục sync expectations, priorities, constraints. Lợi ích: (1) **Shared understanding**: mọi bên hiểu system có thể làm gì/không làm gì, quality/cost/latency trade-offs, limitations (hallucination, latency, context window); (2) **Expectation management**: khi incident hoặc quality drop, stakeholders đã biết trước rủi ro, không shocked, hỗ trợ remediation thay vì blame. Không giảm scope (scope do PM define), không tăng cost (alignment giảm rework cost).
+
+### Vì sao các phương án sai
+- **Giảm scope**: alignment không tự động giảm scope.
+- **Tăng cost**: alignment giảm cost bằng cách tránh rework và miscommunication.` },
+{ id: 'qz-ccap-365', topic: 'claude', q: '[Stakeholder & Lifecycle] Tại sao cần định nghĩa "success metrics" SỚM trong Lifecycle Management?', options: ['Vì Anthropic yêu cầu', 'Để có objective evaluation và stakeholder consensus trên value từ ngày đầu', 'Để limit developer workload', 'Để project nhanh hơn'], answer: 1, explain: `**Tóm tắt:** Sớm định nghĩa metrics → objective evaluation, stakeholder consensus, baseline cho improvement.
+
+### Vì sao đáp án đúng
+**Early metrics definition** cho phép: (1) **Baseline**: đo current state trước khi deploy (manual process cost, error rate, time); (2) **Objective evaluation**: so sánh before/after bằng cùng metrics, không bị subjective; (3) **Stakeholder consensus**: agreement trên "what good looks like" tránh dispute sau launch; (4) **Continuous improvement**: metrics-driven iteration (eval-driven development). Không có metrics → "better" là ý kiến cá nhân, không đo được ROI.
+
+### Vì sao các phương án sai
+- **Anthropic requirement**: không có yêu cầu này.
+- **Limit dev work / faster**: metrics definition tốn effort ban đầu, nhưng tiết kiệm lớn sau.` },
+{ id: 'qz-ccap-366', topic: 'claude', q: '[Stakeholder & Lifecycle] Khi Anthropic release model update, stakeholders nên làm gì?', options: ['Bỏ qua', 'Đánh giá impact trên hệ thống hiện tại (chạy eval suite, so sánh quality/cost/latency) rồi quyết định upgrade/canary/hold', 'Upgrade ngay không test', 'Downgrade về model cũ'], answer: 1, explain: `**Tóm tắt:** Eval impact trước, quyết định dựa trên evidence, canary deploy.
+
+### Vì sao đáp án đúng
+**Model update governance**: (1) **Pin version** trong gateway (không auto-upgrade); (2) **Chạy eval suite** (golden set) trên model mới so sánh với model hiện tại: quality (accuracy, format compliance), cost (token usage), latency; (3) **Red-team** thử edge cases mới; (4) **Quyết định**: nếu better/equivalent → canary rollout (5% → 25% → 100%) với monitoring; nếu regression → hold, report Anthropic, tìm workaround; (5) **Document** decision trong ADR. Auto-upgrade = risk regression silently.
+
+### Vì sao các phương án sai
+- **Bỏ qua**: model cũ có thể deprecate, security patch missed.
+- **Upgrade ngay**: regression risk ảnh hưởng toàn bộ users.
+- **Downgrade**: không cần thiết nếu model mới better; model cũ sắp deprecate.` },
+{ id: 'qz-ccap-367', topic: 'claude', q: '[Operational Enablement] AI support feature cần reliability target đo được. Practice nào định nghĩa SLO đúng?', options: ['Hứa feature không bao giờ fail', 'Định nghĩa SLO: "99% câu trả lời < 5s VÀ 95% rated correct", track error budget burn rate', 'Chỉ đo số server running', 'Chỉ đo API call count'], answer: 1, explain: `**Tóm tắt:** SLO composite (latency + quality) + error budget burn rate alerting.
+
+### Vì sao đáp án đúng
+**SLO cho LLM system** phải composite: (1) **Latency SLO**: "99% requests < 5s end-to-end"; (2) **Quality SLO**: "95% answers rated correct (golden set eval + user feedback)"; (3) **Error budget**: 100% - SLO = budget cho phép fail (1% latency, 5% quality). **Burn rate alerting**: nếu error budget burn quá nhanh (ví dụ 1h burn 50% budget tháng) → alert on-call. Điều này phát hiện degradation **trước khi** SLO violated. "Never fail" không realistic cho probabilistic system. Server count / API calls không đo user-facing quality.
+
+### Vì sao các phương án sai
+- **Never fail**: không achievable, mất credibility khi incident xảy ra.
+- **Server count / API calls**: infra metrics, không phải service-level objectives.` },
+{ id: 'qz-ccap-368', topic: 'claude', multi: true, q: '[Operational Enablement] Sau routine prompt update, quality drop lặng lẽ 2 tuần mới bị user report. Hai practice nào đã bắt được sớm hơn? (Choose 2)', options: ['Automated golden eval set chạy định kỳ (6h/lần) với alert khi quality < threshold', 'Dashboard request count lớn hơn', 'System prompt dài hơn với nhiều warning', 'Weekly meeting đọc customer complaint'], answer: [0, 3], explain: `**Tóm tắt:** Golden eval tự động phát hiện trong giờ, họp tuần bắt lỗi từ người dùng sớm hơn chờ 2 tuần.
+
+### Vì sao đáp án đúng
+(1) **Automated golden eval**: golden set chạy scheduled (mỗi 6h hoặc mỗi deploy), so sánh quality score với baseline → phát hiện regression trong 1h thay vì 2 tuần. (2) **Weekly meeting đọc customer complaint**: tín hiệu từ người dùng được thu thập và thảo luận hàng tuần, phát hiện quality drop trong vòng tối đa 1 tuần, sớm hơn mức baseline 2 tuần.
+
+### Vì sao các phương án sai
+- **Request count dashboard**: chỉ đo volume, không đo correctness, không phát hiện quality drop.
+- **Longer prompt**: không phải monitoring, có thể làm tệ hơn.` },
+{ id: 'qz-ccap-369', topic: 'claude', q: '[Operational Enablement] Dự báo chi phí Claude quarter tới: usage tăng 20%/tháng, plan migrate một phần sang model rẻ hơn. Cách forecast đáng tin nhất?', options: ['Nhân hóa đơn tháng trước x 1.2', 'Model từ token usage per feature × traffic growth × model mix change, so với provider quota', 'Hỏi từng team tự estimate', 'Giả định flat'], answer: 1, explain: `**Tóm tắt:** Bottom-up: token/feature × traffic growth × model mix, đối chiếu quota.
+
+### Vì sao đáp án đúng
+**Reliable cost forecast** = bottom-up từ usage data: (1) **Token usage per feature** (từ gateway logs: input/output tokens per feature per day); (2) **Traffic growth forecast** (từ business plan: +20%/tháng); (3) **Model mix change** (plan: route 30% simple FAQ từ Sonnet → Haiku, save 80% cost on volume đó); (4) **Calculate**: Σ(feature_tokens × growth × new_model_price); (5) **Compare với quota** (token-per-minute limit) → xin tăng quota sớm nếu cần. Linear extrapolation (×1.2) bỏ qua model mix shift và feature-level variance.
+
+### Vì sao các phương án sai
+- **Linear ×1.2**: bỏ qua model mix optimization, feature growth disparity.
+- **Team estimate**: subjective, biased, không grounded in data.
+- **Flat**: contradicts known 20% growth.` },
+{ id: 'qz-ccap-370', topic: 'claude', q: '[Operational Enablement] Rollout model mới cho high-traffic feature. Strategy an toàn nhất?', options: ['Switch 100% ngay', 'Canary: 5% traffic → model mới, so sánh eval + live metrics vs control, ramp up hoặc rollback', 'Chờ 1 năm', 'Random model per request'], answer: 1, explain: `**Tóm tắt:** Canary release với control group comparison, gradual ramp, rollback trigger.
+
+### Vì sao đáp án đúng
+**Safe model rollout**: (1) **Pin versions** ở gateway; (2) **Canary**: route 5% traffic sang model mới (feature flag), 95% giữ model cũ (control); (3) **Compare**: golden set eval scores + live metrics (latency, error rate, user satisfaction, cost) giữa canary vs control; (4) **Decision gates**: nếu canary metrics ≥ control (non-inferior) → ramp 25% → 50% → 100%; nếu worse → **instant rollback** (feature flag off); (5) **Monitoring**: real-time dashboard canary vs control. Model mới KHÔNG mặc nhiên better — behavior drift phổ biến.
+
+### Vì sao các phương án sai
+- **100% switch**: blast radius toàn bộ users nếu regression.
+- **Wait 1 year**: bỏ lỡ improvement, model cũ deprecate.
+- **Random per request**: không so sánh được, inconsistent UX, không controllable.` },
+{ id: 'qz-ccap-371', topic: 'claude', q: '[Operational Enablement] Model update gây wrong refund answers, 200 customers affected. Practice nào dẫn đến organizational learning tốt nhất?', options: ['Kỷ luật engineer last changed prompt', 'Blameless postmortem: cover model change + missing eval coverage → add regression tests + change-review gate', 'Xóa incident ticket', 'Thêm warning sentence vào prompt'], answer: 1, explain: `**Tóm tắt:** Blameless postmortem → root cause (model change, missing eval) → regression tests + change-review gate.
+
+### Vì sao đáp án đúng
+**Organizational learning từ incident**: (1) **Blameless postmortem** (không đổ lỗi cá nhân) → team dám nói thật; (2) **Root cause**: provider model update + **thiếu eval coverage cho refund flow** + **không có change-review gate** cho prompt/model changes; (3) **Action items**: thêm 30 refund test cases vào golden set, **bắt buộc eval pass trước khi đổi model/prompt**, **change-review gate** (PR required reviewers, eval CI gate); (4) **Verify**: chạy lại incident scenario trên new eval → pass. Chuyển incident thành **test + process improvement** là dấu hiệu org mature.
+
+### Vì sao các phương án sai
+- **Kỷ luật engineer**: fear culture, hide incidents, không fix systemic gap.
+- **Xóa ticket**: mất learning opportunity, repeat incident.
+- **Warning sentence**: soft constraint, không prevent regression, không measurable.` },
+{ id: 'qz-ccap-372', topic: 'claude', multi: true, q: '[Operational Enablement] Exec muốn monthly view ROI của Claude investment. Hai metric nào trả lời tốt nhất? (Choose 2)', options: ['Cost per successful task và adoption rate', 'Task success rate và user satisfaction over time', 'Lines of code in integration', 'Số API keys in use'], answer: [0, 1], explain: `**Tóm tắt:** Cost per successful task + adoption (efficiency); Task success rate + satisfaction (value).
+
+### Vì sao đáp án đúng
+**Business-facing ROI metrics**: (1) **Cost per successful task** = total Claude cost / số task hoàn thành đúng (golden set + user confirmed). Kết hợp cost + quality: cost tăng nhưng success rate không tăng = waste. (2) **Adoption rate** = % target users actively using feature. Low adoption = feature không valuable. (3) **Task success rate** = % task hoàn thành đúng (không cần human intervene). (4) **User satisfaction** (survey/NPS/rating). Loc/keys là technical detail, không business value.
+
+### Vì sao các phương án sai
+- **LOC / API keys**: implementation detail, không phản ánh business outcome.` },
+{ id: 'qz-ccap-373', topic: 'claude', q: '[Enterprise Integration] Financial services: 50k loan apps/tháng, 30 pages/doc, zero data leakage between applicants, full audit trail. Architecture nào đúng?', options: ['Single batch job, shared prompt', 'Per-application isolated request + PII redaction pre-LLM + immutable audit logs (input hash, model version, output, decision)', 'Single large context window multi-app', 'Public endpoint no encryption'], answer: 1, explain: `**Tóm tắt:** Request-level isolation + PII redaction pre-LLM + immutable audit logs.
+
+### Vì sao đáp án đúng
+Ba lớp bảo vệ đồng thời: (1) **Request-level isolation**: mỗi application một request API riêng (custom_id = application_id), **không bao giờ** gộp multiple applications vào một context — ngăn cross-app data leakage ở prompt level. (2) **PII redaction at preprocessing**: trước khi gửi LLM, chạy PII detection/redaction (SSN, income, address) → thay bằng token [PII_SSN]; chỉ gửi data cần thiết cho extraction. (3) **Immutable audit logs**: mỗi request ghi log append-only: application_id, timestamp, input_hash (SHA-256), model_version, prompt_version, output, decision, reviewer_id. Logs stored WORM (S3 Object Lock / CloudTrail). Ba lớp này cover: isolation (request), data protection (payload), traceability (logging).
+
+### Vì sao các phương án sai
+- **Shared batch/prompt**: cross-contamination risk, audit không tách được per-app.
+- **Single large context**: vượt 1M token, isolation không thể thực hiện, audit lộn xộn.
+- **Public no encryption**: violation financial data security.` },
+{ id: 'qz-ccap-374', topic: 'claude', multi: true, q: '[Enterprise Integration] SaaS route tickets: FAQs → Haiku 5.5, complex tech → Sonnet 5.5. Router dùng lightweight classifier. Hai metric monitor routing effectiveness? (Choose 2)', options: ['Classification accuracy trên held-out golden set', 'Cost per resolved ticket by model tier', 'Total API calls/day', 'Avg response length'], answer: [0, 1], explain: `**Tóm tắt:** Classification accuracy + cost per resolved ticket by model tier.
+
+### Vì sao đáp án đúng
+(1) **Classification accuracy**: đo router có route đúng không. Accuracy thấp → complex ticket đi Haiku (quality drop) HOẶC FAQ đi Sonnet (cost waste). Golden set: labeled tickets (FAQ vs complex), measure accuracy/F1 monthly. (2) **Cost per resolved ticket by model tier**: Haiku cost thấp nhưng chỉ handle FAQ; Sonnet cost cao handle complex. Metric này = (Haiku cost / Haiku resolved) + (Sonnet cost / Sonnet resolved). Cho phép tune router threshold: nếu Haiku cost/ticket tăng (nhiều misroute) → adjust threshold. Total calls/response length không đo routing quality.
+
+### Vì sao các phương án sai
+- **Total API calls**: volume only.
+- **Avg response length**: không correlated với routing correctness.` },
+{ id: 'qz-ccap-375', topic: 'claude', q: '[Enterprise Integration] E-commerce: 100k SKU product descriptions overnight. Sync design timeout + rate limit. Giải pháp phù hợp?', options: ['Tăng timeout 2h', 'Message Batches API: async, 24h SLA, 50% discount, phù hợp bulk overnight', 'Single massive prompt', 'Manual từ laptop'], answer: 1, explain: `**Tóm tắt:** Message Batches API cho bulk async processing, 24h SLA, 50% cost saving.
+
+### Vì sao đáp án đúng
+**Message Batches API** thiết kế cho workload này: (1) Submit batch JSONL (100k requests) → status in_progress; (2) Anthropic process async, **SLA 24h** (kết quả ready khi xong hoặc sau 24h); (3) **50% discount** trên input/output tokens; (4) Results download via results endpoint; (5) Không cần maintain 100k concurrent connections, không hit rate limit. Sync + timeout 2h: proxy/load balancer cut, rate limit không nới. Single prompt: vượt context, unparseable. Manual: no SLA, no audit, operational risk.
+
+### Vì sao các phương án sai
+- **Timeout 2h**: sync vẫn hit rate limit, proxy cutoff.
+- **Single prompt**: context window exceeded, output unparseable.
+- **Manual**: no SLA, no audit, not repeatable.` },
+{ id: 'qz-ccap-376', topic: 'claude', multi: true, q: '[Enterprise Integration] Healthcare trên Bedrock eu-central-1. Cần chứng minh cho auditor: patient data không rời EU. Bằng chứng nào thuyết phục nhất? (Choose 2)', options: ['Bedrock service terms confirm EU data residency', 'VPC flow logs showing no egress to non-EU regions', 'Screenshot AWS console region selector', 'Promise in system prompt'], answer: [0, 1], explain: `**Tóm tắt:** Bedrock terms + VPC flow logs + DPA = audit evidence ba lớp.
+
+### Vì sao đáp án đúng
+**Data residency compliance evidence** ba lớp bắt buộc: (1) **Service terms**: AWS Bedrock service terms cam kết data processed/stored trong region đã chọn (eu-central-1); (2) **VPC flow logs**: network-level evidence — **không có traffic egress** từ VPC đến non-EU regions (kiểm tra destination IP ranges); (3) **DPA (Data Processing Agreement)** ký với AWS — legal contract. Ba thứ này tạo **audit package** thuyết phục. Screenshot chỉ config lúc chụp, không phải runtime behavior. System prompt là soft, không enforce infrastructure.
+
+### Vì sao các phương án sai
+- **Screenshot console**: point-in-time config, không proof runtime.
+- **System prompt promise**: không enforce network/infrastructure.` },
+{ id: 'qz-ccap-377', topic: 'claude', multi: true, q: '[Enterprise Integration] Multi-tenant gateway 500 customers. Một customer spike 10x traffic gây 429 cho others. Hai control prevent tốt nhất? (Choose 2)', options: ['Per-tenant token bucket rate limiting at gateway', 'Shared global rate limit', 'Priority queue với per-tenant fair queuing', 'Disable rate limiting'], answer: [0, 2], explain: `**Tóm tắt:** Per-tenant token bucket + fair queuing với priority.
+
+### Vì sao đáp án đúng
+(1) **Per-tenant token bucket**: mỗi tenant có quota riêng (token bucket), một tenant burst không tiêu quota của tenant khác. Token bucket san bằng burst thành steady rate. (2) **Fair queuing + priority**: khi gateway congested, scheduler phân chia bandwidth công bằng (fair queuing) per tenant, **priority** cho enterprise tier (guaranteed min throughput), free tier có thể shed/degrade. Shared global limit: một tenant dùng hết → block all. Disable: no protection.
+
+### Vì sao các phương án sai
+- **Shared global**: noisy neighbor problem.
+- **Disable**: DDoS magnet.` },
+{ id: 'qz-ccap-378', topic: 'claude', q: '[Enterprise Integration] CI/CD integration: Claude review PR, đôi khi hallucinate fake security vuln. Guardrail nào giảm false positive trực tiếp nhất?', options: ['Thêm warning text vào system prompt', 'Require citations từ actual code diff cho mọi finding, CHẠY static analysis (Semgrep/CodeQL) song song cross-check, CHỈ report finding có CẢ HAI confirm', 'Tăng temperature', 'Xóa feature'], answer: 1, explain: `**Tóm tắt:** Grounding (citations từ diff) + deterministic static analysis cross-chìshỉ report intersection.
+
+### Vì sao đáp án đúng
+**Hallucination elimination cho code review**: (1) **Claude finding structure**: {file, line, issue_type, severity, citation: "exact code snippet from diff", reasoning, cwe_id} — **citation bắt buộc** từ diff thực tế. (2) **Static analysis** (Semgrep rules, CodeQL) chạy deterministic trên cùng diff, tìm known vuln patterns. (3) **Intersection logic**: **CHỈ report** finding khi **CẢ HAI** đều flag (Claude citation valid + static analysis match). Finding chỉ có Claude → low confidence queue cho human review. Finding chỉ có static analysis → auto-report (high precision). Cách này: recall từ Claude (business logic, architectural issues), precision từ static analysis (zero hallucination).
+
+### Vì sao các phương án sai
+- **Warning text**: soft constraint, không eliminate hallucination.
+- **Tăng temperature**: tăng hallucination.
+- **Xóa feature**: mất automation value.` },
+{ id: 'qz-ccap-379', topic: 'claude', q: '[Enterprise Integration] Global bank trên Vertex AI: us-central1, europe-west1, asia-southeast1. Cần single control plane cho model routing, quota, audit logging. Pattern nào phù hợp?', options: ['3 gateway độc lập', 'Global API gateway với regional backends, centralized config, unified observability', 'Single gateway us-central1 cho all traffic', 'Manual spreadsheet per region'], answer: 1, explain: `**Tóm tắt:** Global gateway + regional backends + centralized config + unified observability.
+
+### Vì sao đáp án đúng
+**Multi-region control plane pattern**: (1) **Global API Gateway** (single entry point): routing logic, auth, rate limiting, request/response transformation; (2) **Regional Backends** (Vertex AI endpoints per region): compute gần data cho low latency + data residency; (3) **Centralized Config** (Config Management / Feature Flags): model versions, quotas, routing rules — thay đổi một nơi apply all regions; (4) **Unified Observability**: single dashboard (latency, error, cost, token usage) aggregated across regions với region breakdown. Independent gateways: config drift, fragmented observability. Single us-central1: high latency EU/Asia, residency violation. Spreadsheet: not real-time, error-prone.
+
+### Vì sao các phương án sai
+- **Independent gateways**: config drift, no single pane of glass.
+- **Single us-central1**: latency + residency violation.
+- **Spreadsheet**: manual, not scalable.` },
+{ id: 'qz-ccap-380', topic: 'claude', multi: true, q: '[Enterprise Integration] Insurance claims processing: fraud indicators trigger human review. Hai design choice đảm bảo fraud signals không bị miss? (Choose 2)', options: ['Claude tự quyết escalate', 'Deterministic pre-filter (rules engine) chạy TRƯỚC Claude detect known fraud patterns → 100% catch known patterns, BẮT BUỘC human review cho flagged claims', 'Fraud rules chỉ trong system prompt', 'Disable human review'], answer: [1, 2], explain: `**Tóm tắt:** Deterministic pre-filter trước Claude + mandatory human review = defense in depth.
+
+### Vì sao đáp án đúng
+**Fraud detection safety net**: (1) **Deterministic pre-filter** (rules engine, không phải LLM) chạy **TRƯỚC** Claude: pattern matching (velocity, geo mismatch, amount anomaly, device fingerprint) — **100% catch known patterns**, không phụ thuộc model behavior. (2) **Mandatory human review** cho mọi claim bị flag: safety net cho unknown patterns (pre-filter miss) hoặc false positive investigation. (3) **Defense in depth**: pre-filter (known patterns, deterministic) + human review (unknown, judgment) = near-zero miss rate. Claude-only: có thể miss, bị prompt injection, hallucinate. System prompt only: soft. Disable review: no safety net.
+
+### Vì sao các phương án sai
+- **Claude tự quyết**: non-deterministic, injectable, hallucination risk.
+- **System prompt only**: không enforce.
+- **Disable review**: bỏ safety net.` }
 );

@@ -1,6 +1,6 @@
 # T2906 — 40 câu luyện thi CCAR-P: tăng ngân hàng cho đề full
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/quiz-ccap-2.js`
 
@@ -31,3 +31,5 @@ AGENTS.md mục "Câu trắc nghiệm" + mục 5 (không backtick, không ký hi
 Xong: `Status: DONE`, Notes ghi id + số câu theo domain.
 
 ## Notes
+Added qz-ccap-341..380 (40 questions: Solution Design 10, Models & Context 8, Stakeholder & Lifecycle 8, Operational Enablement 6, Enterprise Integration 8). validate exit 1 due to pre-existing q-soft.js errors unrelated.
+Reviewed-by: kilo (T2906R)
