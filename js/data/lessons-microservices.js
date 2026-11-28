@@ -7551,5 +7551,525 @@ complete kiểm tra lại fingerprint và trạng thái PENDING trước khi ghi
   ],
   related: ['microservices-006', 'microservices-004', 'microservices-002'],
   tags: ['idempotency', 'payment', 'replay', 'fingerprint', 'in-flight']
+},
+{
+  id: 'lesson-microservices-033',
+  track: 'microservices',
+  order: 33,
+  title: 'Circuit breaker từ bên trong: 3 trạng thái, cửa sổ trượt theo thời gian, đồng hồ giả',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Vẽ được ba trạng thái CLOSED / OPEN / HALF_OPEN và chuyển đổi giữa chúng',
+    'Hiểu cửa sổ trượt theo thời gian: lỗi cũ hết hạn, chỉ tính lỗi gần đây, khác so với đếm liên tiếp hoặc cửa sổ cố định số lệnh',
+    'Viết circuit breaker tự kiểm thử được bằng đồng hồ giả (fake clock) mà không cần chờ thời gian thực',
+  ],
+  body: `### Vấn đề mà circuit breaker giải quyết
+Gọi dịch vụ khác qua mạng luôn có thể thất bại: timeout, connection reset, hoặc dịch vụ downstream đang quá tải. Nếu caller cứ retry liên tục, mỗi lần thử đều dồn thêm tải vào dịch vụ đang yếu, gây retry storm và cascading failure — dịch vụ caller cũng chết theo dù bản thân không có lỗi.
+
+Circuit breaker (cầu dao) là lớp bảo vệ đặt trước mỗi cuộc gọi mạng. Nó theo dõi tỷ lệ lỗi và, khi vượt ngưỡng, mở mạch: các lần gọi sau bị từ chối ngay (fail fast), không gọi downstream, giúp downstream có thời gian hồi phục.
+
+### Ba trạng thái
+1. CLOSED (đóng): gọi bình thường qua downstream. Mỗi kết quả (thành công hoặc thất bại) được ghi vào cửa sổ trượt.
+2. OPEN (mở): fail fast, trả lỗi ngay, không gọi downstream. Sau một thời gian chờ {{waitDurationInOpenState}}, chuyển sang HALF_OPEN.
+3. HALF_OPEN (nửa mở): cho một hoặc vài lệnh gọi thử (probe). Nếu thành công → đóng mạch lại (CLOSED). Nếu thất bại → mở mạch lại (OPEN) và tính tiếp thời gian chờ.
+
+### Cửa sổ trượt theo thời gian (sliding time window)
+Khác với việc đếm liên tiếp (lỗi liên tiếp n lần) hoặc cửa sổ cố định số lệnh (đánh giá sau mỗi N lần gọi), cửa sổ trượt theo thời gian ghi nhãn mốc thời gian của mỗi kết quả. Lỗi cũ hơn {{windowSeconds}} bị loại ra, chỉ tính tỷ lệ thất bại trong khoảng thời gian gần đây.
+
+Ví dụ: cửa sổ 10 giây, ngưỡng 50%, tối thiểu 3 lệnh. Nếu 3 lệnh trong 10 giây gần đây đều lỗi → mở mạch. Nếu 2 lệnh lỗi rồi 1 lệnh thành công → tỷ lệ 33% < 50% → vẫn CLOSED. Lỗi xảy ra 15 giây trước đã hết hạn, không còn counted.
+
+Đồng hồ giả (fake clock) cho phép kiểm thử xác định: ta đẩy giờ forwards mà không cần chờ thực tế, nên kiểm thử được mở mạch, chờ, nửa mở, và hết hạn lỗi cũ.
+
+### Mã minh hoạ
+~~~java
+enum State { CLOSED, OPEN, HALF_OPEN }
+interface Clock { long now(); }
+
+class CircuitBreaker {
+    private final Clock clock;
+    private final long windowMs;
+    private final double failureRateThreshold;
+    private final int minCalls;
+    private final long waitOpenMs;
+    private State state = State.CLOSED;
+    private long openedAt = -1;
+    private int probesUsed = 0;
+    private final List<Long> times = new ArrayList<>();
+    private final List<Boolean> okList = new ArrayList<>();
+
+    boolean allowCall() {
+        long now = clock.now();
+        if (state == State.OPEN && now - openedAt >= waitOpenMs) {
+            state = State.HALF_OPEN;
+            probesUsed = 0;
+        }
+        if (state == State.OPEN) return false;              // fail fast
+        if (state == State.HALF_OPEN) {
+            if (probesUsed >= 1) return false;               // chỉ một probe mỗi lần nửa mở
+            probesUsed++;
+            return true;
+        }
+        return true;                                          // CLOSED
+    }
+
+    void onComplete(boolean ok, long durationMs) {
+        long now = clock.now();
+        long cutoff = now - windowMs;
+        while (!times.isEmpty() && times.get(0) < cutoff) {   // xoá lỗi cũ khỏi cửa sổ
+            times.remove(0);
+            okList.remove(0);
+        }
+        times.add(now);
+        okList.add(ok);
+
+        if (state == State.HALF_OPEN) {
+            state = ok ? State.CLOSED : State.OPEN;          // probe thành công -> đóng, thất bại -> mở
+            probesUsed = 0;
+            times.clear();
+            okList.clear();
+            return;
+        }
+        if (state == State.CLOSED && times.size() >= minCalls) {
+            long failures = okList.stream().filter(b -> !b).count();
+            if ((double) failures / times.size() >= failureRateThreshold) {
+                state = State.OPEN;
+                openedAt = now;
+            }
+        }
+    }
+
+    State state() { return state; }
+}
+~~~
+
+### Ví dụ thực tế
+Hệ thống đặt hàng gọi payment-service. Cao điểm trưa, payment-service tăng latency từ 200ms lên 5s. Order-service không có circuit breaker: 200 thread đều chờ payment, thread pool cạn, toàn bộ order-service ngừng phản hồi.
+
+Với circuit breaker: cửa sổ 10 giây, ngưỡng 50% lỗi, chờ 30 giây. Sau 6 lệnh gọi liên tiếp lỗi (tỷ lệ 100%), mạch mở. Các yêu cầu order mới nhận lỗi ngay (fail fast) trong 30 giây, không chờ 5s mỗi lần. Payment-service không bị dồn thêm tải, tự hồi phục. Sau 30 giây, mạch chuyển nửa mở, cho 1 lệnh thử; nếu thanh toán thành công, mạch đóng lại và traffic bình thường.
+
+### Liên hệ phỏng vấn
+Interviewer thường hỏi: sai lầm khi đặt circuit breaker ngoài retry hay trong retry? Vì sao timeout phải ngắn hơn tổng deadline? Sự khác biệt giữa failure rate và slow call rate? Tại sao cần bulkhead cùng với circuit breaker?`,
+  exercises: [
+    {
+      title: 'Circuit breaker: ba trạng thái và cửa sổ trượt theo thời gian',
+      prompt: `Làm lại class {{CircuitBreaker}} với ba trạng thái {{CLOSED}}, {{OPEN}}, {{HALF_OPEN}}.
+
+API cần triển khai:
+- {{CircuitBreaker(Clock clock, int windowSeconds, double failureRateThreshold, int minCalls, long waitDurationOpenMs)}}: cửa sổ {{windowSeconds}} giây, ngưỡng tỷ lệ thất bại {{failureRateThreshold}} (0..1), tối thiểu {{minCalls}} lệnh trong cửa sổ mới đánh giá, thời gian chờ {{waitDurationOpenMs}} mili-giây trước khi chuyển OPEN sang HALF_OPEN.
+- {{boolean allowCall()}}: trả về true nếu được gọi. Nếu OPEN và đã hết thời gian chờ, chuyển HALF_OPEN. Nếu OPEN trả false (fail fast). Nếu HALF_OPEN, chỉ cho đúng một lệnh gọi thử (probe) mỗi lần chuyển sang HALF_OPEN, sau đó trả false.
+- {{void onComplete(boolean ok, long durationMs)}}: ghi nhận kết quả. Xoá kết quả cũ hơn {{windowSeconds}} ra khỏi cửa sổ. Nếu HALF_OPEN: thành công -> CLOSED, thất bại -> OPEN. Nếu CLOSED và đủ {{minCalls}} lệnh: tính tỷ lệ thất bại, vượt ngưỡng -> OPEN.
+- {{State state()}}: trả về trạng thái hiện tại.
+
+Dùng đồng hồ giả {{Clock}} (tiến hành bằng now()) để kiểm thử xác định, không dùng System.currentTimeMillis.`,
+      starter: `final class CircuitBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    interface Clock { long now(); }
+
+    private final Clock clock;
+    private final long windowMs;
+    private final double failureRateThreshold;
+    private final int minCalls;
+    private final long waitOpenMs;
+
+    private State state = State.CLOSED;
+    private long openedAt = -1;
+    private int probesUsed = 0;
+    private final List<Long> times = new ArrayList<>();
+    private final List<Boolean> okList = new ArrayList<>();
+
+    CircuitBreaker(Clock clock, int windowSeconds, double failureRateThreshold, int minCalls, long waitOpenMs) {
+        this.clock = clock;
+        this.windowMs = windowSeconds * 1000L;
+        this.failureRateThreshold = failureRateThreshold;
+        this.minCalls = minCalls;
+        this.waitOpenMs = waitOpenMs;
+    }
+
+    boolean allowCall() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void onComplete(boolean ok, long durationMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    State state() {
+        return state;
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static class FakeClock implements CircuitBreaker.Clock {
+        long now;
+        FakeClock(long now) { this.now = now; }
+        public long now() { return now; }
+        void advance(long millis) { now += millis; }
+    }
+    public static void main(String[] args) {
+        FakeClock clock = new FakeClock(0);
+        CircuitBreaker cb = new CircuitBreaker(clock, 10, 0.5, 3, 5000);
+
+        check("ban dau CLOSED va cho goi", cb.state() == CircuitBreaker.State.CLOSED && cb.allowCall(), "state=" + cb.state());
+
+        cb.onComplete(false, 100);
+        cb.onComplete(false, 100);
+        cb.onComplete(false, 100);
+        check("ba loi lien tiep 100% -> OPEN", cb.state() == CircuitBreaker.State.OPEN, "state=" + cb.state());
+
+        check("OPEN fail fast khong cho goi", !cb.allowCall(), "allowCall=" + cb.allowCall());
+
+        clock.advance(4000);
+        check("con 4s van OPEN", cb.state() == CircuitBreaker.State.OPEN && !cb.allowCall(), "state=" + cb.state());
+
+        clock.advance(1000);
+        boolean allowed = cb.allowCall();
+        check("het waitDuration -> HALF_OPEN va cho mot probe", cb.state() == CircuitBreaker.State.HALF_OPEN && allowed, "state=" + cb.state() + " allowed=" + allowed);
+
+        cb.onComplete(true, 100);
+        check("HALF_OPEN thanh cong -> CLOSED", cb.state() == CircuitBreaker.State.CLOSED, "state=" + cb.state());
+
+        clock = new FakeClock(0);
+        cb = new CircuitBreaker(clock, 10, 0.5, 3, 5000);
+
+        cb.onComplete(false, 100);
+        cb.onComplete(false, 100);
+        check("2 loi < minCalls 3 van CLOSED", cb.state() == CircuitBreaker.State.CLOSED, "state=" + cb.state());
+
+        cb.onComplete(false, 100);
+        check("loi thu 3 -> OPEN", cb.state() == CircuitBreaker.State.OPEN, "state=" + cb.state());
+
+        clock.advance(6000);
+        cb.allowCall();
+        check("het wait -> HALF_OPEN lan 2", cb.state() == CircuitBreaker.State.HALF_OPEN, "state=" + cb.state());
+        cb.onComplete(false, 100);
+        check("HALF_OPEN loi -> OPEN lai", cb.state() == CircuitBreaker.State.OPEN, "state=" + cb.state());
+
+        clock.advance(6000);
+        cb.allowCall();
+        check("het wait -> HALF_OPEN lan 3", cb.state() == CircuitBreaker.State.HALF_OPEN, "state=" + cb.state());
+        cb.onComplete(true, 100);
+        check("HALF_OPEN thanh cong -> CLOSED", cb.state() == CircuitBreaker.State.CLOSED, "state=" + cb.state());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class CircuitBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    interface Clock { long now(); }
+
+    private final Clock clock;
+    private final long windowMs;
+    private final double failureRateThreshold;
+    private final int minCalls;
+    private final long waitOpenMs;
+
+    private State state = State.CLOSED;
+    private long openedAt = -1;
+    private int probesUsed = 0;
+    private final List<Long> times = new ArrayList<>();
+    private final List<Boolean> okList = new ArrayList<>();
+
+    CircuitBreaker(Clock clock, int windowSeconds, double failureRateThreshold, int minCalls, long waitOpenMs) {
+        this.clock = clock;
+        this.windowMs = windowSeconds * 1000L;
+        this.failureRateThreshold = failureRateThreshold;
+        this.minCalls = minCalls;
+        this.waitOpenMs = waitOpenMs;
+    }
+
+    boolean allowCall() {
+        long now = clock.now();
+        if (state == State.OPEN && now - openedAt >= waitOpenMs) {
+            state = State.HALF_OPEN;
+            probesUsed = 0;
+        }
+        if (state == State.OPEN) return false;
+        if (state == State.HALF_OPEN) {
+            if (probesUsed >= 1) return false;
+            probesUsed++;
+            return true;
+        }
+        return true;
+    }
+
+    void onComplete(boolean ok, long durationMs) {
+        long now = clock.now();
+        long cutoff = now - windowMs;
+        while (!times.isEmpty() && times.get(0) < cutoff) {
+            times.remove(0);
+            okList.remove(0);
+        }
+        times.add(now);
+        okList.add(ok);
+
+        if (state == State.HALF_OPEN) {
+            state = ok ? State.CLOSED : State.OPEN;
+            if (!ok) openedAt = now;
+            probesUsed = 0;
+            times.clear();
+            okList.clear();
+            return;
+        }
+        if (state == State.CLOSED && times.size() >= minCalls) {
+            long failures = okList.stream().filter(b -> !b).count();
+            if ((double) failures / times.size() >= failureRateThreshold) {
+                state = State.OPEN;
+                openedAt = now;
+            }
+        }
+    }
+
+    State state() { return state; }
+}`,
+      hints: [
+        'allowCall: khi OPEN đã quá waitOpenMs, chuyển HALF_OPEN trước, rồi mới quyết định cho gọi hay không.',
+        'HALF_OPEN chỉ cho đúng một probe mỗi lần; probe thành công đóng mạch, thất bại mở lại.',
+        'onComplete xoá kết quả cũ hơn windowMs khỏi danh sách trước khi tính tỷ lệ thất bại.',
+      ],
+      explain: `Circuit breaker mô phỏng đúng thành phần chính của Resilience4j. Ba trạng thái CLOSED, OPEN, HALF_OPEN tương ứng trạng thái được Resilience4j theo dõi qua metric {{circuitbreaker.state}}.
+
+Cửa sổ trượt theo thời gian khác với cửa sổ dựa trên số lượng (count-based sliding window): ở đây ta gán nhãn mốc thời gian cho mỗi lệnh và xoá những lệnh cũ hơn {{windowSeconds}}, nên tỷ lệ thất bại phản ánh tình trạng gần đây thay vì tích lũy mãi. Đồng hồ giả {{Clock}} cho phép kiểm thử theo ý ta: đẩy giờ để mở mạch, chờ waitDuration, nửa mở, probe — mọi thứ xác định, không cần chờ thực tế.
+
+Lưu ý quan trọng: {{minCalls}} tránh mở mạch quá sớm khi chỉ có 1–2 lệnh gọi; nếu không, một lệnh gọi lỗi đầu tiên là đủ để mở mạch (tỷ lệ 100%). Trong production, kết hợp circuit breaker với {{bulkhead}} (cô ile tài nguyên theo downstream) và {{fallback}} (trả dữ liệu thay thế) để degrade có kiểm soát. Retry đặt ngoài circuit breaker và phải bỏ qua exception CallNotPermittedException khi breaker OPEN, nếu không retry sẽ dội thêm tải vào dịch vụ đang yếu.`,
+    },
+  ],
+  check: [
+    { q: 'Circuit breaker ở trạng thái OPEN, còn thời gian chờ chưa hết, gọi tiếp nhận gì?', options: ['Gọi xuống downstream như bình thường', 'Từ chối ngay (fail fast), không gọi downstream', 'Chờ đến khi hết thời gian chờ rồi mới gọi', 'Trả 503 và tự động retry'], answer: 1, explain: `OPEN nghĩa là fail fast: mọi gọi bị từ chối ngay để giảm tải cho downstream và tránh gọi thành suy kiệt. Chỉ sau khi hết waitDuration mới chuyển HALF_OPEN để thử lại. (A) sai vì OPEN không gọi. (C) sai vì không chờ, trả ngay. (D) sai vì OPEN không tự retry.` },
+    { q: 'Cửa sổ trượt theo thời gian khác so với đếm lỗi liên tiếp ở điểm nào?', options: ['Lỗi cũ hết hạn sau windowSeconds, chỉ tính lỗi gần đây', 'Chỉ tính số lần gọi thành công', 'Không bao giờ mở mạch', 'Yêu cầu tối thiểu 100 lệnh mới đánh giá'], answer: 0, explain: `Cửa sổ trượt theo thời gian gán nhãn mốc cho mỗi kết quả và xoá các kết quả cũ hơn windowSeconds, nên lỗi cũ không còn counted. Đếm liên tiếp (consecutive errors) không dùng thời gian, chỉ đếm số lỗi liên tiếp. (B) sai vì tính cả thất bại. (C) sai vì vẫn mở mạch khi vượt ngưỡng. (D) sai vì minClaims có thể ít hơn 100.` },
+    { q: 'Trạng thái HALF_OPEN có mục đích gì?', options: ['Chấp nhận mọi gọi mà không kiểm tra lỗi', 'Cho một vài lệnh gọi thử; thành công đóng mạch, thất bại mở lại', 'Giữ mãi mở mà không bao giờ đóng', 'Chuyển trực tiếp từ OPEN sang CLOSED không thử'], answer: 1, explain: `HALF_OPEN là thời gian thử điểm: downstream có thể đã hồi phục, cho một vài lệnh gọi thử (probe). Thành công → đóng mạch (CLOSED), thất bại → mở lại (OPEN) và chờ tiếp. Đây là cách an toàn để phục hồi mà không dội tải toàn bộ ngay lập tức.` },
+    { q: 'Vì sao cần minClaims (số lệnh tối thiểu) trước khi đánh giá tỷ lệ thất bại?', options: ['Để tránh mở mạch khi chỉ có 1–2 lệnh gọi và một trong số đó lỗi', 'Để tăng tốc độ mở mạch', 'Để không bao giờ mở mạch', 'Để chỉ đánh giá khi có ít nhất 100 lệnh'], answer: 0, explain: `Nếu không có minClaims, một lệnh gọi lỗi đầu tiên đã làm tỷ lệ thất bại 100% → mở mạch ngay, gây fail fast không cần thiết. minCalls đảm bảo có đủ mẫu số trước khi kết luận downstream yếu. (B) và (C) ngược hoàn toàn. (D) không bắt buột 100.` }
+  ],
+  related: ['microservices-060', 'microservices-061'],
+  tags: ['circuit breaker', 'resilience', 'fail-fast', 'half-open', 'sliding-window']
+},
+{
+  id: 'lesson-microservices-034',
+  track: 'microservices',
+  order: 34,
+  title: 'Idempotency key thanh toán: TTL, PENDING hết hạn, và DONE vĩnh viễn',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Viết được idempotency key lưu kết quả theo key, request lặp trả cùng kết quả',
+    'Hiểu TTL: PENDING hết hạn thì có thể thử lại, DONE là vĩnh viễn không bao giờ hết hạn',
+    'Phát hiện fingerprint khác trên cùng key (422) và PENDING song song (409)',
+  ],
+  body: `### Idempotency key là gì
+Khi client gọi API thanh toán và mạng gián đoạn, client không biết lệnh đã đến server hay chưa. Nếu client retry và server không có cơ chế chống trùng, cùng một lệnh thanh toán có thể được xử lý hai lần -> trừ tiền hai lần.
+
+Idempotency key giải quyết: client sinh một idempotency key duy nhất cho mỗi lệnh ghi (ví dụ {{pay-abc-123}}). Server lưu kết quả theo key. Request lặp cùng key và cùng nội dung -> trả cùng kết quả đã lưu, không chạy lại business. Request cùng key nhưng nội dung khác -> từ chối (422 CONFLICT) vì client dùng nhầm key.
+
+### Store và ba trạng thái
+Mỗi entry lưu theo scope {{(accountId, endpoint, key)}}:
+- fingerprint: hash của nội dung payload, dùng để phát hiện client dùng lại key cho nội dung khác.
+- status: PENDING (đang xử lý) hoặc DONE (hoàn thành, đã có kết quả).
+- body: response terminal (chấp nhận hoặc từ chối), chỉ được ghi khi chuyển sang DONE.
+- createdAt: thời điểm tạo entry, dùng cho TTL.
+
+Luồng xử lý khi begin(account, key, fingerprint, now):
+1. Chưa có entry -> tạo PENDING, trả RUN (caller được phép chạy business).
+2. Có entry PENDING nhưng đã hết TTL -> coi như chưa có, xóa và tạo mới, trả RUN. Đây là cách xử lý phantom PENDING (entry bị kẹt PENDING vì process chết giữa chừng).
+3. Có entry, fingerprint khác -> trả CONFLICT (422), không ghi đè.
+4. Có entry PENDING, đúng fingerprint -> trả IN_PROGRESS (409), không chạy song song.
+5. Có entry DONE -> trả REPLAY kèm body đã lưu, không chạy lại business.
+
+Khi complete(account, key, fingerprint, body, now):
+- Chỉ ghi khi entry còn PENDING và đúng fingerprint.
+- Gán body trước, rồi mới đặt DONE. Thứ tự này đảm bảo REPLAY luôn đọc được body đầy đủ, không bao giờ null.
+
+### TTL: PENDING hết hạn, DONE vĩnh viễn
+- PENDING hết hạn sau ttlSeconds: entry bị xóa (hoặc bị bỏ qua), caller sau đó có thể begin lại và chạy lại business. Điều này xử lý được trường hợp process crash sau khi tạo entry PENDING nhưng trước khi complete — entry không bị kẹt vĩnh viễn.
+- DONE là vĩnh viễn: không bao giờ hết hạn, luôn REPLAY kết quả cũ. Một lệnh đã từ chối (DECLINED) được lưu như DONE, nên retry cùng key trả lại kết quả từ chối, không charge lại thẻ.
+
+### Ví dụ thực tế
+API thanh toán nhận yêu cầu nạp 1.000.000 VND, client gửi key {{pay-abc-123}}. Lần đầu: entry PENDING, business chạy, kết quả APPROVED, complete -> DONE body APPROVED:1000000. Client retry do mạng gián đoạn: cùng key {{pay-abc-123}}, entry DONE -> REPLAY APPROVED:1000000, không trừ tiền hai lần.
+
+Nếu client dùng lại key {{pay-abc-123}} nhưng nạp 2.000.000 VND (fingerprint khác): trả 422 CONFLICT, bắt bug client.
+
+Nếu process crash sau khi tạo PENDING nhưng trước khi complete: entry bị kẹt PENDING. Sau TTL (ví dụ 60 giây), entry hết hạn, caller sau đó có thể begin lại với cùng key -> RUN, xử lý lần mới. Nếu không có TTL, entry PENDING bị kẹt mãi và không bao giờ được retry.
+
+### Liên hệ phỏng vấn
+Interviewer thường hỏi: tại sao phải gán body trước khi đặt DONE? Tại sao decline cũng phải lưu làm DONE? TTL đặt bao lâu? Tại sao scope theo account? Muốn retry một giao dịch bị từ chối, làm gì?`,
+  exercises: [
+    {
+      title: 'Idempotency thanh toán: TTL, PENDING hết hạn, DONE vĩnh viễn',
+      prompt: `Triển khai class {{PaymentIdempotency}} cho API thanh toán.
+
+API cần triển khai:
+- {{PaymentIdempotency(long ttlSeconds)}}: TTL tính bằng giây, chuyển sang mili-giây nội bộ.
+- {{Outcome begin(String account, String key, String fingerprint, long now)}}:
+  - Chưa có entry -> tạo PENDING, trả {{Decision.RUN}}.
+  - Có entry PENDING nhưng hết TTL (now - createdAt >= ttlMs) -> xoá, tạo mới, trả {{Decision.RUN}}.
+  - Có entry, fingerprint khác -> trả {{Decision.CONFLICT}}.
+  - Có entry PENDING, đúng fingerprint -> trả {{Decision.IN_PROGRESS}}.
+  - Có entry DONE -> trả {{Decision.REPLAY}} kèm body.
+- {{void complete(String account, String key, String fingerprint, String body, long now)}}: chỉ ghi khi entry còn PENDING và đúng fingerprint; gán body trước rồi mới đặt DONE.
+- {{String body(String account, String key)}}: trả body của entry (null nếu không có).
+- {{void cleanupExpired(long now)}}: xoá tất cả entry PENDING đã hết TTL.
+- {{int size()}}: số entry hiện có trong store.
+
+{{Decision}} là enum { RUN, REPLAY, IN_PROGRESS, CONFLICT }. {{Outcome}} là record { Decision decision; String body; }.
+Entry nội bộ có fingerprint, status (PENDING/DONE), body, createdAt. Scope key theo account + "::" + key. Tất cả các phương thức công khai là synchronized.
+
+now là thời điểm truyền vào (mili-giây), giúp kiểm thử xác định mà không cần đồng hồ thực.`,
+      starter: `final class PaymentIdempotency {
+    enum Decision { RUN, REPLAY, IN_PROGRESS, CONFLICT }
+    record Outcome(Decision decision, String body) {}
+    private enum Status { PENDING, DONE }
+    private static final class Entry {
+        final String fingerprint;
+        Status status = Status.PENDING;
+        String body;
+        long createdAt;
+        Entry(String fingerprint, long createdAt) { this.fingerprint = fingerprint; this.createdAt = createdAt; }
+    }
+    private final Map<String, Entry> store = new HashMap<>();
+    private final long ttlMs;
+    private static String scoped(String account, String key) { return account + "::" + key; }
+
+    PaymentIdempotency(long ttlSeconds) { this.ttlMs = ttlSeconds * 1000L; }
+
+    synchronized Outcome begin(String account, String key, String fingerprint, long now) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized void complete(String account, String key, String fingerprint, String body, long now) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized String body(String account, String key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized void cleanupExpired(long now) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    synchronized int size() { return store.size(); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        PaymentIdempotency s = new PaymentIdempotency(60);
+        long now = 1000;
+
+        PaymentIdempotency.Outcome o1 = s.begin("a", "k", "fp1", now);
+        check("lan dau RUN", o1.decision() == PaymentIdempotency.Decision.RUN && o1.body() == null, "decision=" + o1.decision());
+
+        PaymentIdempotency.Outcome o2 = s.begin("a", "k", "fp1", now);
+        check("van PENDING -> IN_PROGRESS", o2.decision() == PaymentIdempotency.Decision.IN_PROGRESS, "decision=" + o2.decision());
+
+        PaymentIdempotency.Outcome o3 = s.begin("a", "k", "fp2", now);
+        check("khac fingerprint -> CONFLICT", o3.decision() == PaymentIdempotency.Decision.CONFLICT, "decision=" + o3.decision());
+
+        s.complete("a", "k", "fp1", "APPROVED:100", now);
+        PaymentIdempotency.Outcome o4 = s.begin("a", "k", "fp1", now);
+        check("DONE -> REPLAY body", o4.decision() == PaymentIdempotency.Decision.REPLAY && "APPROVED:100".equals(o4.body()), "decision=" + o4.decision() + " body=" + o4.body());
+
+        PaymentIdempotency.Outcome o5 = s.begin("a", "k2", "fp1", now);
+        check("key khac -> RUN", o5.decision() == PaymentIdempotency.Decision.RUN, "decision=" + o5.decision());
+
+        PaymentIdempotency.Outcome o6 = s.begin("b", "k", "fp1", now);
+        check("account khac cung key -> RUN", o6.decision() == PaymentIdempotency.Decision.RUN, "decision=" + o6.decision());
+
+        PaymentIdempotency s2 = new PaymentIdempotency(60);
+        long now2 = 1000;
+        s2.begin("x", "k", "fp", now2);
+        long expiredNow = now2 + 60_001;
+        PaymentIdempotency.Outcome o7 = s2.begin("x", "k", "fp", expiredNow);
+        check("PENDING het TTL -> RUN lai", o7.decision() == PaymentIdempotency.Decision.RUN, "decision=" + o7.decision());
+
+        PaymentIdempotency s3 = new PaymentIdempotency(60);
+        long now3 = 1000;
+        s3.begin("y", "k", "fp", now3);
+        s3.complete("y", "k", "fp", "DECLINED", now3);
+        long afterTtl = now3 + 60_001;
+        PaymentIdempotency.Outcome o8 = s3.begin("y", "k", "fp", afterTtl);
+        check("DONE khong het TTL -> van REPLAY", o8.decision() == PaymentIdempotency.Decision.REPLAY && "DECLINED".equals(o8.body()), "decision=" + o8.decision() + " body=" + o8.body());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `final class PaymentIdempotency {
+    enum Decision { RUN, REPLAY, IN_PROGRESS, CONFLICT }
+    record Outcome(Decision decision, String body) {}
+    private enum Status { PENDING, DONE }
+    private static final class Entry {
+        final String fingerprint;
+        Status status = Status.PENDING;
+        String body;
+        long createdAt;
+        Entry(String fingerprint, long createdAt) { this.fingerprint = fingerprint; this.createdAt = createdAt; }
+    }
+    private final Map<String, Entry> store = new HashMap<>();
+    private final long ttlMs;
+    private static String scoped(String account, String key) { return account + "::" + key; }
+
+    PaymentIdempotency(long ttlSeconds) { this.ttlMs = ttlSeconds * 1000L; }
+
+    synchronized Outcome begin(String account, String key, String fingerprint, long now) {
+        if (account == null || key == null || fingerprint == null) throw new IllegalArgumentException("account/key/fingerprint required");
+        String sk = scoped(account, key);
+        Entry e = store.get(sk);
+        if (e == null) { store.put(sk, new Entry(fingerprint, now)); return new Outcome(Decision.RUN, null); }
+        if (e.status == Status.PENDING && now - e.createdAt >= ttlMs) {
+            store.remove(sk);
+            store.put(sk, new Entry(fingerprint, now));
+            return new Outcome(Decision.RUN, null);
+        }
+        if (!e.fingerprint.equals(fingerprint)) return new Outcome(Decision.CONFLICT, null);
+        if (e.status == Status.PENDING) return new Outcome(Decision.IN_PROGRESS, null);
+        return new Outcome(Decision.REPLAY, e.body);
+    }
+
+    synchronized void complete(String account, String key, String fingerprint, String body, long now) {
+        Entry e = store.get(scoped(account, key));
+        if (e == null || e.status != Status.PENDING || !e.fingerprint.equals(fingerprint)) return;
+        e.body = body;
+        e.status = Status.DONE;
+    }
+
+    synchronized String body(String account, String key) {
+        Entry e = store.get(scoped(account, key));
+        return e == null ? null : e.body;
+    }
+
+    synchronized void cleanupExpired(long now) {
+        store.entrySet().removeIf(entry -> entry.getValue().status == Status.PENDING && now - entry.getValue().createdAt >= ttlMs);
+    }
+
+    synchronized int size() { return store.size(); }
+}`,
+      hints: [
+        'PENDING het TTL trong begin: xoá entry cũ rồi tạo entry mới, tra RUN de co chay business lai.',
+        'complete chi ghi khi con PENDING va dung fingerprint; gan body truoc, moi dat DONE de REPLAY khong doc duoc body null.',
+        'DONE khong bao gio het han: luon tra REPLAY body, ngay sau khi qua TTL.',
+      ],
+      explain: `Idempotency thanh toán là thành phần then chốt để tránh charge trùng khi client retry. Store chỉ có hai trạng thái PENDING và DONE; decline được lưu như DONE kèm body, nên begin cùng key trả REPLAY đúng "DECLINED" chứ không chạy lại business — điều mà store generic (FAILED -> BEGIN) không làm.
+
+Fingerprint khác trên cùng key trả CONFLICT (422) để bắt bug client dùng lại key cho payload khác; không ghi đè kết quả cũ. Trong lúc PENDING, request thứ hai nhận IN_PROGRESS (409) thay vì chạy song song. Toàn bộ chuyển trạng thái nằm trong một synchronized block (mo phỏng unique constraint ở DB): chỉ một request tạo được entry PENDING, request kia thấy PENDING.
+
+complete kiem tra lai fingerprint va trang thai PENDING truoc khi ghi, roi gan body truoc khi dat DONE. Thu tu nay dam bao REPLAY luon doc duoc body day du. Trong production, store phai nam o DB/Redis voi unique index theo (account, endpoint, key) va TTL; map trong RAM chi dung cho mot JVM va mat khi restart. Muon thu lai mot giao dich bi tu choi, client dung key MOI.`,
+    },
+  ],
+  check: [
+    { q: 'Client retry accidental cung key sau khi lan dau bi TU CHOI. Server nen lam gi?', options: ['Charge lai the', 'Tra lai dung ket qua tu choi da luu (REPLAY), khong charge lai', 'Xoa key va xu ly nhu moi', 'Tra 500'], answer: 1, explain: `Decline la ket qua cuoi cho khoa do; retry cung key phai replay dung phan hoi cu de khong charge hai lan. Muon thu lai (the khac, so tien khac) phai dung key MOI. (A) sai vi gay charge trung. (C) sai vi mat kha tu dung charge.` },
+    { q: 'Cung key nhung fingerprint (so tien) khanh. Hanh vi dung?', options: ['Replay ket qua cu', '422 CONFLICT, khong ghi de, de bat bug client', 'Charge theo so tien moi', 'Xoa entry'], answer: 1, explain: `Cung key khac payload la dau hieu client dung lai key sai; im lang replay se tra ket qua cu — loi du lieu. Tra 422 buoc client sua. (A) sai vi gay sai ket qua. (C) sai vi key da gan voi intent cu. (D) sai vi xoa entry xoa kha dedup.` },
+    { q: 'PENDING qua TTL, request moi cung key nhan gi?', options: ['IN_PROGRESS lien tuc', '422 CONFLICT', 'RUN, duoc phep xu ly business lai', '500 Internal Server Error'], answer: 2, explain: `PENDING het TTL duoc coi nhu chua co: xóa entry cu, tao moi, tra RUN. Day xu ly duoc phantom PENDING (entry bi ket sau khi process crash). DONE con van REPLAY vi khong het han.` },
+    { q: 'Vì sao idempotency key phai scope theo account?', options: ['De key ngan hon', 'Tranh ro loi du lieu: key toan cuc lam account A nhan ket qua cua B khi trung key', 'De tang toc', 'De dung cung fingerprint'], answer: 1, explain: `Scope theo account dam bao moi tai khoan co khoang key rieng; neu toan cuc, trung key giua hai account se tra ket qua cua nhau — ro loi du lieu nan ngang. (A) khong phai ly do. (C) khong lien quan. (D) fingerprint la cua payload, khong the thay the scope.` }
+  ],
+  related: ['microservices-041'],
+  tags: ['idempotency', 'payment', 'ttl', 'pending', 'done', 'replay', 'fingerprint']
 }
 );

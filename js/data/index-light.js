@@ -3150,6 +3150,8 @@ window.DATA_INDEX = {
     {"id":"lesson-microservices-030","track":"microservices","order":30,"title":"Idempotency key nâng cao: TTL phantom, fingerprint và lock phân tán","level":"senior","minutes":30},
     {"id":"lesson-microservices-031","track":"microservices","order":31,"title":"Circuit breaker cửa sổ trượt theo thời gian: chia bucket giây, tỉ lệ lỗi trôi theo hiện tại","level":"senior","minutes":35},
     {"id":"lesson-microservices-032","track":"microservices","order":32,"title":"Idempotency key cho API thanh toán: lưu cả kết quả từ chối, replay đúng phản hồi cũ","level":"senior","minutes":35},
+    {"id":"lesson-microservices-033","track":"microservices","order":33,"title":"Circuit breaker từ bên trong: 3 trạng thái, cửa sổ trượt theo thời gian, đồng hồ giả","level":"senior","minutes":30},
+    {"id":"lesson-microservices-034","track":"microservices","order":34,"title":"Idempotency key thanh toán: TTL, PENDING hết hạn, và DONE vĩnh viễn","level":"senior","minutes":30},
     {"id":"lesson-db-001","track":"db","order":1,"title":"Isolation level qua lịch xen kẽ: dirty read, non-repeatable read và lost update","level":"senior","minutes":30},
     {"id":"lesson-db-002","track":"db","order":2,"title":"Optimistic locking: version check và retry có giới hạn","level":"senior","minutes":25},
     {"id":"lesson-db-003","track":"db","order":3,"title":"B-tree index và full scan: đếm phép so sánh, hiểu chọn lọc","level":"mid","minutes":25},
